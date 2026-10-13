@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "953026999234-7eb29d7mmipotmq71ufraimhbd2unvqf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.kameko.app",
+            "certificate_hash": "4ef0219a3675f917f488f22ddc6152abf392d1f1"
+          }
+        },
+        {
           "client_id": "953026999234-e3kiaodc447gbj2i3tob35hsepvjjfu6.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
