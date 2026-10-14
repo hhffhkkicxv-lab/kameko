@@ -7,6 +7,7 @@ import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import messaging from '@react-native-firebase/messaging';
 import * as Notifications from 'expo-notifications';
+import * as NavigationBar from 'expo-navigation-bar'; // <-- Added for Immersive Mode
 
 import Login from './pages/login';
 import Profiles from './pages/profile'; 
@@ -42,6 +43,21 @@ export default function App() {
   const [isAnimating, setIsAnimating] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const opacityAnim = useRef(new Animated.Value(1)).current;
+
+  // --- GLOBAL IMMERSIVE MODE ---
+  useEffect(() => {
+    const enableImmersiveMode = async () => {
+      try {
+        if (Platform.OS === 'android') {
+          await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
+        }
+      } catch (error) {
+        console.warn("Immersive mode failed:", error);
+      }
+    };
+    enableImmersiveMode();
+  }, []);
 
   // Firebase Auth Listener
   useEffect(() => {
@@ -154,7 +170,7 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.trueBlackRoot}>
-      <StatusBar hidden={true} />
+      <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
       
       {!user ? (
         <Login setLoggedInUser={setUser} />
