@@ -1,14 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, Animated, Dimensions 
+  TouchableOpacity, Animated 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
-import Svg, { Path, Rect } from 'react-native-svg';
+import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
 const BRAND_RED = '#E50914';
-const { width } = Dimensions.get('window');
 
 // --- Premium SVGs ---
 const IconPlay = ({ size = 20 }) => (
@@ -30,7 +29,7 @@ const IconTrash = ({ size = 18, color = "#FFF" }) => (
 );
 
 // --- Individual Animated Card Component ---
-const ContinueCard = ({ item, user, onSelectAnime }) => {
+const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
   const [showConfirm, setShowConfirm] = useState(false);
   
   // Animation Values
@@ -70,6 +69,8 @@ const ContinueCard = ({ item, user, onSelectAnime }) => {
         await firestore()
           .collection('users')
           .doc(user.uid)
+          .collection('profiles')
+          .doc(activeProfile.id)
           .collection('progress')
           .doc(item.animeId)
           .delete();
@@ -84,13 +85,29 @@ const ContinueCard = ({ item, user, onSelectAnime }) => {
       <TouchableOpacity 
         style={styles.cardContent} 
         activeOpacity={0.85} 
-        onPress={() => onSelectAnime({ id: item.animeId, title: item.title || 'Resume' })}
+        onPress={() => onSelectAnime({ 
+          id: item.animeId, 
+          title: item.title || 'Resume',
+          backdrop: item.backdrop
+        })}
       >
         <ProxyImage 
           source={{ uri: item.backdrop || 'https://via.placeholder.com/640x360/1a1a1a/ffffff?text=Loading...' }} 
           style={styles.backdropImage} 
           resizeMode="cover" 
         />
+        
+        {/* Dark Gradient Overlay for Text Legibility */}
+        <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
+          <Defs>
+            <LinearGradient id="botGrad" x1="0" y1="1" x2="0" y2="0">
+              <Stop offset="0" stopColor="#000000" stopOpacity="0.9" />
+              <Stop offset="0.5" stopColor="#000000" stopOpacity="0.3" />
+              <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+            </LinearGradient>
+          </Defs>
+          <Rect width="100%" height="100%" fill="url(#botGrad)" />
+        </Svg>
         
         {/* Top Right "X" Button */}
         <TouchableOpacity style={styles.cutBtn} activeOpacity={0.7} onPress={triggerConfirm}>
@@ -134,17 +151,22 @@ const ContinueCard = ({ item, user, onSelectAnime }) => {
   );
 };
 
-export default function ContinueWatching({ user, onSelectAnime }) {
+export default function ContinueWatching({ user, activeProfile, onSelectAnime }) {
   const [historyList, setHistoryList] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) return;
+    if (!user || !activeProfile?.id) {
+      setLoading(false);
+      return;
+    }
 
-    // Listen to Firebase Progress Collection
+    // Listen to Firebase Progress Collection for the Active Profile
     const unsubscribe = firestore()
       .collection('users')
       .doc(user.uid)
+      .collection('profiles')
+      .doc(activeProfile.id)
       .collection('progress')
       .orderBy('timestamp', 'desc')
       .limit(10)
@@ -158,33 +180,34 @@ export default function ContinueWatching({ user, onSelectAnime }) {
         const rawProgress = [];
         snap.forEach(doc => {
           const data = doc.data();
-          // Filter out completely finished episodes if you don't want them in the slider
+          // Hide completely finished episodes
           if (!data.finishedEp) {
             rawProgress.push(data);
           }
         });
 
-        // Optional: Fetch Anilist Metadata for HD Backdrops if not saved in Firestore
+        // Optional: Fetch Anilist Metadata for clean landscape backdrops if missing
         const enriched = await Promise.all(rawProgress.map(async (item) => {
-          let backdrop = null;
-          let title = `Episode ${item.lastWatchedEp}`;
+          let backdrop = item.backdrop;
+          let title = item.title;
           
-          try {
-            // We use the ID to reverse-search Anilist for a clean landscape backdrop
-            const cleanSearch = item.animeId.replace(/-/g, ' ');
-            const query = `query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } bannerImage coverImage { extraLarge } } }`;
-            const aniRes = await fetch('https://graphql.anilist.co', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query, variables: { search: cleanSearch } })
-            });
-            const aniData = await aniRes.json();
-            
-            if (aniData?.data?.Media) {
-              backdrop = aniData.data.Media.bannerImage || aniData.data.Media.coverImage?.extraLarge;
-              title = aniData.data.Media.title?.english || aniData.data.Media.title?.romaji;
-            }
-          } catch(e) {}
+          if (!backdrop) {
+            try {
+              const cleanSearch = item.animeId.replace(/-/g, ' ');
+              const query = `query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } bannerImage coverImage { extraLarge } } }`;
+              const aniRes = await fetch('https://graphql.anilist.co', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query, variables: { search: cleanSearch } })
+              });
+              const aniData = await aniRes.json();
+              
+              if (aniData?.data?.Media) {
+                backdrop = aniData.data.Media.bannerImage || aniData.data.Media.coverImage?.extraLarge;
+                title = aniData.data.Media.title?.english || aniData.data.Media.title?.romaji;
+              }
+            } catch(e) {}
+          }
 
           return { ...item, backdrop, title };
         }));
@@ -197,7 +220,7 @@ export default function ContinueWatching({ user, onSelectAnime }) {
       });
 
     return () => unsubscribe();
-  }, [user]);
+  }, [user, activeProfile]);
 
   if (loading || historyList.length === 0) return null;
 
@@ -215,7 +238,7 @@ export default function ContinueWatching({ user, onSelectAnime }) {
         snapToInterval={280} 
         decelerationRate="fast"
         renderItem={({ item }) => (
-          <ContinueCard item={item} user={user} onSelectAnime={onSelectAnime} />
+          <ContinueCard item={item} user={user} activeProfile={activeProfile} onSelectAnime={onSelectAnime} />
         )}
       />
     </View>
@@ -228,9 +251,9 @@ const styles = StyleSheet.create({
   sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
   listPadding: { paddingHorizontal: 20 },
   
-  cardWrapper: { width: 265, height: 150, marginRight: 15, borderRadius: 10, overflow: 'hidden' },
-  cardContent: { flex: 1, backgroundColor: '#1A1A1A', borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
-  backdropImage: { width: '100%', height: '100%', opacity: 0.6 },
+  cardWrapper: { width: 265, height: 150, marginRight: 15, borderRadius: 8, overflow: 'hidden' },
+  cardContent: { flex: 1, backgroundColor: '#1A1A1A', borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  backdropImage: { width: '100%', height: '100%', opacity: 0.85 },
   
   cutBtn: { 
     position: 'absolute', 
@@ -250,17 +273,17 @@ const styles = StyleSheet.create({
   playOverlay: { ...StyleSheet.absoluteFillObject, justifyContent: 'center', alignItems: 'center', zIndex: 5 },
   playIconBox: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.8)' },
   
-  bottomData: { position: 'absolute', bottom: 0, width: '100%', padding: 10, paddingTop: 30, zIndex: 6, backgroundColor: 'rgba(0,0,0,0.5)' },
+  bottomData: { position: 'absolute', bottom: 0, width: '100%', padding: 12, paddingTop: 30, zIndex: 6 },
   animeTitle: { color: '#FFF', fontSize: 13, fontWeight: '800', textShadowColor: '#000', textShadowRadius: 4 },
   epSubTitle: { color: '#CCC', fontSize: 11, fontWeight: '600', marginBottom: 8 },
   
-  progressBarBg: { width: '100%', height: 4, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 2, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: BRAND_RED },
+  progressBarBg: { width: '100%', height: 3, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
+  progressBarFill: { height: '100%', backgroundColor: BRAND_RED, borderRadius: 2 },
 
   // Confirmation Overlay
   confirmOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(20,20,20,0.95)',
+    backgroundColor: 'rgba(15,15,15,0.95)',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 20,
