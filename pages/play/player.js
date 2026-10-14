@@ -74,7 +74,7 @@ export default function Player({ route, navigation }) {
   const [is2xActive, setIs2xActive] = useState(false);
   const previousSpeedRef = useRef(1.0);
 
-  // Position Tracking for Quality Switches
+  // Position Tracking for Quality Switches & Resuming
   const lastPositionRef = useRef(0);
   const lastSavedTimeRef = useRef(0);
 
@@ -106,13 +106,12 @@ export default function Player({ route, navigation }) {
   const hideUITimeout = useRef(null);
   const longPressTimerRef = useRef(null);
 
-  // Refs for safe BackHandler teardown
   const activeMenuRef = useRef(activeMenu);
   const isLockedRef = useRef(isLocked);
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
 
-  // 1. Full Screen Lock (Behind Camera Notch & Persistent Landscape)
+  // 1. Full Screen Lock
   useEffect(() => {
     let isMounted = true;
     const lockEdgeToEdge = async () => {
@@ -160,7 +159,6 @@ export default function Player({ route, navigation }) {
     const fetchProviderAndEpisodes = async () => {
       try {
         let targetId = animeId;
-        // Find exact provider ID using search
         const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
         const searchJson = await searchRes.json();
         const matches = searchJson?.data || [];
@@ -171,13 +169,11 @@ export default function Player({ route, navigation }) {
 
         if (isMounted) setProviderId(targetId);
 
-        // Fetch episode list
         const epRes = await fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
         const epJson = await epRes.json();
         const list = epJson?.data || [];
 
         if (isMounted && Array.isArray(list)) {
-          // Identify current episode index securely by slug or number
           const currentEpIndex = list.findIndex(ep => 
             (slug && String(ep.slug) === String(slug)) || 
             (ep.id && String(ep.id) === String(slug)) || 
@@ -209,11 +205,41 @@ export default function Player({ route, navigation }) {
     return () => { isMounted = false; };
   }, [animeTitle, episodeNum, slug]);
 
+  // 2.5 Fetch Previous Playback Progress from Firebase
+  useEffect(() => {
+    if (!userUid || !animeId) return;
+
+    const fetchProgress = async () => {
+      try {
+        const doc = await firestore()
+          .collection('users')
+          .doc(userUid)
+          .collection('progress')
+          .doc(String(animeId))
+          .get();
+
+        if (doc.exists) {
+          const data = doc.data();
+          const currentSlug = slug ? String(slug) : String(episodeNum);
+          
+          // Only resume if they are opening the exact episode they were watching, and they didn't finish it
+          if (data.slug === currentSlug && !data.finishedEp && data.progress > 0) {
+            // Firebase stores seconds, lastPositionRef needs milliseconds
+            lastPositionRef.current = data.progress * 1000;
+          }
+        }
+      } catch (e) {
+        console.warn('Could not fetch previous progress:', e);
+      }
+    };
+
+    fetchProgress();
+  }, [userUid, animeId, slug, episodeNum]);
+
   // 3. Resolve Native M3U8 Stream
   useEffect(() => {
     let isMounted = true;
     const resolveStream = async () => {
-      // Use proper provider fallback logic
       const effectiveId = providerId || animeId;
       const effectiveSlug = slug || episodeNum;
 
@@ -306,9 +332,8 @@ export default function Player({ route, navigation }) {
   useEffect(() => {
     if (!status.isLoaded) return;
     const currentMs = status.positionMillis || 0;
-    const currentTimeSec = currentMs / 1000; // Float precision to prevent Math.floor desyncs!
+    const currentTimeSec = currentMs / 1000; 
 
-    // Save exact position locally so quality switching resumes flawlessly
     if (currentMs > 0) {
       lastPositionRef.current = currentMs;
     }
@@ -317,7 +342,6 @@ export default function Player({ route, navigation }) {
       setCurrentAutoRes(`${status.naturalSize.height}p`);
     }
 
-    // Flawless Subtitle Sync (No Math.floor)
     if (subtitlesEnabled && parsedSubs.length > 0) {
       const activeCue = parsedSubs.find(c => currentTimeSec >= c.start && currentTimeSec <= c.end);
       if (activeCue && activeCue.text !== currentSubText) setCurrentSubText(activeCue.text);
@@ -326,7 +350,6 @@ export default function Player({ route, navigation }) {
       setCurrentSubText(''); 
     }
 
-    // Reliable DB Progress Saving (commits exactly every 10 watched seconds)
     const currentSecs = Math.floor(currentTimeSec);
     const durationSecs = Math.floor((status.durationMillis || 1) / 1000);
     if (userUid && animeId && status.isPlaying && currentSecs > 0) {
@@ -351,14 +374,12 @@ export default function Player({ route, navigation }) {
   const handleNextEpisode = () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
     
-    // Purge states safely to prevent overlap
     setLoadingStream(true);
     setActiveUrl(null);
     setCurrentSubText('');
     setParsedSubs([]);
-    lastPositionRef.current = 0;
+    lastPositionRef.current = 0; // Reset position so the next episode starts at 0:00
     
-    // Push new parameters via replace
     navigation.replace('Player', {
       ...route.params,
       episodeNum: nextEpisodeData.num,
@@ -444,12 +465,13 @@ export default function Player({ route, navigation }) {
           useNativeControls={false}
           resizeMode={resizeMode}
           onPlaybackStatusUpdate={setStatus}
-          onLoad={() => {
+          onLoad={async () => {
             if (videoRef.current) {
-              videoRef.current.playAsync();
+              // Ensure we jump to the saved position BEFORE playing
               if (lastPositionRef.current > 0) {
-                videoRef.current.setPositionAsync(lastPositionRef.current);
+                await videoRef.current.setPositionAsync(lastPositionRef.current);
               }
+              await videoRef.current.playAsync();
             }
           }}
           shouldPlay
@@ -712,7 +734,8 @@ const styles = StyleSheet.create({
     position: 'absolute', 
     width: '100%', 
     alignItems: 'center', 
-    zIndex: 9, 
+    zIndex: 25,
+    elevation: 10,
     paddingHorizontal: 25 
   },
   subtitleText: { 
