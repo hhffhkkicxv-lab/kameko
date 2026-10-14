@@ -259,9 +259,7 @@ export default function Player({
     selectedAudioType,
   ]);
 
-  // Helper to persist Watch History & Progress inside the Current Profile:
-  // users/{uid}/profiles/{currentProfileId}/watch_history/{animeId}
-  // users/{uid}/profiles/{currentProfileId}/progress/{animeId}
+  // Helper to persist Watch History & Progress inside the Current Profile
   const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false) => {
     const meta = latestMetaRef.current;
     if (!meta.uid || !meta.profileId || !meta.animeId || meta.animeId === 'unknown') return;
@@ -318,14 +316,20 @@ export default function Player({
       .catch(() => {});
   }, []);
 
-  // 1. Full Screen Lock & Hardware Back Handler
+  // Use refs for backhandler & navigation so the mount effect can safely have [] deps
+  const navigationRef = useRef(navigation);
+  const saveHistoryRef = useRef(saveWatchHistory);
+  useEffect(() => { navigationRef.current = navigation; }, [navigation]);
+  useEffect(() => { saveHistoryRef.current = saveWatchHistory; }, [saveWatchHistory]);
+
+  // 1. Full Screen Lock & Hardware Back Handler (Runs strictly ONCE on mount)
   useEffect(() => {
-    const lockEdgeToEdge = async () => {
+    const lockLandscape = async () => {
       try {
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
       } catch (_) {}
     };
-    lockEdgeToEdge();
+    lockLandscape();
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
       if (activeMenuRef.current) { 
@@ -338,17 +342,24 @@ export default function Player({
         Animated.timing(uiOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
         return true; 
       }
-      saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
-      navigation.goBack();
+      if (saveHistoryRef.current) {
+        saveHistoryRef.current(lastPositionRef.current, lastDurationRef.current);
+      }
+      if (navigationRef.current?.goBack) {
+        navigationRef.current.goBack();
+      }
       return true;
     });
 
     return () => {
-      saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
-      ScreenOrientation.unlockAsync().catch(() => {});
+      if (saveHistoryRef.current) {
+        saveHistoryRef.current(lastPositionRef.current, lastDurationRef.current);
+      }
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP)
+        .catch(() => ScreenOrientation.unlockAsync().catch(() => {}));
       backHandler.remove();
     };
-  }, [navigation, uiOpacity, saveWatchHistory]);
+  }, []); // <-- EMPTY DEPENDENCY ARRAY PREVENTS FLIPPING LOOP
 
   // 2. Fetch Provider ID, Current Episode Title, and Next Episode
   useEffect(() => {
@@ -402,7 +413,7 @@ export default function Player({
             Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
           }
         }
-      } catch (err) {
+      } catch (_) {
         if (isMounted) {
           setHasNextEpisode(false);
           Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
@@ -563,7 +574,6 @@ export default function Player({
 
     const currentSecs = Math.floor(currentTimeSec);
     
-    // Save every 3 seconds to users/{uid}/profiles/{currentProfileId}/watch_history/{animeId}
     if (status.isPlaying && currentSecs > 0) {
       if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
         lastSavedTimeRef.current = currentSecs;
@@ -582,7 +592,6 @@ export default function Player({
     saveWatchHistory
   ]);
 
-  // Ensure progress is saved if currentProfileId resolves after playback has already started
   useEffect(() => {
     if (resolvedUid && currentProfileId && status.isLoaded && lastPositionRef.current > 0) {
       saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
