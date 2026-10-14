@@ -8,6 +8,17 @@ import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
 const BRAND_RED = '#E50914';
+const WATCH_HISTORY_COLLECTION = 'watch_history';
+
+// --- Helper for Timestamp Formatting ---
+const formatSeconds = (seconds) => {
+  if (isNaN(seconds) || seconds < 0) return '00:00';
+  const totalSecs = Math.floor(seconds);
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0');
+  const s = Math.floor(totalSecs % 60).toString().padStart(2, '0');
+  return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+};
 
 // --- Premium SVGs ---
 const IconPlay = ({ size = 20 }) => (
@@ -37,8 +48,21 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const confirmScale = useRef(new Animated.Value(0)).current;
 
-  // Calculate percentage for progress bar
-  const progressPct = item.duration > 0 ? Math.min((item.progress / item.duration) * 100, 100) : 0;
+  // Resolved fields from watch_history document
+  const animeId = String(item.animeId || item.id || '');
+  const displayTitle = item.animeTitle || item.title || `Anime ${animeId}`;
+  const epNum = item.episodeNum ?? item.lastWatchedEp ?? 1;
+  const rawEpTitle = item.episodeTitle || item.epTitle || '';
+  const hasDistinctEpTitle = rawEpTitle && rawEpTitle.toLowerCase() !== `episode ${epNum}`;
+  const displayEpLabel = hasDistinctEpTitle ? `Ep ${epNum} • ${rawEpTitle}` : `Episode ${epNum}`;
+  const displayBackdrop = item.backdropUrl || item.backdrop || 'https://via.placeholder.com/640x360/1a1a1a/ffffff?text=Loading...';
+
+  // Timestamps & Progress Calculation
+  const progressSecs = Number(item.progress || 0);
+  const durationSecs = Number(item.duration || 0);
+  const progressPct = durationSecs > 0 ? Math.min((progressSecs / durationSecs) * 100, 100) : 0;
+  const currentTimeStr = item.formattedTimestamp || formatSeconds(progressSecs);
+  const totalTimeStr = item.formattedDuration || formatSeconds(durationSecs);
 
   // Show Confirmation Overlay
   const triggerConfirm = () => {
@@ -59,7 +83,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
     }).start(() => setShowConfirm(false));
   };
 
-  // Execute Delete from Firebase with Shrink Animation
+  // Execute Delete from Firebase watch_history with Shrink Animation
   const executeDelete = () => {
     Animated.parallel([
       Animated.timing(scaleAnim, { toValue: 0.8, duration: 300, useNativeDriver: true }),
@@ -68,14 +92,14 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
       try {
         await firestore()
           .collection('users')
-          .doc(user.uid)
+          .doc(String(user.uid))
           .collection('profiles')
-          .doc(activeProfile.id)
-          .collection('progress')
-          .doc(item.animeId)
+          .doc(String(activeProfile.id))
+          .collection(WATCH_HISTORY_COLLECTION)
+          .doc(animeId)
           .delete();
       } catch (err) {
-        console.warn("Failed to delete history:", err);
+        console.warn("Failed to delete watch history item:", err);
       }
     });
   };
@@ -86,13 +110,23 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
         style={styles.cardContent} 
         activeOpacity={0.85} 
         onPress={() => onSelectAnime({ 
-          id: item.animeId, 
-          title: item.title || 'Resume',
-          backdrop: item.backdrop
+          id: animeId,
+          animeId: animeId,
+          title: displayTitle,
+          animeTitle: displayTitle,
+          backdrop: displayBackdrop,
+          animeBackdrop: displayBackdrop,
+          backdropUrl: displayBackdrop,
+          episodeNum: epNum,
+          episodeTitle: rawEpTitle || `Episode ${epNum}`,
+          slug: item.slug || String(epNum),
+          progress: progressSecs,
+          duration: durationSecs,
+          targetType: item.audioType || 'sub',
         })}
       >
         <ProxyImage 
-          source={{ uri: item.backdrop || 'https://via.placeholder.com/640x360/1a1a1a/ffffff?text=Loading...' }} 
+          source={{ uri: displayBackdrop }} 
           style={styles.backdropImage} 
           resizeMode="cover" 
         />
@@ -101,8 +135,8 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
         <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
           <Defs>
             <LinearGradient id="botGrad" x1="0" y1="1" x2="0" y2="0">
-              <Stop offset="0" stopColor="#000000" stopOpacity="0.9" />
-              <Stop offset="0.5" stopColor="#000000" stopOpacity="0.3" />
+              <Stop offset="0" stopColor="#000000" stopOpacity="0.92" />
+              <Stop offset="0.55" stopColor="#000000" stopOpacity="0.35" />
               <Stop offset="1" stopColor="#000000" stopOpacity="0" />
             </LinearGradient>
           </Defs>
@@ -121,10 +155,18 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
           </View>
         </View>
 
-        {/* Bottom Details & Progress Bar */}
+        {/* Bottom Details, Episode Title, Timestamps & Progress Bar */}
         <View style={styles.bottomData}>
-          <Text style={styles.animeTitle} numberOfLines={1}>{item.title || `Anime ${item.animeId}`}</Text>
-          <Text style={styles.epSubTitle}>Episode {item.lastWatchedEp}</Text>
+          <Text style={styles.animeTitle} numberOfLines={1}>{displayTitle}</Text>
+          
+          <View style={styles.metaRow}>
+            <Text style={styles.epSubTitle} numberOfLines={1}>
+              {displayEpLabel}
+            </Text>
+            <Text style={styles.timestampText}>
+              {currentTimeStr}{durationSecs > 0 ? ` / ${totalTimeStr}` : ''}
+            </Text>
+          </View>
           
           <View style={styles.progressBarBg}>
             <View style={[styles.progressBarFill, { width: `${progressPct}%` }]} />
@@ -135,7 +177,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
       {/* Delete Confirmation Overlay */}
       {showConfirm && (
         <Animated.View style={[styles.confirmOverlay, { transform: [{ scale: confirmScale }] }]}>
-          <Text style={styles.confirmText}>Remove from history?</Text>
+          <Text style={styles.confirmText}>Remove from watch history?</Text>
           <View style={styles.confirmActions}>
             <TouchableOpacity style={styles.cancelBtn} onPress={cancelConfirm}>
               <Text style={styles.cancelText}>Cancel</Text>
@@ -156,18 +198,19 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user || !activeProfile?.id) {
+    if (!user?.uid || !activeProfile?.id) {
+      setHistoryList([]);
       setLoading(false);
       return;
     }
 
-    // Listen to Firebase Progress Collection for the Active Profile
+    // Listen to Firebase Watch History Collection for the Active Profile
     const unsubscribe = firestore()
       .collection('users')
-      .doc(user.uid)
+      .doc(String(user.uid))
       .collection('profiles')
-      .doc(activeProfile.id)
-      .collection('progress')
+      .doc(String(activeProfile.id))
+      .collection(WATCH_HISTORY_COLLECTION)
       .orderBy('timestamp', 'desc')
       .limit(10)
       .onSnapshot(async (snap) => {
@@ -177,23 +220,25 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
           return;
         }
 
-        const rawProgress = [];
+        const rawHistory = [];
         snap.forEach(doc => {
           const data = doc.data();
-          // Hide completely finished episodes
           if (!data.finishedEp) {
-            rawProgress.push(data);
+            rawHistory.push({
+              ...data,
+              animeId: String(data.animeId || doc.id),
+            });
           }
         });
 
-        // Optional: Fetch Anilist Metadata for clean landscape backdrops if missing
-        const enriched = await Promise.all(rawProgress.map(async (item) => {
-          let backdrop = item.backdrop;
-          let title = item.title;
+        // Enrich with AniList metadata if backdrop or title is missing
+        const enriched = await Promise.all(rawHistory.map(async (item) => {
+          let backdropUrl = item.backdropUrl || item.backdrop;
+          let animeTitle = item.animeTitle || item.title;
           
-          if (!backdrop) {
+          if (!backdropUrl) {
             try {
-              const cleanSearch = item.animeId.replace(/-/g, ' ');
+              const cleanSearch = String(item.animeId).replace(/-/g, ' ');
               const query = `query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } bannerImage coverImage { extraLarge } } }`;
               const aniRes = await fetch('https://graphql.anilist.co', {
                 method: 'POST',
@@ -203,13 +248,19 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
               const aniData = await aniRes.json();
               
               if (aniData?.data?.Media) {
-                backdrop = aniData.data.Media.bannerImage || aniData.data.Media.coverImage?.extraLarge;
-                title = aniData.data.Media.title?.english || aniData.data.Media.title?.romaji;
+                backdropUrl = aniData.data.Media.bannerImage || aniData.data.Media.coverImage?.extraLarge;
+                animeTitle = animeTitle || aniData.data.Media.title?.english || aniData.data.Media.title?.romaji;
               }
-            } catch(e) {}
+            } catch (_) {}
           }
 
-          return { ...item, backdrop, title };
+          return { 
+            ...item, 
+            backdropUrl, 
+            backdrop: backdropUrl, 
+            animeTitle, 
+            title: animeTitle 
+          };
         }));
 
         setHistoryList(enriched);
@@ -233,12 +284,17 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         data={historyList}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item) => item.animeId}
+        keyExtractor={(item) => String(item.animeId)}
         contentContainerStyle={styles.listPadding}
         snapToInterval={280} 
         decelerationRate="fast"
         renderItem={({ item }) => (
-          <ContinueCard item={item} user={user} activeProfile={activeProfile} onSelectAnime={onSelectAnime} />
+          <ContinueCard 
+            item={item} 
+            user={user} 
+            activeProfile={activeProfile} 
+            onSelectAnime={onSelectAnime} 
+          />
         )}
       />
     </View>
@@ -274,8 +330,10 @@ const styles = StyleSheet.create({
   playIconBox: { width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.8)' },
   
   bottomData: { position: 'absolute', bottom: 0, width: '100%', padding: 12, paddingTop: 30, zIndex: 6 },
-  animeTitle: { color: '#FFF', fontSize: 13, fontWeight: '800', textShadowColor: '#000', textShadowRadius: 4 },
-  epSubTitle: { color: '#CCC', fontSize: 11, fontWeight: '600', marginBottom: 8 },
+  animeTitle: { color: '#FFF', fontSize: 13, fontWeight: '800', textShadowColor: '#000', textShadowRadius: 4, marginBottom: 2 },
+  metaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7, gap: 8 },
+  epSubTitle: { flex: 1, color: '#CCC', fontSize: 11, fontWeight: '600' },
+  timestampText: { color: 'rgba(255,255,255,0.75)', fontSize: 10, fontFamily: 'monospace', fontWeight: '700' },
   
   progressBarBg: { width: '100%', height: 3, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: BRAND_RED, borderRadius: 2 },
