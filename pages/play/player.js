@@ -7,6 +7,7 @@ import { Video, ResizeMode } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as NavigationBar from 'expo-navigation-bar';
 import Slider from '@react-native-community/slider';
+import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 
@@ -56,24 +57,135 @@ const formatTime = (millis) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-export default function Player({ route, navigation }) {
+export default function Player({
+  route,
+  navigation,
+  user: propUser,
+  activeProfile: propActiveProfile,
+  currentProfile: propCurrentProfile,
+  activeProfileId: propActiveProfileId,
+}) {
+  const params = route?.params || {};
+
   const { 
     animeTitle = 'Unknown', 
     animeId = null,
+    id: paramId = null,
     userUid = null,
+    uid: paramUid = null,
+    user: paramUser = null,
     activeProfileId = null, 
+    profileId: paramProfileId = null,
+    currentProfileId: paramCurrentProfileId = null,
+    activeProfile: paramActiveProfile = null,
+    currentProfile: paramCurrentProfile = null,
     animeBackdrop = null, 
     coverImage = null,
     backdropUrl = null,
+    backdrop = null,
     targetType = 'sub'
-  } = route?.params || {};
+  } = params;
 
-  const resolvedBackdrop = animeBackdrop || backdropUrl || coverImage || '';
+  // 1. Resolve User UID & Current Profile ID from Play.js (route.params or props)
+  const [resolvedUid, setResolvedUid] = useState(() =>
+    userUid ||
+    paramUid ||
+    paramUser?.uid ||
+    propUser?.uid ||
+    auth().currentUser?.uid ||
+    null
+  );
+
+  const [currentProfileId, setCurrentProfileId] = useState(() =>
+    activeProfileId ||
+    paramProfileId ||
+    paramCurrentProfileId ||
+    propActiveProfileId ||
+    paramActiveProfile?.id ||
+    paramCurrentProfile?.id ||
+    propActiveProfile?.id ||
+    propCurrentProfile?.id ||
+    null
+  );
+
+  const [resolvedBackdrop, setResolvedBackdrop] = useState(
+    () => animeBackdrop || backdropUrl || backdrop || coverImage || ''
+  );
+
+  // Sync if props or route params update dynamically
+  useEffect(() => {
+    const incomingUid =
+      userUid || paramUid || paramUser?.uid || propUser?.uid || auth().currentUser?.uid;
+    if (incomingUid && incomingUid !== resolvedUid) {
+      setResolvedUid(String(incomingUid));
+    }
+
+    const incomingProfId =
+      activeProfileId ||
+      paramProfileId ||
+      paramCurrentProfileId ||
+      propActiveProfileId ||
+      paramActiveProfile?.id ||
+      paramCurrentProfile?.id ||
+      propActiveProfile?.id ||
+      propCurrentProfile?.id;
+    if (incomingProfId && String(incomingProfId) !== String(currentProfileId)) {
+      setCurrentProfileId(String(incomingProfId));
+    }
+  }, [
+    userUid,
+    paramUid,
+    paramUser?.uid,
+    propUser?.uid,
+    activeProfileId,
+    paramProfileId,
+    paramCurrentProfileId,
+    propActiveProfileId,
+    paramActiveProfile?.id,
+    paramCurrentProfile?.id,
+    propActiveProfile?.id,
+    propCurrentProfile?.id,
+  ]);
+
+  // Fallback: If currentProfileId was not passed, fetch the activeProfileId saved on users/{uid}
+  useEffect(() => {
+    let isMounted = true;
+    const ensureProfileId = async () => {
+      const uid = resolvedUid || auth().currentUser?.uid;
+      if (!uid || currentProfileId) return;
+
+      try {
+        const userDoc = await firestore().collection('users').doc(String(uid)).get();
+        if (userDoc.exists) {
+          const uData = userDoc.data();
+          const savedProfId = uData?.activeProfileId || uData?.activeProfile?.id;
+          if (savedProfId && isMounted) {
+            setCurrentProfileId(String(savedProfId));
+            return;
+          }
+        }
+
+        const profSnap = await firestore()
+          .collection('users')
+          .doc(String(uid))
+          .collection('profiles')
+          .limit(1)
+          .get();
+
+        if (!profSnap.empty && isMounted) {
+          setCurrentProfileId(String(profSnap.docs[0].id));
+        }
+      } catch (_) {}
+    };
+
+    ensureProfileId();
+    return () => { isMounted = false; };
+  }, [resolvedUid, currentProfileId]);
 
   // SEAMLESS BINGE STATE
-  const [currentEpNum, setCurrentEpNum] = useState(route?.params?.episodeNum || 1);
-  const [currentSlug, setCurrentSlug] = useState(route?.params?.slug || null);
-  const [currentEpTitle, setCurrentEpTitle] = useState(route?.params?.episodeTitle || '');
+  const [currentEpNum, setCurrentEpNum] = useState(params.episodeNum || 1);
+  const [currentSlug, setCurrentSlug] = useState(params.slug || null);
+  const [currentEpTitle, setCurrentEpTitle] = useState(params.episodeTitle || params.epTitle || '');
 
   const videoRef = useRef(null);
   const uiOpacity = useRef(new Animated.Value(1)).current;
@@ -89,10 +201,11 @@ export default function Player({ route, navigation }) {
   const [is2xActive, setIs2xActive] = useState(false);
   
   const previousSpeedRef = useRef(1.0);
-  const lastPositionRef = useRef(0);
+  const lastPositionRef = useRef(params.progress ? Number(params.progress) * 1000 : 0);
+  const lastDurationRef = useRef(params.duration ? Number(params.duration) * 1000 : 0);
   const lastSavedTimeRef = useRef(0); 
 
-  const [providerId, setProviderId] = useState(null);
+  const [providerId, setProviderId] = useState(params.providerId || null);
   const [hasNextEpisode, setHasNextEpisode] = useState(false);
   const [nextEpisodeData, setNextEpisodeData] = useState(null);
 
@@ -118,58 +231,92 @@ export default function Player({ route, navigation }) {
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
 
-  // Helper to persist Watch History to users/{uid}/profiles/{profileId}/watch_history/{animeId}
-  const saveWatchHistory = useCallback((positionMillis, durationMillis) => {
-    if (!userUid || !animeId || !activeProfileId) return;
+  const effectiveAnimeId = String(animeId || paramId || providerId || 'unknown');
 
-    const currentSecs = Math.floor((positionMillis || 0) / 1000);
-    const durationSecs = Math.floor((durationMillis || 1) / 1000);
-    if (currentSecs <= 0) return;
-
-    const isCompleted = durationSecs > 1 && currentSecs > (durationSecs * 0.85);
-    const resolvedEpTitle = currentEpTitle || `Episode ${currentEpNum}`;
-
-    firestore()
-      .collection('users')
-      .doc(String(userUid))
-      .collection('profiles')
-      .doc(String(activeProfileId))
-      .collection(WATCH_HISTORY_COLLECTION)
-      .doc(String(animeId))
-      .set({
-        animeId: String(animeId),
-        animeTitle: animeTitle,
-        title: animeTitle,
-        episodeTitle: resolvedEpTitle,
-        epTitle: resolvedEpTitle,
-        episodeNum: currentEpNum,
-        lastWatchedEp: currentEpNum,
-        slug: currentSlug ? String(currentSlug) : String(currentEpNum),
-        backdropUrl: resolvedBackdrop,
-        backdrop: resolvedBackdrop,
-        progress: currentSecs,
-        duration: durationSecs,
-        positionMillis: Math.floor(positionMillis || 0),
-        durationMillis: Math.floor(durationMillis || 0),
-        formattedTimestamp: formatTime(positionMillis || 0),
-        formattedDuration: formatTime(durationMillis || 0),
-        finishedEp: isCompleted,
-        audioType: selectedAudioType,
-        timestamp: Date.now(),
-        updatedAt: firestore.FieldValue.serverTimestamp(),
-      }, { merge: true })
-      .catch(() => {});
+  // Keep a live ref of all current profile & episode metadata for reliable saves
+  const latestMetaRef = useRef({});
+  useEffect(() => {
+    latestMetaRef.current = {
+      uid: resolvedUid,
+      profileId: currentProfileId,
+      animeId: effectiveAnimeId,
+      animeTitle: String(animeTitle || 'Unknown'),
+      epNum: Number(currentEpNum || 1),
+      epTitle: String(currentEpTitle || `Episode ${currentEpNum || 1}`),
+      slug: String(currentSlug ? currentSlug : currentEpNum),
+      backdrop: String(resolvedBackdrop || ''),
+      audioType: String(selectedAudioType || 'sub'),
+    };
   }, [
-    userUid,
-    animeId,
-    activeProfileId,
+    resolvedUid,
+    currentProfileId,
+    effectiveAnimeId,
     animeTitle,
-    currentEpTitle,
     currentEpNum,
+    currentEpTitle,
     currentSlug,
     resolvedBackdrop,
-    selectedAudioType
+    selectedAudioType,
   ]);
+
+  // Helper to persist Watch History & Progress inside the Current Profile:
+  // users/{uid}/profiles/{currentProfileId}/watch_history/{animeId}
+  // users/{uid}/profiles/{currentProfileId}/progress/{animeId}
+  const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false) => {
+    const meta = latestMetaRef.current;
+    if (!meta.uid || !meta.profileId || !meta.animeId || meta.animeId === 'unknown') return;
+
+    const posMs = Math.max(0, Number(positionMillis || 0));
+    const durMs = Math.max(0, Number(durationMillis || lastDurationRef.current || 0));
+    const currentSecs = Math.floor(posMs / 1000);
+    const durationSecs = Math.max(1, Math.floor(durMs / 1000));
+
+    if (!force && currentSecs <= 0) return;
+
+    const isCompleted = durMs > 10000 && currentSecs > (durationSecs * 0.85);
+
+    const payload = {
+      animeId: String(meta.animeId),
+      profileId: String(meta.profileId),
+      animeTitle: meta.animeTitle,
+      title: meta.animeTitle,
+      episodeTitle: meta.epTitle,
+      epTitle: meta.epTitle,
+      episodeNum: meta.epNum,
+      lastWatchedEp: meta.epNum,
+      slug: meta.slug,
+      backdropUrl: meta.backdrop,
+      backdrop: meta.backdrop,
+      progress: currentSecs,
+      duration: durationSecs,
+      positionMillis: Math.floor(posMs),
+      durationMillis: Math.floor(durMs),
+      formattedTimestamp: formatTime(posMs),
+      formattedDuration: formatTime(durMs),
+      finishedEp: Boolean(isCompleted),
+      audioType: meta.audioType,
+      timestamp: Date.now(),
+      updatedAt: firestore.FieldValue.serverTimestamp(),
+    };
+
+    const currentProfileRef = firestore()
+      .collection('users')
+      .doc(String(meta.uid))
+      .collection('profiles')
+      .doc(String(meta.profileId));
+
+    currentProfileRef
+      .collection(WATCH_HISTORY_COLLECTION)
+      .doc(String(meta.animeId))
+      .set(payload, { merge: true })
+      .catch(() => {});
+
+    currentProfileRef
+      .collection('progress')
+      .doc(String(meta.animeId))
+      .set(payload, { merge: true })
+      .catch(() => {});
+  }, []);
 
   // 1. Full Screen Lock & Hardware Back Handler
   useEffect(() => {
@@ -191,31 +338,37 @@ export default function Player({ route, navigation }) {
         Animated.timing(uiOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
         return true; 
       }
+      saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
       navigation.goBack();
       return true;
     });
 
     return () => {
+      saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
       ScreenOrientation.unlockAsync().catch(() => {});
       backHandler.remove();
     };
-  }, [navigation, uiOpacity]);
+  }, [navigation, uiOpacity, saveWatchHistory]);
 
   // 2. Fetch Provider ID, Current Episode Title, and Next Episode
   useEffect(() => {
     let isMounted = true;
     const fetchProviderAndEpisodes = async () => {
       try {
-        let targetId = animeId;
+        let targetId = animeId || paramId;
         const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
         const searchJson = await searchRes.json();
         const matches = searchJson?.data || [];
         if (matches.length > 0) {
           const exact = matches.find(m => (m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
           targetId = exact.id;
+          if (!resolvedBackdrop && (exact.poster || exact.image) && isMounted) {
+            setResolvedBackdrop(exact.poster || exact.image);
+          }
         }
 
-        if (isMounted) setProviderId(targetId);
+        if (isMounted && targetId) setProviderId(targetId);
+        if (!targetId) return;
 
         const epRes = await fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
         const epJson = await epRes.json();
@@ -258,43 +411,59 @@ export default function Player({ route, navigation }) {
     };
     if (animeTitle) fetchProviderAndEpisodes();
     return () => { isMounted = false; };
-  }, [animeTitle, animeId, currentEpNum, currentSlug]);
+  }, [animeTitle, animeId, paramId, currentEpNum, currentSlug]);
 
-  // 2.5 Fetch Previous Playback Progress from Watch History
+  // 2.5 Fetch Previous Playback Progress from Current Profile's Watch History
   useEffect(() => {
-    if (!userUid || !animeId || !activeProfileId) return;
+    if (!resolvedUid || !currentProfileId || !effectiveAnimeId || effectiveAnimeId === 'unknown') return;
 
     const fetchProgress = async () => {
       try {
-        const doc = await firestore()
+        const profileRef = firestore()
           .collection('users')
-          .doc(String(userUid))
+          .doc(String(resolvedUid))
           .collection('profiles')
-          .doc(String(activeProfileId))
+          .doc(String(currentProfileId));
+
+        let doc = await profileRef
           .collection(WATCH_HISTORY_COLLECTION)
-          .doc(String(animeId))
+          .doc(String(effectiveAnimeId))
           .get();
+
+        if (!doc.exists) {
+          doc = await profileRef
+            .collection('progress')
+            .doc(String(effectiveAnimeId))
+            .get();
+        }
 
         if (doc.exists) {
           const data = doc.data();
           const targetSlug = currentSlug ? String(currentSlug) : String(currentEpNum);
-          const matchesEpisode = String(data?.slug) === targetSlug || String(data?.episodeNum) === String(currentEpNum);
+          const matchesEpisode =
+            String(data?.slug) === targetSlug ||
+            String(data?.episodeNum) === String(currentEpNum) ||
+            String(data?.lastWatchedEp) === String(currentEpNum);
 
           if (matchesEpisode && !data?.finishedEp && data?.progress > 0) {
-            lastPositionRef.current = data.progress * 1000;
+            const savedMs = Number(data.progress) * 1000;
+            lastPositionRef.current = savedMs;
+            if (videoRef.current) {
+              await videoRef.current.setPositionAsync(savedMs).catch(() => {});
+            }
           }
         }
       } catch (_) {}
     };
 
     fetchProgress();
-  }, [userUid, animeId, currentSlug, currentEpNum, activeProfileId]);
+  }, [resolvedUid, currentProfileId, effectiveAnimeId, currentSlug, currentEpNum]);
 
   // 3. Resolve Native M3U8 Stream
   useEffect(() => {
     let isMounted = true;
     const resolveStream = async () => {
-      const effectiveId = providerId || animeId;
+      const effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
       if (!effectiveId || !effectiveSlug) return;
@@ -371,15 +540,17 @@ export default function Player({ route, navigation }) {
 
     resolveStream();
     return () => { isMounted = false; };
-  }, [animeId, currentEpNum, currentSlug, selectedAudioType, providerId]);
+  }, [animeId, paramId, currentEpNum, currentSlug, selectedAudioType, providerId]);
 
-  // 4. Playback Sync & Watch History Save
+  // 4. Playback Sync & Watch History Save inside Current Profile
   useEffect(() => {
     if (!status.isLoaded) return;
     const currentMs = status.positionMillis || 0;
+    const durationMs = status.durationMillis || lastDurationRef.current || 0;
     const currentTimeSec = currentMs / 1000; 
 
     if (currentMs > 0) lastPositionRef.current = currentMs;
+    if (durationMs > 0) lastDurationRef.current = durationMs;
     if (status.naturalSize?.height) setCurrentAutoRes(`${status.naturalSize.height}p`);
 
     if (subtitlesEnabled && parsedSubs.length > 0) {
@@ -392,11 +563,11 @@ export default function Player({ route, navigation }) {
 
     const currentSecs = Math.floor(currentTimeSec);
     
-    // Save every 3 seconds to users/{uid}/profiles/{profileId}/watch_history/{animeId}
+    // Save every 3 seconds to users/{uid}/profiles/{currentProfileId}/watch_history/{animeId}
     if (status.isPlaying && currentSecs > 0) {
       if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
         lastSavedTimeRef.current = currentSecs;
-        saveWatchHistory(currentMs, status.durationMillis || 0);
+        saveWatchHistory(currentMs, durationMs);
       }
     }
   }, [
@@ -411,15 +582,25 @@ export default function Player({ route, navigation }) {
     saveWatchHistory
   ]);
 
+  // Ensure progress is saved if currentProfileId resolves after playback has already started
+  useEffect(() => {
+    if (resolvedUid && currentProfileId && status.isLoaded && lastPositionRef.current > 0) {
+      saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
+    }
+  }, [resolvedUid, currentProfileId, currentEpTitle, resolvedBackdrop, saveWatchHistory]);
+
   // 5. Seamless Next Episode Logic
   const handleNextEpisode = () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
+
+    saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
     
     setLoadingStream(true);
     setActiveUrl(null);
     setCurrentSubText('');
     setParsedSubs([]);
     lastPositionRef.current = 0; 
+    lastDurationRef.current = 0;
     lastSavedTimeRef.current = 0;
     
     setCurrentEpNum(nextEpisodeData.num);
@@ -469,8 +650,11 @@ export default function Player({ route, navigation }) {
         setShowUI(true);
         Animated.timing(uiOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
       }
+      if (status.isLoaded && lastPositionRef.current > 0) {
+        saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
+      }
     }
-  }, [status.isPlaying, activeMenu, isLocked, resetHideTimer, uiOpacity]);
+  }, [status.isPlaying, activeMenu, isLocked, resetHideTimer, uiOpacity, saveWatchHistory]);
 
   if (loadingStream) return <View style={styles.loaderContainerFull} />;
 
@@ -488,14 +672,23 @@ export default function Player({ route, navigation }) {
           }}
           useNativeControls={false}
           resizeMode={resizeMode}
+          progressUpdateIntervalMillis={1000}
           onPlaybackStatusUpdate={setStatus}
-          onLoad={async () => {
+          onLoad={async (loadStatus) => {
+            if (loadStatus?.durationMillis) {
+              lastDurationRef.current = loadStatus.durationMillis;
+            }
             if (videoRef.current) {
               if (lastPositionRef.current > 0) {
                 await videoRef.current.setPositionAsync(lastPositionRef.current);
               }
               await videoRef.current.playAsync();
             }
+            saveWatchHistory(
+              lastPositionRef.current || 1000,
+              loadStatus?.durationMillis || lastDurationRef.current || 0,
+              true
+            );
           }}
           shouldPlay
         />
@@ -563,7 +756,7 @@ export default function Player({ route, navigation }) {
               <View style={styles.topLeftGroup}>
                 <TouchableOpacity
                   onPress={() => {
-                    saveWatchHistory(lastPositionRef.current, status.durationMillis || 0);
+                    saveWatchHistory(lastPositionRef.current, status.durationMillis || lastDurationRef.current || 0);
                     navigation.goBack();
                   }}
                   style={styles.iconBtn}
@@ -641,7 +834,7 @@ export default function Player({ route, navigation }) {
                 <Slider
                   style={styles.slider}
                   minimumValue={0}
-                  maximumValue={status.durationMillis || 100}
+                  maximumValue={status.durationMillis || lastDurationRef.current || 100}
                   value={status.positionMillis || 0}
                   minimumTrackTintColor={BRAND_RED}
                   maximumTrackTintColor="rgba(255,255,255,0.2)"
@@ -650,7 +843,7 @@ export default function Player({ route, navigation }) {
                     if (videoRef.current) {
                       await videoRef.current.setPositionAsync(val);
                       lastPositionRef.current = val;
-                      saveWatchHistory(val, status.durationMillis || 0);
+                      saveWatchHistory(val, status.durationMillis || lastDurationRef.current || 0);
                       resetHideTimer();
                     }
                   }}
@@ -683,7 +876,7 @@ export default function Player({ route, navigation }) {
         setSubtitlesEnabled={setSubtitlesEnabled}
         subSettings={subSettings}
         setSubSettings={setSubSettings}
-        animeId={animeId}
+        animeId={effectiveAnimeId}
         episodeNum={currentEpNum}
         onSelectSubtitleTrack={(track) => {
           if (track && track.cues) {
@@ -696,7 +889,7 @@ export default function Player({ route, navigation }) {
       <AudioSheet
         activeMenu={activeMenu}
         setActiveMenu={setActiveMenu}
-        animeId={animeId}
+        animeId={effectiveAnimeId}
         episodeNum={currentEpNum}
         currentTargetType={selectedAudioType}
         onSelectAudioType={setSelectedAudioType}
