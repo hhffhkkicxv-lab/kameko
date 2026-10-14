@@ -10,7 +10,6 @@ import Slider from '@react-native-community/slider';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 
-// Modular Component Imports
 import AspectRatioButton from './aspect-ratio';
 import LockButton from './lock';
 import VideoQualitySheet from './video_quality';
@@ -80,12 +79,13 @@ export default function Player({ route, navigation }) {
   const lastSavedTimeRef = useRef(0);
 
   // Next Episode State
+  const [providerId, setProviderId] = useState(null);
   const [hasNextEpisode, setHasNextEpisode] = useState(false);
+  const [nextEpisodeData, setNextEpisodeData] = useState(null);
 
   // Stream Resolution
   const [streamData, setStreamData] = useState(null);
   const [loadingStream, setLoadingStream] = useState(true);
-  const [fatalError, setFatalError] = useState(null);
   const [activeUrl, setActiveUrl] = useState(null); 
   const [qualityList, setQualityList] = useState([]);
   const [selectedQuality, setSelectedQuality] = useState('Auto');
@@ -154,16 +154,43 @@ export default function Player({ route, navigation }) {
     };
   }, []);
 
-  // 2. Query Next Episode Availability
+  // 2. Fetch Provider ID and Identify Next Episode
   useEffect(() => {
     let isMounted = true;
-    const checkNextEpisodeAvailability = async () => {
+    const fetchProviderAndEpisodes = async () => {
       try {
-        const nextEpisodeNumber = parseInt(episodeNum, 10) + 1;
-        const res = await fetch(`${VERCEL_API_BASE}/api/servers?id=${encodeURIComponent(animeId)}&ep=${encodeURIComponent(nextEpisodeNumber)}`);
-        const json = await res.json();
-        if (isMounted) {
-          if (json?.success && Array.isArray(json?.data) && json.data.length > 0) {
+        let targetId = animeId;
+        // Find exact provider ID using search
+        const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
+        const searchJson = await searchRes.json();
+        const matches = searchJson?.data || [];
+        if (matches.length > 0) {
+          const exact = matches.find(m => (m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
+          targetId = exact.id;
+        }
+
+        if (isMounted) setProviderId(targetId);
+
+        // Fetch episode list
+        const epRes = await fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
+        const epJson = await epRes.json();
+        const list = epJson?.data || [];
+
+        if (isMounted && Array.isArray(list)) {
+          // Identify current episode index securely by slug or number
+          const currentEpIndex = list.findIndex(ep => 
+            (slug && String(ep.slug) === String(slug)) || 
+            (ep.id && String(ep.id) === String(slug)) || 
+            String(ep.num) === String(episodeNum)
+          );
+
+          if (currentEpIndex !== -1 && currentEpIndex + 1 < list.length) {
+            const nextEp = list[currentEpIndex + 1];
+            setNextEpisodeData({
+              num: nextEp.num,
+              title: nextEp.title || `Episode ${nextEp.num}`,
+              slug: nextEp.slug || nextEp.id || nextEp.num
+            });
             setHasNextEpisode(true);
             Animated.timing(nextEpOpacity, { toValue: 1, duration: 300, useNativeDriver: true }).start();
           } else {
@@ -171,27 +198,33 @@ export default function Player({ route, navigation }) {
             Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
           }
         }
-      } catch (_) {
+      } catch (err) {
         if (isMounted) {
           setHasNextEpisode(false);
           Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
         }
       }
     };
-    if (animeId) checkNextEpisodeAvailability();
+    if (animeTitle) fetchProviderAndEpisodes();
     return () => { isMounted = false; };
-  }, [animeId, episodeNum]);
+  }, [animeTitle, episodeNum, slug]);
 
   // 3. Resolve Native M3U8 Stream
   useEffect(() => {
     let isMounted = true;
     const resolveStream = async () => {
+      // Use proper provider fallback logic
+      const effectiveId = providerId || animeId;
+      const effectiveSlug = slug || episodeNum;
+
+      if (!effectiveId || !effectiveSlug) return;
+
       setLoadingStream(true);
       setActiveUrl(null);
       let typeServers = ['hd-1', 'hd-2', 'vidstream-2'];
       
       try {
-        const srvRes = await fetch(`${VERCEL_API_BASE}/api/servers?id=${encodeURIComponent(animeId)}&ep=${encodeURIComponent(episodeNum)}`);
+        const srvRes = await fetch(`${VERCEL_API_BASE}/api/servers?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}`);
         const srvJson = await srvRes.json();
         if (srvJson?.success && srvJson?.data) {
           const filtered = srvJson.data.filter(s => s.type === selectedAudioType).map(s => s.serverName);
@@ -202,7 +235,7 @@ export default function Player({ route, navigation }) {
       let finalStreamData = null;
       for (const srv of typeServers) {
         try {
-          const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(animeId)}&ep=${encodeURIComponent(episodeNum)}&server=${srv}&type=${selectedAudioType}`;
+          const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`;
           const res = await fetch(url);
           const json = await res.json();
           let manifest = null;
@@ -267,51 +300,13 @@ export default function Player({ route, navigation }) {
 
     resolveStream();
     return () => { isMounted = false; };
-  }, [animeId, episodeNum, selectedAudioType]);
+  }, [animeId, episodeNum, slug, selectedAudioType, providerId]);
 
-  // 4. Reliable Subtitle Parser
-  const parseVttContent = useCallback((vttText) => {
-    const cues = [];
-    const blocks = vttText.split(/\r?\n\r?\n/);
-    for (const block of blocks) {
-      const lines = block.split(/\r?\n/);
-      const timeLine = lines.find(l => l.includes('-->'));
-      if (!timeLine) continue;
-      const [startStr, endStr] = timeLine.split('-->').map(s => s.trim());
-      const parseTimestamp = (ts) => {
-        if (!ts) return 0; 
-        const parts = ts.split(':'); 
-        let s = 0;
-        if (parts.length === 3) s += parseInt(parts[0], 10) * 3600 + parseInt(parts[1], 10) * 60 + parseFloat(parts[2].replace(',', '.'));
-        else if (parts.length === 2) s += parseInt(parts[0], 10) * 60 + parseFloat(parts[1].replace(',', '.'));
-        return s * 1000;
-      };
-      const cleanText = lines.slice(lines.indexOf(timeLine) + 1).filter(l => !l.startsWith('WEBVTT') && l.trim() !== '').join('\n').replace(/<[^>]+>/g, ''); 
-      cues.push({ startMs: parseTimestamp(startStr), endMs: parseTimestamp(endStr), text: cleanText });
-    }
-    return cues;
-  }, []);
-
-  useEffect(() => {
-    if (!streamData?.subtitles || streamData.subtitles.length === 0) return;
-    let isMounted = true;
-    const loadDefaultSubtitleTrack = async () => {
-      try {
-        const response = await fetch(streamData.subtitles[0].file);
-        if (!response.ok) return;
-        const vttText = await response.text();
-        if (isMounted) setParsedSubs(parseVttContent(vttText));
-      } catch (_) {}
-    };
-    loadDefaultSubtitleTrack();
-    return () => { isMounted = false; };
-  }, [streamData, parseVttContent]);
-
-  // 5. Playback Sync & Database Save
+  // 4. Playback Sync & Database Save
   useEffect(() => {
     if (!status.isLoaded) return;
     const currentMs = status.positionMillis || 0;
-    const currentSecs = Math.floor(currentMs / 1000);
+    const currentTimeSec = currentMs / 1000; // Float precision to prevent Math.floor desyncs!
 
     // Save exact position locally so quality switching resumes flawlessly
     if (currentMs > 0) {
@@ -322,9 +317,9 @@ export default function Player({ route, navigation }) {
       setCurrentAutoRes(`${status.naturalSize.height}p`);
     }
 
-    // Subtitles
+    // Flawless Subtitle Sync (No Math.floor)
     if (subtitlesEnabled && parsedSubs.length > 0) {
-      const activeCue = parsedSubs.find(c => currentMs >= c.startMs && currentMs <= c.endMs);
+      const activeCue = parsedSubs.find(c => currentTimeSec >= c.start && currentTimeSec <= c.end);
       if (activeCue && activeCue.text !== currentSubText) setCurrentSubText(activeCue.text);
       else if (!activeCue && currentSubText !== '') setCurrentSubText('');
     } else if (currentSubText !== '') { 
@@ -332,11 +327,12 @@ export default function Player({ route, navigation }) {
     }
 
     // Reliable DB Progress Saving (commits exactly every 10 watched seconds)
+    const currentSecs = Math.floor(currentTimeSec);
     const durationSecs = Math.floor((status.durationMillis || 1) / 1000);
     if (userUid && animeId && status.isPlaying && currentSecs > 0) {
       if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 10) {
         lastSavedTimeRef.current = currentSecs;
-        const isCompleted = currentSecs > (durationSecs * 0.85); // Mark completed at 85%
+        const isCompleted = currentSecs > (durationSecs * 0.85); 
         
         firestore().collection('users').doc(userUid).collection('progress').doc(String(animeId)).set({
           animeId: String(animeId),
@@ -350,6 +346,26 @@ export default function Player({ route, navigation }) {
       }
     }
   }, [status.positionMillis, subtitlesEnabled, parsedSubs, currentSubText]);
+
+  // 5. Next Episode Execution Logic
+  const handleNextEpisode = () => {
+    if (!hasNextEpisode || !nextEpisodeData) return;
+    
+    // Purge states safely to prevent overlap
+    setLoadingStream(true);
+    setActiveUrl(null);
+    setCurrentSubText('');
+    setParsedSubs([]);
+    lastPositionRef.current = 0;
+    
+    // Push new parameters via replace
+    navigation.replace('Player', {
+      ...route.params,
+      episodeNum: nextEpisodeData.num,
+      episodeTitle: nextEpisodeData.title,
+      slug: String(nextEpisodeData.slug)
+    });
+  };
 
   // 6. Long Press 2x Speed Handlers
   const handleTouchStart = () => {
@@ -400,17 +416,6 @@ export default function Player({ route, navigation }) {
     }
   }, [status.isPlaying, activeMenu, isLocked, resetHideTimer]);
 
-  const handleNextEpisode = () => {
-    if (!hasNextEpisode) return;
-    const nextEpisodeNumber = parseInt(episodeNum, 10) + 1;
-    navigation.replace('Player', {
-      ...route.params,
-      episodeNum: nextEpisodeNumber,
-      episodeTitle: `Episode ${nextEpisodeNumber}`,
-      slug: String(nextEpisodeNumber)
-    });
-  };
-
   const formatTime = (millis) => {
     if (isNaN(millis) || millis < 0) return "00:00";
     const totalSecs = Math.floor(millis / 1000);
@@ -442,7 +447,6 @@ export default function Player({ route, navigation }) {
           onLoad={() => {
             if (videoRef.current) {
               videoRef.current.playAsync();
-              // Resume seamlessly if quality or audio track was switched
               if (lastPositionRef.current > 0) {
                 videoRef.current.setPositionAsync(lastPositionRef.current);
               }
@@ -502,6 +506,7 @@ export default function Player({ route, navigation }) {
         videoRef={videoRef} 
         introData={streamData?.intro} 
         isLocked={isLocked} 
+        onSkipOutro={hasNextEpisode ? handleNextEpisode : null}
       />
 
       {/* Controls Overlay Layer */}
@@ -605,7 +610,6 @@ export default function Player({ route, navigation }) {
                   onSlidingComplete={async (val) => { 
                     if (videoRef.current) { 
                       await videoRef.current.setPositionAsync(val); 
-                      // Update ref so quality swaps resume from user's manual seek point
                       lastPositionRef.current = val;
                       resetHideTimer(); 
                     } 
@@ -621,7 +625,6 @@ export default function Player({ route, navigation }) {
         </View>
       </Animated.View>
 
-      {/* Sheets & Configuration Panels */}
       <VideoQualitySheet 
         activeMenu={activeMenu} 
         setActiveMenu={setActiveMenu} 
@@ -640,19 +643,12 @@ export default function Player({ route, navigation }) {
         setSubSettings={setSubSettings} 
         animeId={animeId}
         episodeNum={episodeNum}
-        onSelectSubtitleTrack={async (track) => {
-          try {
-            const res = await fetch(track.file);
-            const vttText = await res.text();
-            setParsedSubs(parseVttContent(vttText));
-          } catch (_) {}
-        }}
-        onLoadCustomSubtitle={async (uri) => {
-          try {
-            const res = await fetch(uri);
-            const text = await res.text();
-            setParsedSubs(parseVttContent(text));
-          } catch (_) {}
+        onSelectSubtitleTrack={(track) => {
+          if (track && track.cues) {
+            setParsedSubs(track.cues);
+          } else {
+            setParsedSubs([]);
+          }
         }}
       />
       <AudioSheet 
