@@ -21,27 +21,54 @@ import PlayPauseSkip from './play-pause-skip';
 
 const BRAND_RED = '#E50914';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
+const WATCH_HISTORY_COLLECTION = 'watch_history';
 
 // Icons
-const IconBack = ({ size = 28 }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5"><Path d="M19 12H5M12 19l-7-7 7-7" /></Svg>);
-const IconSubs = ({ size = 24, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"><Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/><Path d="M7 15h3m4 0h3M7 9h10"/></Svg>);
-const IconAudio = ({ size = 24, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"><Path d="M3 18v-6a9 9 0 0118 0v6"/><Path d="M21 19a2 2 0 01-2 2h-1v-6h3v4zM3 19a2 2 0 002 2h1v-6H3v4z"/></Svg>);
-const IconNextEp = ({ size = 22, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></Svg>);
+const IconBack = ({ size = 28 }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
+    <Path d="M19 12H5M12 19l-7-7 7-7" />
+  </Svg>
+);
+const IconSubs = ({ size = 24, color = "#FFF" }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
+    <Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
+    <Path d="M7 15h3m4 0h3M7 9h10"/>
+  </Svg>
+);
+const IconAudio = ({ size = 24, color = "#FFF" }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
+    <Path d="M3 18v-6a9 9 0 0118 0v6"/>
+    <Path d="M21 19a2 2 0 01-2 2h-1v-6h3v4zM3 19a2 2 0 002 2h1v-6H3v4z"/>
+  </Svg>
+);
+const IconNextEp = ({ size = 22, color = "#FFF" }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+    <Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+  </Svg>
+);
+
+const formatTime = (millis) => {
+  if (isNaN(millis) || millis < 0) return "00:00";
+  const totalSecs = Math.floor(millis / 1000);
+  const h = Math.floor(totalSecs / 3600);
+  const m = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0');
+  const s = Math.floor(totalSecs % 60).toString().padStart(2, '0');
+  return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+};
 
 export default function Player({ route, navigation }) {
-  // Extract base route params. 
-  // We use fallbacks to ensure the data is always available for the continue_watching slider
   const { 
     animeTitle = 'Unknown', 
     animeId = null,
     userUid = null,
     activeProfileId = null, 
     animeBackdrop = null, 
-    coverImage = null, // Fallback if backdrop is missing
+    coverImage = null,
+    backdropUrl = null,
     targetType = 'sub'
   } = route?.params || {};
 
-  const resolvedBackdrop = animeBackdrop || coverImage || '';
+  const resolvedBackdrop = animeBackdrop || backdropUrl || coverImage || '';
 
   // SEAMLESS BINGE STATE
   const [currentEpNum, setCurrentEpNum] = useState(route?.params?.episodeNum || 1);
@@ -91,9 +118,61 @@ export default function Player({ route, navigation }) {
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
 
-  // 1. Full Screen Lock
+  // Helper to persist Watch History to users/{uid}/profiles/{profileId}/watch_history/{animeId}
+  const saveWatchHistory = useCallback((positionMillis, durationMillis) => {
+    if (!userUid || !animeId || !activeProfileId) return;
+
+    const currentSecs = Math.floor((positionMillis || 0) / 1000);
+    const durationSecs = Math.floor((durationMillis || 1) / 1000);
+    if (currentSecs <= 0) return;
+
+    const isCompleted = durationSecs > 1 && currentSecs > (durationSecs * 0.85);
+    const resolvedEpTitle = currentEpTitle || `Episode ${currentEpNum}`;
+
+    firestore()
+      .collection('users')
+      .doc(String(userUid))
+      .collection('profiles')
+      .doc(String(activeProfileId))
+      .collection(WATCH_HISTORY_COLLECTION)
+      .doc(String(animeId))
+      .set({
+        animeId: String(animeId),
+        animeTitle: animeTitle,
+        title: animeTitle,
+        episodeTitle: resolvedEpTitle,
+        epTitle: resolvedEpTitle,
+        episodeNum: currentEpNum,
+        lastWatchedEp: currentEpNum,
+        slug: currentSlug ? String(currentSlug) : String(currentEpNum),
+        backdropUrl: resolvedBackdrop,
+        backdrop: resolvedBackdrop,
+        progress: currentSecs,
+        duration: durationSecs,
+        positionMillis: Math.floor(positionMillis || 0),
+        durationMillis: Math.floor(durationMillis || 0),
+        formattedTimestamp: formatTime(positionMillis || 0),
+        formattedDuration: formatTime(durationMillis || 0),
+        finishedEp: isCompleted,
+        audioType: selectedAudioType,
+        timestamp: Date.now(),
+        updatedAt: firestore.FieldValue.serverTimestamp(),
+      }, { merge: true })
+      .catch(() => {});
+  }, [
+    userUid,
+    animeId,
+    activeProfileId,
+    animeTitle,
+    currentEpTitle,
+    currentEpNum,
+    currentSlug,
+    resolvedBackdrop,
+    selectedAudioType
+  ]);
+
+  // 1. Full Screen Lock & Hardware Back Handler
   useEffect(() => {
-    let isMounted = true;
     const lockEdgeToEdge = async () => {
       try {
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
@@ -102,7 +181,10 @@ export default function Player({ route, navigation }) {
     lockEdgeToEdge();
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (activeMenuRef.current) { setActiveMenu(null); return true; }
+      if (activeMenuRef.current) { 
+        setActiveMenu(null); 
+        return true; 
+      }
       if (isLockedRef.current) { 
         setIsLocked(false); 
         setShowUI(true);
@@ -114,13 +196,12 @@ export default function Player({ route, navigation }) {
     });
 
     return () => {
-      isMounted = false;
       ScreenOrientation.unlockAsync().catch(() => {});
       backHandler.remove();
     };
-  }, []);
+  }, [navigation, uiOpacity]);
 
-  // 2. Fetch Provider ID and Identify Next Episode
+  // 2. Fetch Provider ID, Current Episode Title, and Next Episode
   useEffect(() => {
     let isMounted = true;
     const fetchProviderAndEpisodes = async () => {
@@ -147,6 +228,13 @@ export default function Player({ route, navigation }) {
             String(ep.num) === String(currentEpNum)
           );
 
+          if (currentEpIndex !== -1) {
+            const currentEpObj = list[currentEpIndex];
+            if (currentEpObj?.title && !currentEpTitle) {
+              setCurrentEpTitle(currentEpObj.title);
+            }
+          }
+
           if (currentEpIndex !== -1 && currentEpIndex + 1 < list.length) {
             const nextEp = list[currentEpIndex + 1];
             setNextEpisodeData({
@@ -170,9 +258,9 @@ export default function Player({ route, navigation }) {
     };
     if (animeTitle) fetchProviderAndEpisodes();
     return () => { isMounted = false; };
-  }, [animeTitle, currentEpNum, currentSlug]);
+  }, [animeTitle, animeId, currentEpNum, currentSlug]);
 
-  // 2.5 Fetch Previous Playback Progress
+  // 2.5 Fetch Previous Playback Progress from Watch History
   useEffect(() => {
     if (!userUid || !animeId || !activeProfileId) return;
 
@@ -180,22 +268,23 @@ export default function Player({ route, navigation }) {
       try {
         const doc = await firestore()
           .collection('users')
-          .doc(userUid)
+          .doc(String(userUid))
           .collection('profiles')
-          .doc(activeProfileId)
-          .collection('progress')
+          .doc(String(activeProfileId))
+          .collection(WATCH_HISTORY_COLLECTION)
           .doc(String(animeId))
           .get();
 
         if (doc.exists) {
           const data = doc.data();
           const targetSlug = currentSlug ? String(currentSlug) : String(currentEpNum);
-          
-          if (data.slug === targetSlug && !data.finishedEp && data.progress > 0) {
+          const matchesEpisode = String(data?.slug) === targetSlug || String(data?.episodeNum) === String(currentEpNum);
+
+          if (matchesEpisode && !data?.finishedEp && data?.progress > 0) {
             lastPositionRef.current = data.progress * 1000;
           }
         }
-      } catch (e) {}
+      } catch (_) {}
     };
 
     fetchProgress();
@@ -229,7 +318,11 @@ export default function Player({ route, navigation }) {
           const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`;
           const res = await fetch(url);
           const json = await res.json();
-          let manifest = json?.success && json?.data?.m3u8 ? json.data : (json?.success && json?.results?.streamingLink ? json.results : (json?.data?.streamingLink ? json.data : null));
+          let manifest = json?.success && json?.data?.m3u8
+            ? json.data
+            : (json?.success && json?.results?.streamingLink
+                ? json.results
+                : (json?.data?.streamingLink ? json.data : null));
           if (manifest) { finalStreamData = manifest; break; }
         } catch (_) {}
       }
@@ -249,13 +342,21 @@ export default function Player({ route, navigation }) {
             const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
             if (resMatch && lines[i + 1]) {
               let streamUri = lines[i + 1].trim();
-              if (!streamUri.startsWith('http')) streamUri = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1) + streamUri;
+              if (!streamUri.startsWith('http')) {
+                streamUri = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1) + streamUri;
+              }
               qualities.push({ label: `${resMatch[1]}p`, uri: streamUri });
             }
           }
         }
-        const uniqueQualities = []; const seenLabels = new Set();
-        for (const q of qualities) { if (!seenLabels.has(q.label)) { seenLabels.add(q.label); uniqueQualities.push(q); } }
+        const uniqueQualities = [];
+        const seenLabels = new Set();
+        for (const q of qualities) {
+          if (!seenLabels.has(q.label)) {
+            seenLabels.add(q.label);
+            uniqueQualities.push(q);
+          }
+        }
         setQualityList(uniqueQualities);
       } catch (_) {
         setQualityList([{ label: 'Auto', uri: masterUrl }]);
@@ -272,8 +373,7 @@ export default function Player({ route, navigation }) {
     return () => { isMounted = false; };
   }, [animeId, currentEpNum, currentSlug, selectedAudioType, providerId]);
 
-  // 4. Playback Sync & Database Save 
-  // THIS IS THE FIX: The unified saving logic strictly writing to the activeProfile path!
+  // 4. Playback Sync & Watch History Save
   useEffect(() => {
     if (!status.isLoaded) return;
     const currentMs = status.positionMillis || 0;
@@ -291,35 +391,25 @@ export default function Player({ route, navigation }) {
     }
 
     const currentSecs = Math.floor(currentTimeSec);
-    const durationSecs = Math.floor((status.durationMillis || 1) / 1000);
     
-    // Save every 3 seconds to the correct Active Profile Path
-    if (userUid && animeId && activeProfileId && status.isPlaying && currentSecs > 0) {
+    // Save every 3 seconds to users/{uid}/profiles/{profileId}/watch_history/{animeId}
+    if (status.isPlaying && currentSecs > 0) {
       if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
         lastSavedTimeRef.current = currentSecs;
-        const isCompleted = currentSecs > (durationSecs * 0.85); 
-        
-        firestore()
-          .collection('users')
-          .doc(userUid)
-          .collection('profiles')
-          .doc(activeProfileId)
-          .collection('progress')
-          .doc(String(animeId))
-          .set({
-            animeId: String(animeId),
-            title: animeTitle,
-            backdrop: resolvedBackdrop, // Forces the image to save for continue_watching.js
-            slug: currentSlug ? String(currentSlug) : String(currentEpNum),
-            lastWatchedEp: currentEpNum,
-            progress: currentSecs,
-            duration: durationSecs,
-            finishedEp: isCompleted,
-            timestamp: Date.now()
-          }, { merge: true }).catch(() => {});
+        saveWatchHistory(currentMs, status.durationMillis || 0);
       }
     }
-  }, [status.positionMillis, subtitlesEnabled, parsedSubs, currentSubText, activeProfileId, resolvedBackdrop]);
+  }, [
+    status.isLoaded,
+    status.positionMillis,
+    status.durationMillis,
+    status.isPlaying,
+    status.naturalSize,
+    subtitlesEnabled,
+    parsedSubs,
+    currentSubText,
+    saveWatchHistory
+  ]);
 
   // 5. Seamless Next Episode Logic
   const handleNextEpisode = () => {
@@ -330,6 +420,7 @@ export default function Player({ route, navigation }) {
     setCurrentSubText('');
     setParsedSubs([]);
     lastPositionRef.current = 0; 
+    lastSavedTimeRef.current = 0;
     
     setCurrentEpNum(nextEpisodeData.num);
     setCurrentEpTitle(nextEpisodeData.title);
@@ -348,7 +439,10 @@ export default function Player({ route, navigation }) {
   };
 
   const handleTouchEnd = () => {
-    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
     if (is2xActive) {
       setIs2xActive(false);
       if (videoRef.current) videoRef.current.setRateAsync(previousSpeedRef.current, true);
@@ -365,24 +459,18 @@ export default function Player({ route, navigation }) {
         Animated.timing(uiOpacity, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => setShowUI(false));
       }
     }, 3500);
-  }, [activeMenu, status.isPlaying, isLocked]);
+  }, [activeMenu, status.isPlaying, isLocked, uiOpacity]);
 
   useEffect(() => {
     if (status.isPlaying) resetHideTimer();
     else {
       if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
-      if (!isLocked) { setShowUI(true); Animated.timing(uiOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start(); }
+      if (!isLocked) {
+        setShowUI(true);
+        Animated.timing(uiOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+      }
     }
-  }, [status.isPlaying, activeMenu, isLocked, resetHideTimer]);
-
-  const formatTime = (millis) => {
-    if (isNaN(millis) || millis < 0) return "00:00";
-    const totalSecs = Math.floor(millis / 1000);
-    const h = Math.floor(totalSecs / 3600);
-    const m = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0');
-    const s = Math.floor(totalSecs % 60).toString().padStart(2, '0');
-    return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
-  };
+  }, [status.isPlaying, activeMenu, isLocked, resetHideTimer, uiOpacity]);
 
   if (loadingStream) return <View style={styles.loaderContainerFull} />;
 
@@ -393,13 +481,19 @@ export default function Player({ route, navigation }) {
           key={activeUrl}
           ref={videoRef}
           style={styles.videoPlayer}
-          source={{ uri: activeUrl, overrideFileExtensionAndroid: 'm3u8', headers: streamData?.referer ? { "Referer": streamData.referer } : {} }}
+          source={{
+            uri: activeUrl,
+            overrideFileExtensionAndroid: 'm3u8',
+            headers: streamData?.referer ? { "Referer": streamData.referer } : {}
+          }}
           useNativeControls={false}
           resizeMode={resizeMode}
           onPlaybackStatusUpdate={setStatus}
           onLoad={async () => {
             if (videoRef.current) {
-              if (lastPositionRef.current > 0) await videoRef.current.setPositionAsync(lastPositionRef.current);
+              if (lastPositionRef.current > 0) {
+                await videoRef.current.setPositionAsync(lastPositionRef.current);
+              }
               await videoRef.current.playAsync();
             }
           }}
@@ -408,40 +502,92 @@ export default function Player({ route, navigation }) {
       ) : null}
 
       {is2xActive && (
-        <View style={styles.speedIndicatorBadge} pointerEvents="none"><Text style={styles.speedIndicatorText}>2X SPEED ▶▶</Text></View>
+        <View style={styles.speedIndicatorBadge} pointerEvents="none">
+          <Text style={styles.speedIndicatorText}>2X SPEED ▶▶</Text>
+        </View>
       )}
 
       {subtitlesEnabled && currentSubText !== '' && (
         <View style={[styles.subtitleContainer, { bottom: subSettings.height + (showUI ? 65 : 0) }]} pointerEvents="none">
-          <Text style={[styles.subtitleText, { color: subSettings.color || '#FFFFFF', fontSize: subSettings.size || 16, fontFamily: subSettings.fontFamily || 'normal', backgroundColor: subSettings.backgroundColor || 'transparent' }]}>
+          <Text
+            style={[
+              styles.subtitleText,
+              {
+                color: subSettings.color || '#FFFFFF',
+                fontSize: subSettings.size || 16,
+                fontFamily: subSettings.fontFamily || 'normal',
+                backgroundColor: subSettings.backgroundColor || 'transparent'
+              }
+            ]}
+          >
             {currentSubText}
           </Text>
         </View>
       )}
 
-      <PlayPauseSkip status={status} videoRef={videoRef} resetHideTimer={resetHideTimer} isLocked={isLocked} uiOpacity={uiOpacity} showUI={showUI} setShowUI={setShowUI} activeMenu={activeMenu} setActiveMenu={setActiveMenu} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd} />
+      <PlayPauseSkip
+        status={status}
+        videoRef={videoRef}
+        resetHideTimer={resetHideTimer}
+        isLocked={isLocked}
+        uiOpacity={uiOpacity}
+        showUI={showUI}
+        setShowUI={setShowUI}
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      />
 
-      <SkipIntroOutro status={status} videoRef={videoRef} introData={streamData?.intro} isLocked={isLocked} onSkipOutro={hasNextEpisode ? handleNextEpisode : null} />
+      <SkipIntroOutro
+        status={status}
+        videoRef={videoRef}
+        introData={streamData?.intro}
+        isLocked={isLocked}
+        onSkipOutro={hasNextEpisode ? handleNextEpisode : null}
+      />
 
       <Animated.View style={[styles.uiLayer, { opacity: uiOpacity }]} pointerEvents={showUI ? 'box-none' : 'none'}>
         {!isLocked && (
           <View style={styles.topBarWrapper}>
             <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
-              <Defs><LinearGradient id="topCinematic" x1="0" y1="0" x2="0" y2="1"><Stop offset="0" stopColor="#000000" stopOpacity="0.95" /><Stop offset="1" stopColor="#000000" stopOpacity="0" /></LinearGradient></Defs>
+              <Defs>
+                <LinearGradient id="topCinematic" x1="0" y1="0" x2="0" y2="1">
+                  <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
+                  <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+                </LinearGradient>
+              </Defs>
               <Rect width="100%" height="100%" fill="url(#topCinematic)" />
             </Svg>
             <View style={styles.topBarContent}>
               <View style={styles.topLeftGroup}>
-                <TouchableOpacity onPress={() => navigation.goBack()} style={styles.iconBtn} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}><IconBack /></TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => {
+                    saveWatchHistory(lastPositionRef.current, status.durationMillis || 0);
+                    navigation.goBack();
+                  }}
+                  style={styles.iconBtn}
+                  hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                >
+                  <IconBack />
+                </TouchableOpacity>
                 <View style={styles.titleColumn}>
                   <Text style={styles.mainTitle} numberOfLines={1}>{animeTitle}</Text>
-                  <Text style={styles.subTitle}>Episode {currentEpNum} {currentEpTitle ? `• ${currentEpTitle}` : ''}</Text>
+                  <Text style={styles.subTitle}>
+                    Episode {currentEpNum} {currentEpTitle ? `• ${currentEpTitle}` : ''}
+                  </Text>
                 </View>
               </View>
               <View style={styles.topRightGroup}>
-                <TouchableOpacity onPress={() => setActiveMenu('subs')} style={styles.iconBtn}><IconSubs color={subtitlesEnabled ? "#FFF" : "#777"} /></TouchableOpacity>
-                <TouchableOpacity onPress={() => setActiveMenu('audio')} style={styles.iconBtn}><IconAudio /></TouchableOpacity>
-                <TouchableOpacity onPress={() => setActiveMenu('quality')} style={styles.hdBtn}><Text style={styles.hdBtnText}>HD</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => setActiveMenu('subs')} style={styles.iconBtn}>
+                  <IconSubs color={subtitlesEnabled ? "#FFF" : "#777"} />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setActiveMenu('audio')} style={styles.iconBtn}>
+                  <IconAudio />
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setActiveMenu('quality')} style={styles.hdBtn}>
+                  <Text style={styles.hdBtnText}>HD</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -449,19 +595,40 @@ export default function Player({ route, navigation }) {
 
         <View style={styles.bottomBarWrapper}>
           <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
-            <Defs><LinearGradient id="botCinematic" x1="0" y1="1" x2="0" y2="0"><Stop offset="0" stopColor="#000000" stopOpacity="0.95" /><Stop offset="1" stopColor="#000000" stopOpacity="0" /></LinearGradient></Defs>
+            <Defs>
+              <LinearGradient id="botCinematic" x1="0" y1="1" x2="0" y2="0">
+                <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
+                <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+              </LinearGradient>
+            </Defs>
             <Rect width="100%" height="100%" fill="url(#botCinematic)" />
           </Svg>
           <View style={styles.bottomContent}>
             <View style={styles.bottomToolsRow}>
               <View style={styles.toolsLeft}>
-                <LockButton isLocked={isLocked} setIsLocked={setIsLocked} uiOpacity={uiOpacity} setShowUI={setShowUI} hideUITimeout={hideUITimeout} />
-                {!isLocked && (<TouchableOpacity onPress={() => setActiveMenu('speed')}><Text style={styles.speedBtnText}>{playbackSpeed.toFixed(2)}x</Text></TouchableOpacity>)}
+                <LockButton
+                  isLocked={isLocked}
+                  setIsLocked={setIsLocked}
+                  uiOpacity={uiOpacity}
+                  setShowUI={setShowUI}
+                  hideUITimeout={hideUITimeout}
+                />
+                {!isLocked && (
+                  <TouchableOpacity onPress={() => setActiveMenu('speed')}>
+                    <Text style={styles.speedBtnText}>{playbackSpeed.toFixed(2)}x</Text>
+                  </TouchableOpacity>
+                )}
               </View>
               {!isLocked && (
                 <View style={styles.toolsRight}>
                   <Animated.View style={{ opacity: nextEpOpacity }}>
-                    <TouchableOpacity onPress={handleNextEpisode} disabled={!hasNextEpisode} style={[styles.iconBtn, { marginRight: 18 }]}><IconNextEp color={hasNextEpisode ? "#FFF" : "rgba(255,255,255,0.3)"} /></TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={handleNextEpisode}
+                      disabled={!hasNextEpisode}
+                      style={[styles.iconBtn, { marginRight: 18 }]}
+                    >
+                      <IconNextEp color={hasNextEpisode ? "#FFF" : "rgba(255,255,255,0.3)"} />
+                    </TouchableOpacity>
                   </Animated.View>
                   <AspectRatioButton resizeMode={resizeMode} setResizeMode={setResizeMode} />
                 </View>
@@ -471,18 +638,76 @@ export default function Player({ route, navigation }) {
             {!isLocked && (
               <View style={styles.progressRow}>
                 <Text style={styles.timeText}>{formatTime(status.positionMillis || 0)}</Text>
-                <Slider style={styles.slider} minimumValue={0} maximumValue={status.durationMillis || 100} value={status.positionMillis || 0} minimumTrackTintColor={BRAND_RED} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor="#FFF" onSlidingComplete={async (val) => { if (videoRef.current) { await videoRef.current.setPositionAsync(val); lastPositionRef.current = val; resetHideTimer(); } }} onSlidingStart={() => { if (hideUITimeout.current) clearTimeout(hideUITimeout.current); }} />
-                <Text style={styles.timeText}>-{formatTime((status.durationMillis || 0) - (status.positionMillis || 0))}</Text>
+                <Slider
+                  style={styles.slider}
+                  minimumValue={0}
+                  maximumValue={status.durationMillis || 100}
+                  value={status.positionMillis || 0}
+                  minimumTrackTintColor={BRAND_RED}
+                  maximumTrackTintColor="rgba(255,255,255,0.2)"
+                  thumbTintColor="#FFF"
+                  onSlidingComplete={async (val) => {
+                    if (videoRef.current) {
+                      await videoRef.current.setPositionAsync(val);
+                      lastPositionRef.current = val;
+                      saveWatchHistory(val, status.durationMillis || 0);
+                      resetHideTimer();
+                    }
+                  }}
+                  onSlidingStart={() => {
+                    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
+                  }}
+                />
+                <Text style={styles.timeText}>
+                  -{formatTime((status.durationMillis || 0) - (status.positionMillis || 0))}
+                </Text>
               </View>
             )}
           </View>
         </View>
       </Animated.View>
 
-      <VideoQualitySheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} qualityList={qualityList} selectedQuality={selectedQuality} setSelectedQuality={setSelectedQuality} setActiveUrl={setActiveUrl} currentAutoRes={currentAutoRes} />
-      <SubtitleSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} subtitlesEnabled={subtitlesEnabled} setSubtitlesEnabled={setSubtitlesEnabled} subSettings={subSettings} setSubSettings={setSubSettings} animeId={animeId} episodeNum={currentEpNum} onSelectSubtitleTrack={(track) => { if (track && track.cues) { setParsedSubs(track.cues); } else { setParsedSubs([]); } }} />
-      <AudioSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} animeId={animeId} episodeNum={currentEpNum} currentTargetType={selectedAudioType} onSelectAudioType={setSelectedAudioType} />
-      <SpeedSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} playbackSpeed={playbackSpeed} setPlaybackSpeed={setPlaybackSpeed} videoRef={videoRef} />
+      <VideoQualitySheet
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        qualityList={qualityList}
+        selectedQuality={selectedQuality}
+        setSelectedQuality={setSelectedQuality}
+        setActiveUrl={setActiveUrl}
+        currentAutoRes={currentAutoRes}
+      />
+      <SubtitleSheet
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        subtitlesEnabled={subtitlesEnabled}
+        setSubtitlesEnabled={setSubtitlesEnabled}
+        subSettings={subSettings}
+        setSubSettings={setSubSettings}
+        animeId={animeId}
+        episodeNum={currentEpNum}
+        onSelectSubtitleTrack={(track) => {
+          if (track && track.cues) {
+            setParsedSubs(track.cues);
+          } else {
+            setParsedSubs([]);
+          }
+        }}
+      />
+      <AudioSheet
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        animeId={animeId}
+        episodeNum={currentEpNum}
+        currentTargetType={selectedAudioType}
+        onSelectAudioType={setSelectedAudioType}
+      />
+      <SpeedSheet
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        playbackSpeed={playbackSpeed}
+        setPlaybackSpeed={setPlaybackSpeed}
+        videoRef={videoRef}
+      />
     </View>
   );
 }
