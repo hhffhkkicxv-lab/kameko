@@ -29,15 +29,19 @@ const IconAudio = ({ size = 24, color = "#FFF" }) => (<Svg width={size} height={
 const IconNextEp = ({ size = 22, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></Svg>);
 
 export default function Player({ route, navigation }) {
-  // Extract base route params. Ensure activeProfileId and animeBackdrop are passed!
+  // Extract base route params. 
+  // We use fallbacks to ensure the data is always available for the continue_watching slider
   const { 
     animeTitle = 'Unknown', 
     animeId = null,
     userUid = null,
-    activeProfileId = null, // <--- Crucial for profile-specific progress
-    animeBackdrop = null,   // <--- Passed from play.js to save to DB
+    activeProfileId = null, 
+    animeBackdrop = null, 
+    coverImage = null, // Fallback if backdrop is missing
     targetType = 'sub'
   } = route?.params || {};
+
+  const resolvedBackdrop = animeBackdrop || coverImage || '';
 
   // SEAMLESS BINGE STATE
   const [currentEpNum, setCurrentEpNum] = useState(route?.params?.episodeNum || 1);
@@ -59,7 +63,7 @@ export default function Player({ route, navigation }) {
   
   const previousSpeedRef = useRef(1.0);
   const lastPositionRef = useRef(0);
-  const lastSavedTimeRef = useRef(0); // Tracks the last exact second we saved to DB
+  const lastSavedTimeRef = useRef(0); 
 
   const [providerId, setProviderId] = useState(null);
   const [hasNextEpisode, setHasNextEpisode] = useState(false);
@@ -168,7 +172,7 @@ export default function Player({ route, navigation }) {
     return () => { isMounted = false; };
   }, [animeTitle, currentEpNum, currentSlug]);
 
-  // 2.5 Fetch Previous Playback Progress from PROFILE-SPECIFIC Firebase Path
+  // 2.5 Fetch Previous Playback Progress
   useEffect(() => {
     if (!userUid || !animeId || !activeProfileId) return;
 
@@ -268,7 +272,8 @@ export default function Player({ route, navigation }) {
     return () => { isMounted = false; };
   }, [animeId, currentEpNum, currentSlug, selectedAudioType, providerId]);
 
-  // 4. Playback Sync & Database Save (EVERY 3 SECONDS)
+  // 4. Playback Sync & Database Save 
+  // THIS IS THE FIX: The unified saving logic strictly writing to the activeProfile path!
   useEffect(() => {
     if (!status.isLoaded) return;
     const currentMs = status.positionMillis || 0;
@@ -288,7 +293,7 @@ export default function Player({ route, navigation }) {
     const currentSecs = Math.floor(currentTimeSec);
     const durationSecs = Math.floor((status.durationMillis || 1) / 1000);
     
-    // SAVE EVERY 3 SECONDS
+    // Save every 3 seconds to the correct Active Profile Path
     if (userUid && animeId && activeProfileId && status.isPlaying && currentSecs > 0) {
       if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
         lastSavedTimeRef.current = currentSecs;
@@ -304,7 +309,7 @@ export default function Player({ route, navigation }) {
           .set({
             animeId: String(animeId),
             title: animeTitle,
-            backdrop: animeBackdrop || '', 
+            backdrop: resolvedBackdrop, // Forces the image to save for continue_watching.js
             slug: currentSlug ? String(currentSlug) : String(currentEpNum),
             lastWatchedEp: currentEpNum,
             progress: currentSecs,
@@ -314,7 +319,7 @@ export default function Player({ route, navigation }) {
           }, { merge: true }).catch(() => {});
       }
     }
-  }, [status.positionMillis, subtitlesEnabled, parsedSubs, currentSubText, activeProfileId]);
+  }, [status.positionMillis, subtitlesEnabled, parsedSubs, currentSubText, activeProfileId, resolvedBackdrop]);
 
   // 5. Seamless Next Episode Logic
   const handleNextEpisode = () => {
