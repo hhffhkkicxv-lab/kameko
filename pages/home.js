@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, FlatList, TouchableOpacity, Image, StatusBar } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar } from 'react-native';
 import Svg, { Defs, LinearGradient, Stop, Rect, Path, Circle } from 'react-native-svg';
 
 import Carousel from './home/carousel';
+import ContinueWatching from './home/continue_watching'; 
 import RecentSlider from './home/recent_slider';
 import TrendingSlider from './home/trending_slider';
 import Play from '../pages/play';
@@ -27,31 +28,6 @@ const IconSearch = ({ size = 26, color = "#FFF" }) => (
   </Svg>
 );
 
-const mockData = [
-  { id: '1', title: 'Continue 1' },
-  { id: '2', title: 'Continue 2' },
-  { id: '3', title: 'Continue 3' },
-  { id: '4', title: 'Continue 4' },
-];
-
-const HorizontalRow = ({ title }) => (
-  <View style={styles.rowContainer}>
-    <Text style={styles.rowTitle}>{title}</Text>
-    <FlatList
-      data={mockData}
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      keyExtractor={(item) => item.id}
-      contentContainerStyle={{ paddingHorizontal: 20 }}
-      renderItem={() => (
-        <View style={styles.card}>
-          <Text style={styles.cardText}>Cover</Text>
-        </View>
-      )}
-    />
-  </View>
-);
-
 export default function Home({ user, activeProfile, onSwitchProfile, navigation }) {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedAnime, setSelectedAnime] = useState(null);
@@ -62,7 +38,7 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
   return (
     <View style={styles.masterContainer}>
       {/* 1. Hides the top notification bar globally for this screen */}
-      <StatusBar hidden={true} />
+      <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
 
       {/* HOME SCREEN LAYER */}
       <View style={[styles.container, isOverlayActive && { display: 'none' }]}>
@@ -72,13 +48,17 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
           overScrollMode="never" 
           bounces={false}
         >
+          {/* Main Hero Slider */}
           <Carousel user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
+          
+          {/* The New Premium Continue Watching Row */}
+          <View style={styles.contentPadding}>
+            <ContinueWatching user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
+          </View>
+          
           <RecentSlider user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
           <TrendingSlider user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
 
-          <View style={styles.contentPadding}>
-            <HorizontalRow title={`Continue Watching for ${activeProfile?.name || 'You'}`} />
-          </View>
           <View style={{ height: 40 }} />
         </ScrollView>
 
@@ -87,8 +67,8 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
           <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
             <Defs>
               <LinearGradient id="headerGrad" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
-                <Stop offset="0.4" stopColor="#000000" stopOpacity="0.7" />
+                <Stop offset="0" stopColor="#000000" stopOpacity="0.8" />
+                <Stop offset="0.6" stopColor="#000000" stopOpacity="0.4" />
                 <Stop offset="1" stopColor="#000000" stopOpacity="0" />
               </LinearGradient>
             </Defs>
@@ -122,7 +102,7 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
       </View>
 
       {/* --- OVERLAY SCREENS --- */}
-      
+
       {selectedAnime && (
         <Play 
           anime={selectedAnime} 
@@ -171,11 +151,11 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000' },
   overlayScreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000', zIndex: 50 },
 
-  // 3. Header Styling Updates
+  // Header Styling Updates (Moved up to sit exactly beneath the notch with a smoother fade)
   floatingHeader: { 
     position: 'absolute',
     top: 0, left: 0, right: 0,
-    height: 130, // Increased height to accommodate the downward shift and longer gradient
+    height: 110, 
     zIndex: 100,
   },
   headerContent: {
@@ -183,7 +163,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between', 
     alignItems: 'center', 
     paddingHorizontal: 20, 
-    paddingTop: 40, // Moved header down
+    paddingTop: 32, // Moved slightly up
   },
   headerLogoImage: { 
     width: 175, 
@@ -214,14 +194,4 @@ const styles = StyleSheet.create({
 
   scroll: { flex: 1 },
   contentPadding: { paddingTop: 10 },
-  rowContainer: { marginBottom: 25 },
-  rowTitle: { 
-    color: '#ffffff', fontSize: 18, fontWeight: 'bold', marginLeft: 20, marginBottom: 12,
-    borderLeftWidth: 3, borderLeftColor: '#E50914', paddingLeft: 8
-  },
-  card: { 
-    width: 140, height: 210, backgroundColor: '#1A1A1A', marginRight: 15, borderRadius: 8, 
-    justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)'
-  },
-  cardText: { color: '#555555' }
 });
