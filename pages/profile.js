@@ -7,6 +7,7 @@ import firestore from '@react-native-firebase/firestore';
 import Svg, { Path } from 'react-native-svg';
 
 const BRAND_RED = '#E50914';
+const HEADER_LOGO = require('../assets/kameko_header.png');
 
 const AVATARS = {
   'pfp1.jpg': require('../assets/pfp1.jpg'),
@@ -71,7 +72,7 @@ const AnimatedProfileCard = ({ profile, index, onPress, manageMode, isAddButton 
               <IconPlus />
             </View>
           ) : (
-            <Image source={AVATARS[profile.avatar]} style={styles.avatar} resizeMode="cover" />
+            <Image source={AVATARS[profile.avatar] || AVATARS['pfp1.jpg']} style={styles.avatar} resizeMode="cover" />
           )}
 
           {manageMode && !isAddButton && (
@@ -131,11 +132,11 @@ const CustomAlert = ({ visible, title, message, onConfirm, onCancel, isDestructi
   );
 };
 
-export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
+export default function Profiles({ user, onSelectProfile, onHardwareBack, navigation }) {
   const [profiles, setProfiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [manageMode, setManageMode] = useState(false);
-  
+
   // Profile Editor Modal State
   const [modalVisible, setModalVisible] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -154,6 +155,7 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
 
   const titleOpacity = useRef(new Animated.Value(0)).current;
   const titleTranslateY = useRef(new Animated.Value(-16)).current;
+  const initialEmptyCheckRef = useRef(false);
 
   // --- HARDWARE BACK BUTTON HANDLER ---
   useEffect(() => {
@@ -182,7 +184,11 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
 
   // --- FIRESTORE SUBSCRIPTION ---
   useEffect(() => {
-    if (!user) return;
+    if (!user?.uid) {
+      setLoading(false);
+      return;
+    }
+
     const subscriber = firestore()
       .collection('users')
       .doc(user.uid)
@@ -190,7 +196,7 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
       .onSnapshot(querySnapshot => {
         const fetchedProfiles = [];
         querySnapshot?.forEach(doc => fetchedProfiles.push({ id: doc.id, ...doc.data() }));
-        
+
         setProfiles(fetchedProfiles);
         setLoading(false);
 
@@ -199,7 +205,8 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
           Animated.timing(titleTranslateY, { toValue: 0, duration: 550, easing: Easing.out(Easing.exp), useNativeDriver: true })
         ]).start();
 
-        if (fetchedProfiles.length === 0 && !loading) {
+        if (fetchedProfiles.length === 0 && !initialEmptyCheckRef.current) {
+          initialEmptyCheckRef.current = true;
           openCreateModal();
         }
       }, error => {
@@ -208,7 +215,7 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
       });
 
     return () => subscriber();
-  }, [user, loading, titleOpacity, titleTranslateY]);
+  }, [user?.uid, titleOpacity, titleTranslateY]);
 
   const showAlert = (title, message, onConfirm, onCancel = null, isDestructive = false) => {
     setAlertConfig({ 
@@ -237,15 +244,59 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
   const openEditModal = (profile) => { 
     setEditId(profile.id); 
     setTempName(profile.name); 
-    setTempAvatar(profile.avatar); 
+    setTempAvatar(profile.avatar || 'pfp1.jpg'); 
     setModalVisible(true); 
+  };
+
+  // --- PASS SELECTED PROFILE TO HOME.JS & SYNC TO FIRESTORE ---
+  const handleSelectProfile = async (profile) => {
+    if (!profile) return;
+
+    const currentProfileData = {
+      ...profile,
+      id: String(profile.id),
+      profileId: String(profile.id),
+      name: profile.name || 'User',
+      avatar: profile.avatar || 'pfp1.jpg',
+      avatarSource: AVATARS[profile.avatar] || AVATARS['pfp1.jpg'],
+      userUid: user?.uid || null,
+    };
+
+    // Persist active profile on the user document so Home.js & Player.js always have access
+    if (user?.uid) {
+      firestore()
+        .collection('users')
+        .doc(String(user.uid))
+        .set({
+          activeProfileId: String(profile.id),
+          activeProfile: {
+            id: String(profile.id),
+            name: currentProfileData.name,
+            avatar: currentProfileData.avatar,
+          },
+          lastActiveAt: firestore.FieldValue.serverTimestamp(),
+        }, { merge: true })
+        .catch(() => {});
+    }
+
+    // Pass current profile to Home.js via App.js callback or React Navigation
+    if (typeof onSelectProfile === 'function') {
+      onSelectProfile(currentProfileData);
+    } else if (navigation?.navigate) {
+      navigation.navigate('Home', {
+        activeProfile: currentProfileData,
+        currentProfile: currentProfileData,
+        activeProfileId: String(profile.id),
+        user: user,
+      });
+    }
   };
 
   const saveProfile = async () => {
     if (tempName.trim() === '') {
       return showAlert('Required', 'Please enter a profile name.', () => {});
     }
-    
+
     setModalVisible(false);
 
     try {
@@ -291,9 +342,14 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
 
   return (
     <View style={styles.container}>
-      
+
+      {/* Top Header Logo using kameko_header.png */}
       <View style={styles.logoHeader}>
-        <Text style={styles.logoText}>KAMEKO</Text>
+        <Image 
+          source={HEADER_LOGO} 
+          style={styles.logoImage} 
+          resizeMode="contain" 
+        />
       </View>
 
       <Animated.Text style={[styles.headerTitle, { opacity: titleOpacity, transform: [{ translateY: titleTranslateY }] }]}>
@@ -307,7 +363,7 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
             profile={profile} 
             index={index} 
             manageMode={manageMode} 
-            onPress={(p) => manageMode ? openEditModal(p) : onSelectProfile(p)} 
+            onPress={(p) => manageMode ? openEditModal(p) : handleSelectProfile(p)} 
           />
         ))}
 
@@ -339,7 +395,7 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
         <View style={styles.modalBg}>
           <View style={styles.modalContainer}>
             <Text style={styles.modalTitle}>{editId ? 'Edit Profile' : 'Add Profile'}</Text>
-            
+
             <View style={styles.avatarList}>
               {Object.keys(AVATARS).map((imgKey) => (
                 <TouchableOpacity key={imgKey} onPress={() => setTempAvatar(imgKey)} activeOpacity={0.8}>
@@ -384,15 +440,15 @@ export default function Profiles({ user, onSelectProfile, onHardwareBack }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' },
   center: { flex: 1, backgroundColor: '#000000', justifyContent: 'center', alignItems: 'center' },
-  
-  logoHeader: { position: 'absolute', top: 52, width: '100%', alignItems: 'center' },
-  logoText: { color: BRAND_RED, fontSize: 26, fontWeight: '900', letterSpacing: 2 },
+
+  logoHeader: { position: 'absolute', top: 44, width: '100%', alignItems: 'center', zIndex: 10 },
+  logoImage: { width: 175, height: 48, tintColor: BRAND_RED },
 
   headerTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '800', marginBottom: 35, letterSpacing: 0.4 },
-  
+
   grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 18, paddingHorizontal: 20 },
   profileItem: { alignItems: 'center', marginHorizontal: 8, marginBottom: 18, width: 104 },
-  
+
   avatarWrapper: { 
     width: 104, 
     height: 104, 
@@ -408,9 +464,9 @@ const styles = StyleSheet.create({
   },
   avatar: { width: '100%', height: '100%' },
   addAvatar: { width: '100%', height: '100%', borderWidth: 1.5, borderColor: '#333333', justifyContent: 'center', alignItems: 'center', backgroundColor: '#111111' },
-  
+
   editOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center' },
-  
+
   profileName: { 
     color: '#B3B3B3', 
     fontSize: 14, 
@@ -419,7 +475,7 @@ const styles = StyleSheet.create({
     width: 104, 
     marginTop: 10 
   },
-  
+
   manageBtn: { 
     marginTop: 38, 
     paddingVertical: 10, 
