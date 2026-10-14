@@ -1,9 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
-  ScrollView, ActivityIndicator, Alert 
+  ScrollView, ActivityIndicator, Alert, Dimensions 
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
+import * as FileSystem from 'expo-file-system';
+
+const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 let DocumentPicker = null;
 try {
@@ -37,25 +40,34 @@ const IconPlus = ({ size = 18, color = "#FFF" }) => (
   </Svg>
 );
 
-// --- VTT / SRT PARSER ENGINE ---
+// --- STRICT VTT/SRT PARSER ---
 const parseTimeToSeconds = (timeStr) => {
-  const parts = timeStr.replace(',', '.').split(':');
-  let seconds = 0;
+  const cleanTimeStr = timeStr.trim().split(/\s+/)[0].replace(',', '.');
+  const parts = cleanTimeStr.split(':');
+  let seconds = NaN;
+  
   if (parts.length === 3) {
     seconds = parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
   } else if (parts.length === 2) {
     seconds = parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
   }
-  return seconds;
+  
+  return Number.isFinite(seconds) ? seconds : NaN;
 };
 
-const fetchAndParseSubtitle = async (url) => {
+const fetchAndParseSubtitle = async (uri) => {
   try {
-    const response = await fetch(url);
-    const text = await response.text();
+    let text = '';
+    
+    if (uri.startsWith('file://')) {
+      text = await FileSystem.readAsStringAsync(uri);
+    } else {
+      const response = await fetch(uri);
+      if (!response.ok) throw new Error('Failed to fetch subtitle');
+      text = await response.text();
+    }
     
     const cues = [];
-    // Normalize newlines and split into blocks
     const blocks = text.replace(/\r\n/g, '\n').split('\n\n');
     
     for (const block of blocks) {
@@ -63,18 +75,16 @@ const fetchAndParseSubtitle = async (url) => {
       const timeLineIndex = lines.findIndex(l => l.includes('-->'));
       
       if (timeLineIndex !== -1) {
-        const timeLine = lines[timeLineIndex];
-        const [startStr, endStr] = timeLine.split('-->');
-        
-        const start = parseTimeToSeconds(startStr.trim());
-        const end = parseTimeToSeconds(endStr.trim());
+        const [startStr, endStr] = lines[timeLineIndex].split('-->');
+        const start = parseTimeToSeconds(startStr);
+        const end = parseTimeToSeconds(endStr);
         
         const textContent = lines.slice(timeLineIndex + 1)
           .join('\n')
-          .replace(/<[^>]*>/g, '') // Strip inline HTML/VTT styling tags
+          .replace(/<[^>]*>/g, '') 
           .trim();
           
-        if (textContent) {
+        if (textContent && Number.isFinite(start) && Number.isFinite(end) && end > start) {
           cues.push({ start, end, text: textContent });
         }
       }
@@ -82,7 +92,7 @@ const fetchAndParseSubtitle = async (url) => {
     return cues;
   } catch (err) {
     console.error("Subtitle parsing error:", err);
-    return [];
+    return []; 
   }
 };
 
@@ -95,58 +105,93 @@ export default function SubtitleSheet({
   setSubSettings,
   animeId,
   episodeNum,
-  onSelectSubtitleTrack,
-  onLoadCustomSubtitle
+  onSelectSubtitleTrack
 }) {
   const [availableTracks, setAvailableTracks] = useState([]);
-  const [selectedTrackIndex, setSelectedTrackIndex] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [isParsing, setIsParsing] = useState(false);
+  const [selectedTrackIndex, setSelectedTrackIndex] = useState(-1);
+  const [isFetchingList, setIsFetchingList] = useState(false);
+  const [parsingIndex, setParsingIndex] = useState(null); 
   const [activeTab, setActiveTab] = useState('tracks');
 
+  const customFileUrisRef = useRef([]);
+  const requestIdRef = useRef(0);
+
+  // 1. BACKGROUND FETCH & AUTO-LOAD
   useEffect(() => {
-    let isMounted = true;
-    if (activeMenu !== 'subs' || !animeId) return;
+    if (!animeId || !episodeNum) return;
+    const currentRequestId = ++requestIdRef.current;
 
     const fetchSubtitles = async () => {
       try {
-        setLoading(true);
+        setIsFetchingList(true);
         const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(animeId)}&ep=${encodeURIComponent(episodeNum)}&server=hd-1&type=sub`;
         const res = await fetch(url);
         const json = await res.json();
 
+        // Abort if episode changed while fetching
+        if (currentRequestId !== requestIdRef.current) return;
+
         if (json?.success && Array.isArray(json?.data?.subtitles) && json.data.subtitles.length > 0) {
-          if (isMounted) {
-            setAvailableTracks(json.data.subtitles);
-          }
+          setAvailableTracks(json.data.subtitles);
+          
+          const defaultIdx = json.data.subtitles.findIndex(s => s.default) !== -1 
+            ? json.data.subtitles.findIndex(s => s.default) 
+            : 0;
+          
+          handleTrackSelect(json.data.subtitles[defaultIdx], defaultIdx, currentRequestId);
         }
       } catch (_) {
       } finally {
-        if (isMounted) setLoading(false);
+        if (currentRequestId === requestIdRef.current) setIsFetchingList(false);
       }
     };
 
     fetchSubtitles();
-    return () => { isMounted = false; };
-  }, [activeMenu, animeId, episodeNum]);
 
-  if (activeMenu !== 'subs') return null;
+    return () => {
+      requestIdRef.current++; // Invalidate pending requests
+      setAvailableTracks([]);
+      if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
+      
+      // Clean up local custom subtitle files
+      customFileUrisRef.current.forEach(uri => {
+        FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+      });
+      customFileUrisRef.current = [];
+    };
+  }, [animeId, episodeNum]);
 
-  const handleTrackSelect = async (track, idx) => {
-    setIsParsing(true);
-    setSelectedTrackIndex(idx);
-    setSubtitlesEnabled(true);
+  // Core Track Loader
+  const handleTrackSelect = async (track, idx, parentRequestId = null) => {
+    // Determine the active request ID context
+    const reqId = parentRequestId || ++requestIdRef.current;
     
-    // Download and parse the VTT/SRT into JavaScript objects
+    setParsingIndex(idx); 
     const parsedCues = await fetchAndParseSubtitle(track.file);
     
-    if (onSelectSubtitleTrack) {
-      // Pass the fully parsed array back to the player
-      onSelectSubtitleTrack({ ...track, cues: parsedCues });
-    }
+    // Abort if user clicked another track or switched episodes
+    if (reqId !== requestIdRef.current) return;
     
-    setIsParsing(false);
-    setActiveMenu(null);
+    setParsingIndex(null);
+
+    if (parsedCues.length > 0) {
+      setSelectedTrackIndex(idx);
+      setSubtitlesEnabled(true);
+      if (onSelectSubtitleTrack) {
+        onSelectSubtitleTrack({ ...track, cues: parsedCues });
+      }
+    } else {
+      Alert.alert('Subtitle Error', 'Could not load text from this subtitle track.');
+      handleTurnOff();
+    }
+  };
+
+  const handleTurnOff = () => {
+    requestIdRef.current++; // Invalidate any pending parses
+    setParsingIndex(null);
+    setSelectedTrackIndex(-1);
+    setSubtitlesEnabled(false);
+    if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
   };
 
   const handlePickCustomSubtitle = async () => {
@@ -157,7 +202,7 @@ export default function SubtitleSheet({
 
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        type: ['text/vtt', 'application/x-subrip', 'text/plain'],
+        type: ['text/vtt', 'application/x-subrip', 'text/plain', '*/*'],
         copyToCacheDirectory: true,
       });
 
@@ -170,16 +215,22 @@ export default function SubtitleSheet({
           isCustom: true
         };
 
-        setAvailableTracks(prev => [newTrack, ...prev]);
-        handleTrackSelect(newTrack, 0);
+        customFileUrisRef.current.push(file.uri);
+        
+        const newIndex = availableTracks.length;
+        setAvailableTracks(prev => [...prev, newTrack]);
+        handleTrackSelect(newTrack, newIndex);
+        setActiveMenu(null);
       }
     } catch (err) {
       Alert.alert('File Error', 'Could not load custom subtitle file.');
     }
   };
 
+  if (activeMenu !== 'subs') return null;
+
   return (
-    <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+    <View style={styles.absoluteWrapper} pointerEvents="box-none">
       <TouchableOpacity style={styles.backdrop} activeOpacity={1} onPress={() => setActiveMenu(null)} />
 
       <View style={styles.sheetSurface}>
@@ -188,108 +239,115 @@ export default function SubtitleSheet({
             <Text style={[styles.tabText, activeTab === 'tracks' && styles.tabTextActive]}>Tracks</Text>
           </TouchableOpacity>
           <TouchableOpacity onPress={() => setActiveTab('styles')} style={[styles.tabBtn, activeTab === 'styles' && styles.tabBtnActive]}>
-            <Text style={[styles.tabText, activeTab === 'styles' && styles.tabTextActive]}>Appearance & Fonts</Text>
+            <Text style={[styles.tabText, activeTab === 'styles' && styles.tabTextActive]}>Appearance</Text>
           </TouchableOpacity>
         </View>
 
-        {activeTab === 'tracks' && (
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContainer}>
-            {(loading || isParsing) && <ActivityIndicator size="small" color={BRAND_RED} style={{ marginVertical: 10 }} />}
+        <View style={{ flexShrink: 1 }}>
+          {activeTab === 'tracks' && (
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContainer}>
+              {isFetchingList && <ActivityIndicator size="small" color={BRAND_RED} style={{ marginVertical: 10 }} />}
 
-            <TouchableOpacity 
-              style={[styles.trackCard, !subtitlesEnabled ? styles.trackCardActive : styles.trackCardInactive]}
-              onPress={() => {
-                setSubtitlesEnabled(false);
-                if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
-                setActiveMenu(null);
-              }}
-            >
-              <Text style={[styles.trackName, !subtitlesEnabled ? styles.trackNameActive : styles.trackNameInactive]}>Off</Text>
-            </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.trackCard, selectedTrackIndex === -1 ? styles.trackCardActive : styles.trackCardInactive]}
+                onPress={() => { handleTurnOff(); setActiveMenu(null); }}
+              >
+                <Text style={[styles.trackName, selectedTrackIndex === -1 ? styles.trackNameActive : styles.trackNameInactive]}>Off</Text>
+              </TouchableOpacity>
 
-            {availableTracks.map((track, idx) => {
-              const isSelected = subtitlesEnabled && selectedTrackIndex === idx;
-              return (
-                <TouchableOpacity
-                  key={idx}
-                  style={[styles.trackCard, isSelected ? styles.trackCardActive : styles.trackCardInactive]}
-                  onPress={() => handleTrackSelect(track, idx)}
-                  disabled={isParsing}
-                >
-                  <Text style={[styles.trackName, isSelected ? styles.trackNameActive : styles.trackNameInactive]}>
-                    {track.label || track.lang || `Track ${idx + 1}`}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
+              {availableTracks.map((track, idx) => {
+                const isSelected = subtitlesEnabled && selectedTrackIndex === idx;
+                const isDownloading = parsingIndex === idx;
 
-            <TouchableOpacity style={styles.addCustomBtn} activeOpacity={0.7} onPress={handlePickCustomSubtitle} disabled={isParsing}>
-              <IconPlus size={16} color="#FFF" />
-              <Text style={styles.addCustomText}>Add Custom Subtitle (.vtt, .srt)</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        )}
-
-        {activeTab === 'styles' && (
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.stylesContainer}>
-            <Text style={styles.sectionTitle}>Font Family</Text>
-            <View style={styles.fontGrid}>
-              {FONT_OPTIONS.map((f, i) => {
-                const isSelected = (subSettings.fontFamily || 'normal') === f.value;
                 return (
-                  <TouchableOpacity key={i} style={[styles.fontCard, isSelected && styles.fontCardActive]} onPress={() => setSubSettings(prev => ({ ...prev, fontFamily: f.value }))}>
-                    <Text style={[styles.fontCardText, { fontFamily: f.value }, isSelected && { color: '#FFF', fontWeight: '900' }]} numberOfLines={1}>{f.label}</Text>
+                  <TouchableOpacity
+                    key={idx}
+                    style={[styles.trackCard, isSelected ? styles.trackCardActive : styles.trackCardInactive]}
+                    onPress={() => {
+                      handleTrackSelect(track, idx);
+                      if (!isDownloading) setActiveMenu(null);
+                    }}
+                    disabled={isDownloading}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <Text style={[styles.trackName, isSelected ? styles.trackNameActive : styles.trackNameInactive]}>
+                        {track.label || track.lang || `Track ${idx + 1}`}
+                      </Text>
+                      {isDownloading && <ActivityIndicator size="small" color="#FFF" />}
+                    </View>
                   </TouchableOpacity>
                 );
               })}
-            </View>
 
-            <Text style={styles.sectionTitle}>Text Color</Text>
-            <View style={styles.colorPalette}>
-              {COLOR_OPTIONS.map((c, i) => (
-                <TouchableOpacity key={i} style={[styles.colorChip, { backgroundColor: c }, subSettings.color === c && styles.colorChipActive]} onPress={() => setSubSettings(prev => ({ ...prev, color: c }))} />
-              ))}
-            </View>
+              <TouchableOpacity style={styles.addCustomBtn} activeOpacity={0.7} onPress={handlePickCustomSubtitle}>
+                <IconPlus size={16} color="#FFF" />
+                <Text style={styles.addCustomText}>Add Custom Subtitle</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          )}
 
-            <Text style={styles.sectionTitle}>Font Size ({subSettings.size || 16}px)</Text>
-            <View style={styles.pillRow}>
-              {[12, 14, 16, 20, 24, 28].map((s) => (
-                <TouchableOpacity key={s} style={[styles.pillBtn, (subSettings.size || 16) === s && styles.pillBtnActive]} onPress={() => setSubSettings(prev => ({ ...prev, size: s }))}>
-                  <Text style={[styles.pillText, (subSettings.size || 16) === s && styles.pillTextActive]}>{s}px</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+          {activeTab === 'styles' && (
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.stylesContainer}>
+              <Text style={styles.sectionTitle}>Font Family</Text>
+              <View style={styles.fontGrid}>
+                {FONT_OPTIONS.map((f, i) => {
+                  const isSelected = (subSettings.fontFamily || 'normal') === f.value;
+                  return (
+                    <TouchableOpacity key={i} style={[styles.fontCard, isSelected && styles.fontCardActive]} onPress={() => setSubSettings(prev => ({ ...prev, fontFamily: f.value }))}>
+                      <Text style={[styles.fontCardText, { fontFamily: f.value }, isSelected && { color: '#FFF', fontWeight: '900' }]} numberOfLines={1}>{f.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
 
-            <Text style={styles.sectionTitle}>Bottom Offset</Text>
-            <View style={styles.pillRow}>
-              {[20, 35, 50, 75].map((h) => (
-                <TouchableOpacity key={h} style={[styles.pillBtn, (subSettings.height || 40) === h && styles.pillBtnActive]} onPress={() => setSubSettings(prev => ({ ...prev, height: h }))}>
-                  <Text style={[styles.pillText, (subSettings.height || 40) === h && styles.pillTextActive]}>{h}px</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+              <Text style={styles.sectionTitle}>Text Color</Text>
+              <View style={styles.colorPalette}>
+                {COLOR_OPTIONS.map((c, i) => (
+                  <TouchableOpacity key={i} style={[styles.colorChip, { backgroundColor: c }, subSettings.color === c && styles.colorChipActive]} onPress={() => setSubSettings(prev => ({ ...prev, color: c }))} />
+                ))}
+              </View>
 
-            <Text style={styles.sectionTitle}>Background Box</Text>
-            <View style={styles.pillRow}>
-              {[{ label: 'None', val: 'transparent' }, { label: 'Translucent', val: 'rgba(0,0,0,0.6)' }, { label: 'Solid Black', val: '#000000' }].map((bg, i) => {
-                const isSelected = (subSettings.backgroundColor || 'transparent') === bg.val;
-                return (
-                  <TouchableOpacity key={i} style={[styles.pillBtn, isSelected && styles.pillBtnActive]} onPress={() => setSubSettings(prev => ({ ...prev, backgroundColor: bg.val }))}>
-                    <Text style={[styles.pillText, isSelected && styles.pillTextActive]}>{bg.label}</Text>
+              <Text style={styles.sectionTitle}>Font Size ({subSettings.size || 16}px)</Text>
+              <View style={styles.pillRow}>
+                {[12, 14, 16, 20, 24, 28].map((s) => (
+                  <TouchableOpacity key={s} style={[styles.pillBtn, (subSettings.size || 16) === s && styles.pillBtnActive]} onPress={() => setSubSettings(prev => ({ ...prev, size: s }))}>
+                    <Text style={[styles.pillText, (subSettings.size || 16) === s && styles.pillTextActive]}>{s}px</Text>
                   </TouchableOpacity>
-                );
-              })}
-            </View>
-          </ScrollView>
-        )}
+                ))}
+              </View>
+
+              <Text style={styles.sectionTitle}>Bottom Offset</Text>
+              <View style={styles.pillRow}>
+                {[20, 35, 50, 75, 100].map((h) => (
+                  <TouchableOpacity key={h} style={[styles.pillBtn, (subSettings.height || 40) === h && styles.pillBtnActive]} onPress={() => setSubSettings(prev => ({ ...prev, height: h }))}>
+                    <Text style={[styles.pillText, (subSettings.height || 40) === h && styles.pillTextActive]}>{h}px</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.sectionTitle}>Background Box</Text>
+              <View style={styles.pillRow}>
+                {[{ label: 'None', val: 'transparent' }, { label: 'Translucent', val: 'rgba(0,0,0,0.6)' }, { label: 'Solid Black', val: '#000000' }].map((bg, i) => {
+                  const isSelected = (subSettings.backgroundColor || 'transparent') === bg.val;
+                  return (
+                    <TouchableOpacity key={i} style={[styles.pillBtn, isSelected && styles.pillBtnActive]} onPress={() => setSubSettings(prev => ({ ...prev, backgroundColor: bg.val }))}>
+                      <Text style={[styles.pillText, isSelected && styles.pillTextActive]}>{bg.label}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          )}
+        </View>
       </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 50 },
-  sheetSurface: { position: 'absolute', bottom: 0, alignSelf: 'center', width: '100%', maxWidth: 580, backgroundColor: '#121212', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 18, paddingBottom: 28, maxHeight: '82%', zIndex: 60, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
+  absoluteWrapper: { ...StyleSheet.absoluteFillObject, zIndex: 100, justifyContent: 'flex-end' },
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)' },
+  sheetSurface: { width: '100%', maxWidth: 600, alignSelf: 'center', backgroundColor: '#121212', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 18, paddingBottom: 28, maxHeight: SCREEN_HEIGHT * 0.80, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
   tabHeader: { flexDirection: 'row', marginBottom: 16, backgroundColor: '#1E1E1E', borderRadius: 12, padding: 4 },
   tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
   tabBtnActive: { backgroundColor: BRAND_RED },
