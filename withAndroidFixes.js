@@ -1,9 +1,25 @@
-const { withAndroidManifest, withDangerousMod } = require('@expo/config-plugins');
+const { withAndroidManifest, withDangerousMod, withAndroidStyles } = require('@expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
 module.exports = function withAndroidFixes(config) {
-  // 1. Fix the Firebase vs Expo Notification Color Manifest Conflict
+  // 1. Force Video Behind Camera Notch (Short Edges)
+  config = withAndroidStyles(config, async (config) => {
+    const styles = config.modResults;
+    const appTheme = styles.resources.style.find(
+      (style) => style.$.name === 'AppTheme'
+    );
+    if (appTheme) {
+      // Prevents the black bar on the side of the screen
+      appTheme.item.push({
+        _: 'shortEdges',
+        $: { name: 'android:windowLayoutInDisplayCutoutMode' }
+      });
+    }
+    return config;
+  });
+
+  // 2. Fix Firebase vs Expo Notification Manifest Conflict
   config = withAndroidManifest(config, (config) => {
     const manifest = config.modResults;
     const app = manifest.manifest.application[0];
@@ -21,19 +37,19 @@ module.exports = function withAndroidFixes(config) {
     return config;
   });
 
-  // 2. Protect Firebase and Google Sign-In from the R8 Shrinker
+  // 3. Preserve Firebase & Google Sign-In through R8 Minification
   config = withDangerousMod(config, [
     'android',
     (config) => {
       const proguardPath = path.join(config.modRequest.platformProjectRoot, 'app', 'proguard-rules.pro');
       const customRules = `
-# Protect Firebase & React Native Firebase
+# Protect Firebase
 -keep class com.google.firebase.** { *; }
 -keep class io.invertase.firebase.** { *; }
 -dontwarn com.google.firebase.**
 -dontwarn io.invertase.firebase.**
 
-# Protect Google Play Services (Google Sign-In)
+# Protect Google Play Services
 -keep class com.google.android.gms.** { *; }
 -dontwarn com.google.android.gms.**
 `;
