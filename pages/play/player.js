@@ -29,15 +29,17 @@ const IconAudio = ({ size = 24, color = "#FFF" }) => (<Svg width={size} height={
 const IconNextEp = ({ size = 22, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></Svg>);
 
 export default function Player({ route, navigation }) {
-  // Extract base route params
+  // Extract base route params. Ensure activeProfileId and animeBackdrop are passed!
   const { 
     animeTitle = 'Unknown', 
     animeId = null,
     userUid = null,
+    activeProfileId = null, // <--- Crucial for profile-specific progress
+    animeBackdrop = null,   // <--- Passed from play.js to save to DB
     targetType = 'sub'
   } = route?.params || {};
 
-  // SEAMLESS BINGE STATE (Replaces navigation route params)
+  // SEAMLESS BINGE STATE
   const [currentEpNum, setCurrentEpNum] = useState(route?.params?.episodeNum || 1);
   const [currentSlug, setCurrentSlug] = useState(route?.params?.slug || null);
   const [currentEpTitle, setCurrentEpTitle] = useState(route?.params?.episodeTitle || '');
@@ -57,7 +59,7 @@ export default function Player({ route, navigation }) {
   
   const previousSpeedRef = useRef(1.0);
   const lastPositionRef = useRef(0);
-  const lastSavedTimeRef = useRef(0);
+  const lastSavedTimeRef = useRef(0); // Tracks the last exact second we saved to DB
 
   const [providerId, setProviderId] = useState(null);
   const [hasNextEpisode, setHasNextEpisode] = useState(false);
@@ -85,7 +87,7 @@ export default function Player({ route, navigation }) {
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
 
-  // 1. Full Screen Lock (Fixed Nav Bar Reappearing Bug)
+  // 1. Full Screen Lock
   useEffect(() => {
     let isMounted = true;
     const lockEdgeToEdge = async () => {
@@ -110,7 +112,6 @@ export default function Player({ route, navigation }) {
     return () => {
       isMounted = false;
       ScreenOrientation.unlockAsync().catch(() => {});
-      // WE DO NOT UN-HIDE THE STATUS BAR OR NAV BAR HERE ANYMORE!
       backHandler.remove();
     };
   }, []);
@@ -167,13 +168,21 @@ export default function Player({ route, navigation }) {
     return () => { isMounted = false; };
   }, [animeTitle, currentEpNum, currentSlug]);
 
-  // 2.5 Fetch Previous Playback Progress from Firebase
+  // 2.5 Fetch Previous Playback Progress from PROFILE-SPECIFIC Firebase Path
   useEffect(() => {
-    if (!userUid || !animeId) return;
+    if (!userUid || !animeId || !activeProfileId) return;
 
     const fetchProgress = async () => {
       try {
-        const doc = await firestore().collection('users').doc(userUid).collection('progress').doc(String(animeId)).get();
+        const doc = await firestore()
+          .collection('users')
+          .doc(userUid)
+          .collection('profiles')
+          .doc(activeProfileId)
+          .collection('progress')
+          .doc(String(animeId))
+          .get();
+
         if (doc.exists) {
           const data = doc.data();
           const targetSlug = currentSlug ? String(currentSlug) : String(currentEpNum);
@@ -186,7 +195,7 @@ export default function Player({ route, navigation }) {
     };
 
     fetchProgress();
-  }, [userUid, animeId, currentSlug, currentEpNum]);
+  }, [userUid, animeId, currentSlug, currentEpNum, activeProfileId]);
 
   // 3. Resolve Native M3U8 Stream
   useEffect(() => {
@@ -259,7 +268,7 @@ export default function Player({ route, navigation }) {
     return () => { isMounted = false; };
   }, [animeId, currentEpNum, currentSlug, selectedAudioType, providerId]);
 
-  // 4. Playback Sync & Database Save
+  // 4. Playback Sync & Database Save (EVERY 3 SECONDS)
   useEffect(() => {
     if (!status.isLoaded) return;
     const currentMs = status.positionMillis || 0;
@@ -278,36 +287,45 @@ export default function Player({ route, navigation }) {
 
     const currentSecs = Math.floor(currentTimeSec);
     const durationSecs = Math.floor((status.durationMillis || 1) / 1000);
-    if (userUid && animeId && status.isPlaying && currentSecs > 0) {
-      if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 10) {
+    
+    // SAVE EVERY 3 SECONDS
+    if (userUid && animeId && activeProfileId && status.isPlaying && currentSecs > 0) {
+      if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
         lastSavedTimeRef.current = currentSecs;
         const isCompleted = currentSecs > (durationSecs * 0.85); 
         
-        firestore().collection('users').doc(userUid).collection('progress').doc(String(animeId)).set({
-          animeId: String(animeId),
-          slug: currentSlug ? String(currentSlug) : String(currentEpNum),
-          lastWatchedEp: currentEpNum,
-          progress: currentSecs,
-          duration: durationSecs,
-          finishedEp: isCompleted,
-          timestamp: Date.now()
-        }, { merge: true }).catch(() => {});
+        firestore()
+          .collection('users')
+          .doc(userUid)
+          .collection('profiles')
+          .doc(activeProfileId)
+          .collection('progress')
+          .doc(String(animeId))
+          .set({
+            animeId: String(animeId),
+            title: animeTitle,
+            backdrop: animeBackdrop || '', 
+            slug: currentSlug ? String(currentSlug) : String(currentEpNum),
+            lastWatchedEp: currentEpNum,
+            progress: currentSecs,
+            duration: durationSecs,
+            finishedEp: isCompleted,
+            timestamp: Date.now()
+          }, { merge: true }).catch(() => {});
       }
     }
-  }, [status.positionMillis, subtitlesEnabled, parsedSubs, currentSubText]);
+  }, [status.positionMillis, subtitlesEnabled, parsedSubs, currentSubText, activeProfileId]);
 
-  // 5. Seamless Next Episode Logic (No Navigation Crash!)
+  // 5. Seamless Next Episode Logic
   const handleNextEpisode = () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
     
-    // Smoothly wipe local state
     setLoadingStream(true);
     setActiveUrl(null);
     setCurrentSubText('');
     setParsedSubs([]);
     lastPositionRef.current = 0; 
     
-    // Inject new episode data - Component stays mounted!
     setCurrentEpNum(nextEpisodeData.num);
     setCurrentEpTitle(nextEpisodeData.title);
     setCurrentSlug(nextEpisodeData.slug);
