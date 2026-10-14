@@ -15,6 +15,7 @@ try {
 
 const BRAND_RED = '#E50914';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
+const PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
 
 const FONT_OPTIONS = [
   { label: 'System Default', value: 'normal' },
@@ -40,7 +41,7 @@ const IconPlus = ({ size = 18, color = "#FFF" }) => (
   </Svg>
 );
 
-// --- STRICT VTT/SRT PARSER ---
+// --- ROBUST LINE-BY-LINE PARSER ---
 const parseTimeToSeconds = (timeStr) => {
   const cleanTimeStr = timeStr.trim().split(/\s+/)[0].replace(',', '.');
   const parts = cleanTimeStr.split(':');
@@ -55,41 +56,54 @@ const parseTimeToSeconds = (timeStr) => {
   return Number.isFinite(seconds) ? seconds : NaN;
 };
 
-const fetchAndParseSubtitle = async (uri) => {
+const fetchAndParseSubtitle = async (uri, referer) => {
   try {
     let text = '';
     
     if (uri.startsWith('file://')) {
       text = await FileSystem.readAsStringAsync(uri);
     } else {
-      const response = await fetch(uri);
-      if (!response.ok) throw new Error('Failed to fetch subtitle');
+      // USE CLOUDFLARE PROXY TO BYPASS 403 BLOCKS
+      const proxyUri = `${PROXY_URL}${encodeURIComponent(uri)}&referer=${encodeURIComponent(referer)}`;
+      const response = await fetch(proxyUri);
+      
+      if (!response.ok) throw new Error('Proxy fetch failed');
       text = await response.text();
     }
     
+    // If we received an HTML error page instead of a VTT file, abort
+    if (text.trim().toLowerCase().startsWith('<!doctype html>') || text.trim().toLowerCase().startsWith('<html')) {
+      throw new Error('Received HTML blocked page instead of VTT.');
+    }
+
     const cues = [];
-    const blocks = text.replace(/\r\n/g, '\n').split('\n\n');
-    
-    for (const block of blocks) {
-      const lines = block.split('\n');
-      const timeLineIndex = lines.findIndex(l => l.includes('-->'));
+    const lines = text.replace(/\r\n/g, '\n').split('\n');
+    let currentCue = null;
+
+    // Line-by-line parsing avoids splitting errors on badly formatted VTTs
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
       
-      if (timeLineIndex !== -1) {
-        const [startStr, endStr] = lines[timeLineIndex].split('-->');
+      if (line.includes('-->')) {
+        const [startStr, endStr] = line.split('-->');
         const start = parseTimeToSeconds(startStr);
         const end = parseTimeToSeconds(endStr);
-        
-        const textContent = lines.slice(timeLineIndex + 1)
-          .join('\n')
-          .replace(/<[^>]*>/g, '') 
-          .trim();
-          
-        if (textContent && Number.isFinite(start) && Number.isFinite(end) && end > start) {
-          cues.push({ start, end, text: textContent });
+
+        if (Number.isFinite(start) && Number.isFinite(end)) {
+          currentCue = { start, end, text: '' };
+          cues.push(currentCue);
         }
+      } else if (currentCue && line.trim() === '') {
+        currentCue.text = currentCue.text.trim();
+        currentCue = null;
+      } else if (currentCue) {
+        const cleanText = line.replace(/<[^>]*>/g, '');
+        currentCue.text += (currentCue.text ? '\n' : '') + cleanText;
       }
     }
-    return cues;
+
+    if (currentCue) currentCue.text = currentCue.text.trim();
+    return cues.filter(c => c.text.length > 0);
   } catch (err) {
     console.error("Subtitle parsing error:", err);
     return []; 
@@ -115,6 +129,7 @@ export default function SubtitleSheet({
 
   const customFileUrisRef = useRef([]);
   const requestIdRef = useRef(0);
+  const refererRef = useRef('https://vidwish.live/');
 
   // 1. BACKGROUND FETCH & AUTO-LOAD
   useEffect(() => {
@@ -128,17 +143,22 @@ export default function SubtitleSheet({
         const res = await fetch(url);
         const json = await res.json();
 
-        // Abort if episode changed while fetching
         if (currentRequestId !== requestIdRef.current) return;
 
-        if (json?.success && Array.isArray(json?.data?.subtitles) && json.data.subtitles.length > 0) {
-          setAvailableTracks(json.data.subtitles);
-          
-          const defaultIdx = json.data.subtitles.findIndex(s => s.default) !== -1 
-            ? json.data.subtitles.findIndex(s => s.default) 
-            : 0;
-          
-          handleTrackSelect(json.data.subtitles[defaultIdx], defaultIdx, currentRequestId);
+        if (json?.success && json.data) {
+          if (json.data.referer) {
+            refererRef.current = json.data.referer; // Save the API's referer for the proxy
+          }
+
+          if (Array.isArray(json.data.subtitles) && json.data.subtitles.length > 0) {
+            setAvailableTracks(json.data.subtitles);
+            
+            const defaultIdx = json.data.subtitles.findIndex(s => s.default) !== -1 
+              ? json.data.subtitles.findIndex(s => s.default) 
+              : 0;
+            
+            handleTrackSelect(json.data.subtitles[defaultIdx], defaultIdx, currentRequestId);
+          }
         }
       } catch (_) {
       } finally {
@@ -149,11 +169,10 @@ export default function SubtitleSheet({
     fetchSubtitles();
 
     return () => {
-      requestIdRef.current++; // Invalidate pending requests
+      requestIdRef.current++; 
       setAvailableTracks([]);
       if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
       
-      // Clean up local custom subtitle files
       customFileUrisRef.current.forEach(uri => {
         FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
       });
@@ -163,15 +182,12 @@ export default function SubtitleSheet({
 
   // Core Track Loader
   const handleTrackSelect = async (track, idx, parentRequestId = null) => {
-    // Determine the active request ID context
     const reqId = parentRequestId || ++requestIdRef.current;
     
     setParsingIndex(idx); 
-    const parsedCues = await fetchAndParseSubtitle(track.file);
+    const parsedCues = await fetchAndParseSubtitle(track.file, refererRef.current);
     
-    // Abort if user clicked another track or switched episodes
     if (reqId !== requestIdRef.current) return;
-    
     setParsingIndex(null);
 
     if (parsedCues.length > 0) {
@@ -187,7 +203,7 @@ export default function SubtitleSheet({
   };
 
   const handleTurnOff = () => {
-    requestIdRef.current++; // Invalidate any pending parses
+    requestIdRef.current++; 
     setParsingIndex(null);
     setSelectedTrackIndex(-1);
     setSubtitlesEnabled(false);
@@ -243,9 +259,11 @@ export default function SubtitleSheet({
           </TouchableOpacity>
         </View>
 
-        <View style={{ flexShrink: 1 }}>
+        {/* UI FIX: flexShrink ensures the ScrollView doesn't collapse to 0 height or overflow off-screen */}
+        <ScrollView style={{ flexShrink: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
+          
           {activeTab === 'tracks' && (
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContainer}>
+            <View style={styles.listContainer}>
               {isFetchingList && <ActivityIndicator size="small" color={BRAND_RED} style={{ marginVertical: 10 }} />}
 
               <TouchableOpacity 
@@ -283,11 +301,11 @@ export default function SubtitleSheet({
                 <IconPlus size={16} color="#FFF" />
                 <Text style={styles.addCustomText}>Add Custom Subtitle</Text>
               </TouchableOpacity>
-            </ScrollView>
+            </View>
           )}
 
           {activeTab === 'styles' && (
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.stylesContainer}>
+            <View style={styles.stylesContainer}>
               <Text style={styles.sectionTitle}>Font Family</Text>
               <View style={styles.fontGrid}>
                 {FONT_OPTIONS.map((f, i) => {
@@ -336,9 +354,9 @@ export default function SubtitleSheet({
                   );
                 })}
               </View>
-            </ScrollView>
+            </View>
           )}
-        </View>
+        </ScrollView>
       </View>
     </View>
   );
@@ -347,13 +365,13 @@ export default function SubtitleSheet({
 const styles = StyleSheet.create({
   absoluteWrapper: { ...StyleSheet.absoluteFillObject, zIndex: 100, justifyContent: 'flex-end' },
   backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.6)' },
-  sheetSurface: { width: '100%', maxWidth: 600, alignSelf: 'center', backgroundColor: '#121212', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 18, paddingBottom: 28, maxHeight: SCREEN_HEIGHT * 0.80, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
+  sheetSurface: { width: '100%', maxWidth: 600, alignSelf: 'center', backgroundColor: '#121212', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 18, maxHeight: SCREEN_HEIGHT * 0.85, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)' },
   tabHeader: { flexDirection: 'row', marginBottom: 16, backgroundColor: '#1E1E1E', borderRadius: 12, padding: 4 },
   tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
   tabBtnActive: { backgroundColor: BRAND_RED },
   tabText: { color: 'rgba(255,255,255,0.6)', fontWeight: '700', fontSize: 13 },
   tabTextActive: { color: '#FFF', fontWeight: '900' },
-  listContainer: { gap: 10, paddingBottom: 8 },
+  listContainer: { gap: 10 },
   trackCard: { width: '100%', paddingVertical: 16, paddingHorizontal: 18, borderRadius: 10 },
   trackCardActive: { backgroundColor: BRAND_RED },
   trackCardInactive: { backgroundColor: '#1E1E1E' },
@@ -362,7 +380,7 @@ const styles = StyleSheet.create({
   trackNameInactive: { color: 'rgba(255,255,255,0.7)', fontWeight: '600' },
   addCustomBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 14, backgroundColor: 'rgba(255,255,255,0.05)', borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)', gap: 8, marginTop: 4 },
   addCustomText: { color: '#FFF', fontSize: 14, fontWeight: '700' },
-  stylesContainer: { gap: 12, paddingBottom: 16 },
+  stylesContainer: { gap: 12 },
   sectionTitle: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 4 },
   fontGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   fontCard: { width: '48%', paddingVertical: 12, paddingHorizontal: 10, backgroundColor: '#1E1E1E', borderRadius: 8, alignItems: 'center' },
