@@ -1,5 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar } from 'react-native';
+import auth from '@react-native-firebase/auth';
+import firestore from '@react-native-firebase/firestore';
 import Svg, { Defs, LinearGradient, Stop, Rect, Path, Circle } from 'react-native-svg';
 
 import Carousel from './home/carousel';
@@ -28,12 +30,106 @@ const IconSearch = ({ size = 26, color = "#FFF" }) => (
   </Svg>
 );
 
-export default function Home({ user, activeProfile, onSwitchProfile, navigation }) {
+export default function Home({
+  user: propUser,
+  activeProfile: propActiveProfile,
+  currentProfile: propCurrentProfile,
+  onSwitchProfile,
+  navigation,
+  route,
+}) {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedAnime, setSelectedAnime] = useState(null);
 
+  // Resolve User and Active Profile from props or navigation route params
+  const resolvedUser = propUser || route?.params?.user || auth().currentUser || null;
+  const incomingProfile =
+    propActiveProfile ||
+    propCurrentProfile ||
+    route?.params?.activeProfile ||
+    route?.params?.currentProfile ||
+    null;
+
+  const [currentProfile, setCurrentProfile] = useState(incomingProfile);
+
+  // Keep local profile state synced whenever parent or route updates activeProfile
+  useEffect(() => {
+    if (incomingProfile?.id) {
+      setCurrentProfile(incomingProfile);
+    }
+  }, [incomingProfile?.id, incomingProfile?.name, incomingProfile?.avatar]);
+
+  // Fallback: If Home mounts without an activeProfile prop, load the active profile from Firestore
+  useEffect(() => {
+    if (currentProfile?.id || !resolvedUser?.uid) return;
+    let isMounted = true;
+
+    const loadFallbackProfile = async () => {
+      try {
+        const userDoc = await firestore().collection('users').doc(String(resolvedUser.uid)).get();
+        if (userDoc.exists) {
+          const uData = userDoc.data();
+          if (uData?.activeProfile?.id && isMounted) {
+            setCurrentProfile(uData.activeProfile);
+            return;
+          }
+          if (uData?.activeProfileId) {
+            const profDoc = await firestore()
+              .collection('users')
+              .doc(String(resolvedUser.uid))
+              .collection('profiles')
+              .doc(String(uData.activeProfileId))
+              .get();
+            if (profDoc.exists && isMounted) {
+              setCurrentProfile({ id: profDoc.id, ...profDoc.data() });
+              return;
+            }
+          }
+        }
+
+        const snap = await firestore()
+          .collection('users')
+          .doc(String(resolvedUser.uid))
+          .collection('profiles')
+          .limit(1)
+          .get();
+
+        if (!snap.empty && isMounted) {
+          const firstDoc = snap.docs[0];
+          setCurrentProfile({ id: firstDoc.id, ...firstDoc.data() });
+        }
+      } catch (err) {
+        console.warn('Home profile fallback error:', err);
+      }
+    };
+
+    loadFallbackProfile();
+    return () => { isMounted = false; };
+  }, [resolvedUser?.uid, currentProfile?.id]);
+
+  const activeProfileId = currentProfile?.id ? String(currentProfile.id) : null;
+
+  // Attach user & profile context to any selected anime object before opening Play.js
+  const handleSelectAnime = (anime) => {
+    if (!anime) {
+      setSelectedAnime(null);
+      return;
+    }
+    setSelectedAnime({
+      ...anime,
+      userUid: resolvedUser?.uid || null,
+      activeProfileId: activeProfileId,
+      activeProfile: currentProfile,
+      currentProfile: currentProfile,
+    });
+  };
+
   // Hidden overlay detection includes the Downloads tab
-  const isOverlayActive = selectedAnime !== null || activeTab === 'Search' || activeTab === 'Settings' || activeTab === 'Downloads';
+  const isOverlayActive =
+    selectedAnime !== null ||
+    activeTab === 'Search' ||
+    activeTab === 'Settings' ||
+    activeTab === 'Downloads';
 
   return (
     <View style={styles.masterContainer}>
@@ -49,15 +145,39 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
           bounces={false}
         >
           {/* Main Hero Slider */}
-          <Carousel user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
+          <Carousel 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onSelectAnime={handleSelectAnime} 
+          />
           
-          {/* The New Premium Continue Watching Row */}
+          {/* Continue Watching Row (now receives activeProfile!) */}
           <View style={styles.contentPadding}>
-            <ContinueWatching user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
+            <ContinueWatching 
+              user={resolvedUser} 
+              activeProfile={currentProfile}
+              currentProfile={currentProfile}
+              activeProfileId={activeProfileId}
+              onSelectAnime={handleSelectAnime} 
+            />
           </View>
           
-          <RecentSlider user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
-          <TrendingSlider user={user} onSelectAnime={(anime) => setSelectedAnime(anime)} />
+          <RecentSlider 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onSelectAnime={handleSelectAnime} 
+          />
+          <TrendingSlider 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onSelectAnime={handleSelectAnime} 
+          />
 
           <View style={{ height: 40 }} />
         </ScrollView>
@@ -89,7 +209,7 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
 
               <TouchableOpacity onPress={onSwitchProfile} style={styles.profileSwitcher} activeOpacity={0.8}>
                 <Image 
-                  source={AVATARS[activeProfile?.avatar || 'pfp1.jpg']} 
+                  source={AVATARS[currentProfile?.avatar] || AVATARS['pfp1.jpg']} 
                   style={styles.headerAvatar} 
                 />
               </TouchableOpacity>
@@ -106,7 +226,10 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
       {selectedAnime && (
         <Play 
           anime={selectedAnime} 
-          user={user} 
+          user={resolvedUser} 
+          activeProfile={currentProfile}
+          currentProfile={currentProfile}
+          activeProfileId={activeProfileId}
           onBack={() => setSelectedAnime(null)} 
           navigation={navigation}
         />
@@ -115,9 +238,15 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
       {activeTab === 'Search' && (
         <View style={styles.overlayScreen}>
           <Search 
-            user={user} 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
             onBack={() => setActiveTab('Home')} 
-            onSelectAnime={(anime) => setSelectedAnime(anime)} 
+            onSelectAnime={(anime) => {
+              setActiveTab('Home');
+              handleSelectAnime(anime);
+            }} 
           />
           <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
         </View>
@@ -127,7 +256,10 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
       {activeTab === 'Downloads' && (
         <View style={styles.overlayScreen}>
           <Downloads 
-            user={user} 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
             navigation={navigation} 
             onBack={() => setActiveTab('Home')} 
           />
@@ -137,7 +269,15 @@ export default function Home({ user, activeProfile, onSwitchProfile, navigation 
 
       {activeTab === 'Settings' && (
         <View style={styles.overlayScreen}>
-          <ProfileSettings user={user} setLoggedInUser={() => {}} onHardwareBack={() => setActiveTab('Home')} /> 
+          <ProfileSettings 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onSwitchProfile={onSwitchProfile}
+            setLoggedInUser={() => {}} 
+            onHardwareBack={() => setActiveTab('Home')} 
+          /> 
           <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
         </View>
       )}
@@ -163,7 +303,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between', 
     alignItems: 'center', 
     paddingHorizontal: 20, 
-    paddingTop: 32, // Moved slightly up
+    paddingTop: 32,
   },
   headerLogoImage: { 
     width: 175, 
