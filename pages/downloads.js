@@ -6,7 +6,8 @@ import {
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import * as FileSystem from 'expo-file-system';
-import Svg, { Path, Circle, Polyline, Line } from 'react-native-svg';
+import * as NavigationBar from 'expo-navigation-bar';
+import Svg, { Path, Circle, Polyline } from 'react-native-svg';
 
 import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
@@ -82,7 +83,9 @@ const stripNonAscii = (str) =>
     .replace(/[^\x20-\x7E]/g, '')
     .trim();
 
-// --- LOCAL STORAGE READ / WRITE ---
+// --- ATOMIC SERIALIZED LOCAL STORAGE READ / WRITE (SAFE FOR PARALLEL DOWNLOADS) ---
+let storageLockPromise = Promise.resolve();
+
 const readLocalQueue = async () => {
   try {
     if (AsyncStorage?.getItem) {
@@ -125,6 +128,21 @@ const writeLocalQueue = async (queueArray) => {
       await FileSystem.writeAsStringAsync(DOWNLOAD_QUEUE_FILE_URI, serialized);
     }
   } catch (_) {}
+};
+
+const mutateQueueSafe = (mutatorFn) => {
+  storageLockPromise = storageLockPromise
+    .then(async () => {
+      const current = await readLocalQueue();
+      const updated = await mutatorFn(current);
+      if (Array.isArray(updated)) {
+        await writeLocalQueue(updated);
+        return updated;
+      }
+      return current;
+    })
+    .catch(() => []);
+  return storageLockPromise;
 };
 
 // --- EMOJI-FREE PLAIN TEXT NOTIFICATIONS WITH PORTRAIT POSTER ON LEFT ---
@@ -225,70 +243,73 @@ const fetchAnimeDetailsForOffline = async (animeTitle) => {
 };
 
 // ============================================================================
-// PERSISTENT BACKGROUND DOWNLOAD SINGLETON
-// Continues downloading even when Downloads.js is unmounted or app is backgrounded
+// CONCURRENT MULTI-DOWNLOAD BACKGROUND ENGINE (DOWNLOADS ALL AT ONCE)
 // ============================================================================
 const BgManager = {
-  isRunning: false,
-  isPaused: false,
-  isCanceled: false,
-  activeTask: null,
-  pct: 0,
-  downloadedBytes: 0,
-  estimatedTotalBytes: 100 * 1024 * 1024,
+  jobs: new Map(), // taskId -> { isRunning, isPaused, isCanceled, task, pct, downloadedBytes, estimatedTotalBytes }
   listeners: new Set(),
   daemonInitialized: false,
 };
 
+const getJobsSnapshot = () => {
+  const obj = {};
+  BgManager.jobs.forEach((val, key) => {
+    obj[key] = { ...val };
+  });
+  return obj;
+};
+
 const notifyListeners = () => {
-  const state = {
-    isRunning: BgManager.isRunning,
-    isPaused: BgManager.isPaused,
-    activeTask: BgManager.activeTask,
-    pct: BgManager.pct,
-    downloadedBytes: BgManager.downloadedBytes,
-    estimatedTotalBytes: BgManager.estimatedTotalBytes,
-  };
+  const snapshot = getJobsSnapshot();
   BgManager.listeners.forEach((fn) => {
     try {
-      fn(state);
+      fn(snapshot);
     } catch (_) {}
   });
 };
 
 const updateQueueRecord = async (itemId, patch) => {
-  const list = await readLocalQueue();
-  const updated = list.map((item) =>
-    item.id === itemId ? { ...item, ...patch, updatedAt: Date.now() } : item
+  let targetRecord = null;
+  const updatedList = await mutateQueueSafe((list) =>
+    list.map((item) => {
+      if (item.id === itemId) {
+        targetRecord = { ...item, ...patch, updatedAt: Date.now() };
+        return targetRecord;
+      }
+      return item;
+    })
   );
-  await writeLocalQueue(updated);
 
-  const target = updated.find((i) => i.id === itemId);
-  if (target && target.userUid && target.profileId) {
+  if (targetRecord && targetRecord.userUid && targetRecord.profileId) {
     firestore()
       .collection('users')
-      .doc(String(target.userUid))
+      .doc(String(targetRecord.userUid))
       .collection('profiles')
-      .doc(String(target.profileId))
+      .doc(String(targetRecord.profileId))
       .collection('downloads')
-      .doc(`${target.animeId}_ep_${target.episodeNum}`)
-      .set(target, { merge: true })
+      .doc(`${targetRecord.animeId}_ep_${targetRecord.episodeNum}`)
+      .set(targetRecord, { merge: true })
       .catch(() => {});
   }
   notifyListeners();
-  return updated;
+  return updatedList;
 };
 
-const executeBackgroundDownload = async (task) => {
-  if (!VAULT_ROOT_DIR || BgManager.isRunning) return;
+const executeConcurrentDownload = async (task) => {
+  if (!VAULT_ROOT_DIR || !task?.id) return;
+  const existingJob = BgManager.jobs.get(task.id);
+  if (existingJob?.isRunning) return;
 
-  BgManager.isRunning = true;
-  BgManager.isPaused = false;
-  BgManager.isCanceled = false;
-  BgManager.activeTask = task;
-  BgManager.pct = task.progressPct || 0;
-  BgManager.downloadedBytes = task.sizeBytes || 0;
-  BgManager.estimatedTotalBytes = task.estimatedTotalBytes || 100 * 1024 * 1024;
+  const jobState = {
+    isRunning: true,
+    isPaused: false,
+    isCanceled: false,
+    task,
+    pct: task.progressPct || 0,
+    downloadedBytes: task.sizeBytes || 0,
+    estimatedTotalBytes: task.estimatedTotalBytes || 100 * 1024 * 1024,
+  };
+  BgManager.jobs.set(task.id, jobState);
   notifyListeners();
 
   const safeFolderId = String(task.id).replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -323,7 +344,7 @@ const executeBackgroundDownload = async (task) => {
     }
     if (!epSynopsis) {
       epSynopsis = task.episodeTitle
-        ? `${task.episodeTitle} - ${ synopsis.slice(0, 95) }`
+        ? `${task.episodeTitle} - ${synopsis.slice(0, 95)}`
         : synopsis.slice(0, 110);
     }
     if (!genres || genres.length === 0) {
@@ -367,13 +388,13 @@ const executeBackgroundDownload = async (task) => {
       genres,
       totalEpisodes: totalEpCount,
     };
-    BgManager.activeTask = updatedTaskMeta;
+    jobState.task = updatedTaskMeta;
     await updateQueueRecord(task.id, updatedTaskMeta);
 
     await pushPlainNotification(
       notifId,
       notifTitle,
-      `0% - ${formatMbRatio(0, BgManager.estimatedTotalBytes)}`,
+      `0% - ${formatMbRatio(0, jobState.estimatedTotalBytes)}`,
       0,
       false,
       localPosterUri
@@ -413,8 +434,27 @@ const executeBackgroundDownload = async (task) => {
       }
     }
 
+    // Ensure DUB also fetches SUB subtitles if none were attached
+    if (!subtitleFileUrl && task.subtitle?.lang !== 'none') {
+      const safeAnimeId = encodeURIComponent(task.animeId);
+      const safeSlug = encodeURIComponent(task.slug || task.episodeNum);
+      try {
+        const subApiRes = await fetch(
+          `${VERCEL_API_BASE}/api/stream?id=${safeAnimeId}&ep=${safeSlug}&server=hd-1&type=sub`
+        );
+        const subApiJson = await subApiRes.json();
+        const subPayload = subApiJson?.data || subApiJson?.results;
+        if (Array.isArray(subPayload?.subtitles) && subPayload.subtitles.length > 0) {
+          const matchedSub =
+            subPayload.subtitles.find((s) => (s.label || s.lang) === task.subtitle?.label) ||
+            subPayload.subtitles[0];
+          subtitleFileUrl = matchedSub?.file || null;
+        }
+      } catch (_) {}
+    }
+
     if (!streamUri) {
-      throw new Error('Episode stream unavailable');
+      throw new Error('Episode unavailable');
     }
 
     // 3. Download Subtitle (.vtt) to Local Storage
@@ -468,7 +508,7 @@ const executeBackgroundDownload = async (task) => {
           variants.sort((a, b) => b.height - a.height)[0];
         activePlaylistUrl = exactMatch.url;
         const variantRes = await fetch(buildProxyUrl(activePlaylistUrl, referer));
-        if (!variantRes.ok) throw new Error('Quality stream unavailable');
+        if (!variantRes.ok) throw new Error('Quality unavailable');
         playlistText = await variantRes.text();
       }
     }
@@ -520,7 +560,7 @@ const executeBackgroundDownload = async (task) => {
     }
 
     if (segmentEntries.length === 0) {
-      throw new Error('No video data found');
+      throw new Error('No video data');
     }
 
     const totalSegs = segmentEntries.length;
@@ -530,19 +570,19 @@ const executeBackgroundDownload = async (task) => {
 
     // 6. Download Video Data in Background-Capable Batches
     for (let i = 0; i < totalSegs; i += BATCH_SIZE) {
-      if (BgManager.isCanceled) throw new Error('Canceled');
+      if (jobState.isCanceled) throw new Error('Canceled');
 
-      while (BgManager.isPaused && !BgManager.isCanceled) {
+      while (jobState.isPaused && !jobState.isCanceled) {
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
 
-      if (BgManager.isCanceled) throw new Error('Canceled');
+      if (jobState.isCanceled) throw new Error('Canceled');
 
       const batch = segmentEntries.slice(i, i + BATCH_SIZE);
 
       await Promise.all(
         batch.map(async (seg) => {
-          if (BgManager.isCanceled) return;
+          if (jobState.isCanceled) return;
 
           const existingInfo = await FileSystem.getInfoAsync(seg.localUri);
           if (existingInfo.exists && (existingInfo.size || 0) > 0) {
@@ -574,24 +614,24 @@ const executeBackgroundDownload = async (task) => {
           ? Math.round((accumulatedBytes / completedSegs) * totalSegs)
           : 100 * 1024 * 1024;
 
-      BgManager.pct = pct;
-      BgManager.downloadedBytes = accumulatedBytes;
-      BgManager.estimatedTotalBytes = dynamicTotalBytes;
+      jobState.pct = pct;
+      jobState.downloadedBytes = accumulatedBytes;
+      jobState.estimatedTotalBytes = dynamicTotalBytes;
       notifyListeners();
 
-      if (pct % 4 === 0 || pct === 100 || completedSegs === totalSegs) {
+      if (pct % 5 === 0 || pct === 100 || completedSegs === totalSegs) {
         const mbRatioStr = formatMbRatio(accumulatedBytes, dynamicTotalBytes);
         await pushPlainNotification(
           notifId,
           notifTitle,
           `${pct}% - ${mbRatioStr}`,
           pct,
-          BgManager.isPaused,
+          jobState.isPaused,
           localPosterUri
         );
 
         await updateQueueRecord(task.id, {
-          status: BgManager.isPaused ? 'paused' : 'downloading',
+          status: jobState.isPaused ? 'paused' : 'downloading',
           progressPct: pct,
           sizeBytes: accumulatedBytes,
           estimatedTotalBytes: dynamicTotalBytes,
@@ -599,7 +639,7 @@ const executeBackgroundDownload = async (task) => {
       }
     }
 
-    // 7. Save Offline Video Index & Metadata JSON (with Subtitle, Cover Image, Synopsis)
+    // 7. Save Offline Video Index & Metadata JSON
     const localM3u8Uri = `${epFolderUri}index.m3u8`;
     await FileSystem.writeAsStringAsync(localM3u8Uri, rewrittenLines.join('\n'));
 
@@ -648,7 +688,7 @@ const executeBackgroundDownload = async (task) => {
 
     await pushPlainDoneNotification(notifId, `Downloaded ${notifTitle}`, localPosterUri);
   } catch (err) {
-    if (BgManager.isCanceled || (err?.message && err.message.includes('Canceled'))) {
+    if (jobState.isCanceled || (err?.message && err.message.includes('Canceled'))) {
       await dismissPlainNotification(notifId);
       try {
         await FileSystem.deleteAsync(epFolderUri, { idempotent: true });
@@ -660,30 +700,33 @@ const executeBackgroundDownload = async (task) => {
       });
     }
   } finally {
-    BgManager.isRunning = false;
-    BgManager.isPaused = false;
-    BgManager.activeTask = null;
-    BgManager.pct = 0;
+    BgManager.jobs.delete(task.id);
     notifyListeners();
   }
 };
 
-const handleTogglePauseBg = async () => {
-  const task = BgManager.activeTask;
-  if (!task) return;
-  const nextPaused = !BgManager.isPaused;
-  BgManager.isPaused = nextPaused;
+const handleTogglePauseJob = async (taskId) => {
+  const job = BgManager.jobs.get(taskId);
+  if (!job) {
+    // If job wasn't running in memory yet, mark it queued so the daemon starts it immediately
+    await updateQueueRecord(taskId, { status: 'queued' });
+    return;
+  }
+
+  const nextPaused = !job.isPaused;
+  job.isPaused = nextPaused;
   notifyListeners();
 
+  const task = job.task;
   const notifId = `dl-${task.id}`;
   const notifTitle = `${task.animeTitle} - Episode ${task.episodeNum}`;
-  const mbRatioStr = formatMbRatio(BgManager.downloadedBytes, BgManager.estimatedTotalBytes);
+  const mbRatioStr = formatMbRatio(job.downloadedBytes, job.estimatedTotalBytes);
 
   await pushPlainNotification(
     notifId,
     notifTitle,
-    nextPaused ? `Paused - ${mbRatioStr}` : `${BgManager.pct}% - ${mbRatioStr}`,
-    BgManager.pct,
+    nextPaused ? `Paused - ${mbRatioStr}` : `${job.pct}% - ${mbRatioStr}`,
+    job.pct,
     nextPaused,
     task.localPosterUri || task.coverImage || task.backdrop
   );
@@ -693,67 +736,99 @@ const handleTogglePauseBg = async () => {
   });
 };
 
-const handleCancelBg = async () => {
-  const task = BgManager.activeTask;
-  BgManager.isCanceled = true;
-  BgManager.isPaused = false;
-  notifyListeners();
-
-  if (task) {
-    await dismissPlainNotification(`dl-${task.id}`);
-    const list = await readLocalQueue();
-    const filtered = list.filter((i) => i.id !== task.id);
-    await writeLocalQueue(filtered);
-
-    if (task.targetFolder) {
-      FileSystem.deleteAsync(task.targetFolder, { idempotent: true }).catch(() => {});
-    }
-    if (task.userUid && task.profileId) {
-      firestore()
-        .collection('users')
-        .doc(String(task.userUid))
-        .collection('profiles')
-        .doc(String(task.profileId))
-        .collection('downloads')
-        .doc(`${task.animeId}_ep_${task.episodeNum}`)
-        .delete()
-        .catch(() => {});
-    }
+const handleCancelJob = async (taskId) => {
+  const job = BgManager.jobs.get(taskId);
+  if (job) {
+    job.isCanceled = true;
+    job.isPaused = false;
   }
-  BgManager.activeTask = null;
+  await dismissPlainNotification(`dl-${taskId}`);
+
+  let removedItem = null;
+  await mutateQueueSafe((list) => {
+    removedItem = list.find((i) => i.id === taskId);
+    return list.filter((i) => i.id !== taskId);
+  });
+
+  if (removedItem?.targetFolder) {
+    FileSystem.deleteAsync(removedItem.targetFolder, { idempotent: true }).catch(() => {});
+  }
+  if (removedItem?.userUid && removedItem?.profileId) {
+    firestore()
+      .collection('users')
+      .doc(String(removedItem.userUid))
+      .collection('profiles')
+      .doc(String(removedItem.profileId))
+      .collection('downloads')
+      .doc(`${removedItem.animeId}_ep_${removedItem.episodeNum}`)
+      .delete()
+      .catch(() => {});
+  }
+
+  BgManager.jobs.delete(taskId);
   notifyListeners();
 };
 
+// Daemon launches ALL queued downloads simultaneously without waiting one by one
 const initBackgroundDaemon = () => {
   if (BgManager.daemonInitialized) return;
   BgManager.daemonInitialized = true;
 
-  DeviceEventEmitter.addListener('PAUSE_DOWNLOAD', () => {
-    if (!BgManager.isPaused) handleTogglePauseBg();
+  const extractTaskId = (notifId) =>
+    notifId && String(notifId).startsWith('dl-') ? String(notifId).slice(3) : null;
+
+  DeviceEventEmitter.addListener('PAUSE_DOWNLOAD', (notifId) => {
+    const tId = extractTaskId(notifId);
+    if (tId) {
+      handleTogglePauseJob(tId);
+    } else {
+      BgManager.jobs.forEach((job, id) => {
+        if (!job.isPaused) handleTogglePauseJob(id);
+      });
+    }
   });
-  DeviceEventEmitter.addListener('RESUME_DOWNLOAD', () => {
-    if (BgManager.isPaused) handleTogglePauseBg();
+
+  DeviceEventEmitter.addListener('RESUME_DOWNLOAD', (notifId) => {
+    const tId = extractTaskId(notifId);
+    if (tId) {
+      handleTogglePauseJob(tId);
+    } else {
+      BgManager.jobs.forEach((job, id) => {
+        if (job.isPaused) handleTogglePauseJob(id);
+      });
+    }
   });
-  DeviceEventEmitter.addListener('CANCEL_DOWNLOAD', () => {
-    handleCancelBg();
+
+  DeviceEventEmitter.addListener('CANCEL_DOWNLOAD', (notifId) => {
+    const tId = extractTaskId(notifId);
+    if (tId) {
+      handleCancelJob(tId);
+    } else {
+      const firstKey = BgManager.jobs.keys().next().value;
+      if (firstKey) handleCancelJob(firstKey);
+    }
   });
 
   setInterval(async () => {
-    if (BgManager.isRunning || BgManager.isPaused) return;
     const queue = await readLocalQueue();
-    const nextItem = queue.find(
+    const pendingItems = queue.filter(
       (item) => item.status === 'queued' || item.status === 'downloading'
     );
-    if (nextItem) {
-      executeBackgroundDownload(nextItem);
+
+    // Start ALL pending downloads concurrently right away!
+    for (const item of pendingItems) {
+      const existing = BgManager.jobs.get(item.id);
+      if (!existing || (!existing.isRunning && !existing.isPaused)) {
+        executeConcurrentDownload(item);
+      }
     }
-  }, 2000);
+  }, 1500);
 };
 
 initBackgroundDaemon();
 
 // ============================================================================
-// SVG ICONS MATCHING SCREENSHOT
+// SVG ICONS
 // ============================================================================
 const IconChevronLeft = ({ size = 22, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -767,7 +842,7 @@ const IconChevronDown = ({ size = 18, color = TEXT_GREY }) => (
   </Svg>
 );
 
-const IconBookmark = ({ size = 14, color = WHITE, filled = false }) => (
+const IconBookmark = ({ size = 18, color = WHITE, filled = false }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : 'none'} stroke={filled ? PURE_RED : color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
@@ -808,22 +883,34 @@ export default function Downloads({
   const resolvedUid = resolvedUser?.uid || null;
 
   const [queueItems, setQueueItems] = useState([]);
+  const [jobsMap, setJobsMap] = useState(() => getJobsSnapshot());
+
+  // Dropdown states (Downloading section dropdown, per-downloading-series dropdown, and Downloaded series dropdown)
+  const [downloadingDropdownOpen, setDownloadingDropdownOpen] = useState(true);
+  const [downloadedDropdownOpen, setDownloadedDropdownOpen] = useState(true);
+  const [expandedActiveMap, setExpandedActiveMap] = useState({});
   const [expandedSeriesMap, setExpandedSeriesMap] = useState({});
+
   const [watchlistMap, setWatchlistMap] = useState({});
   const [watchHistoryMap, setWatchHistoryMap] = useState({});
   const [menuTarget, setMenuTarget] = useState(null);
   const [topLevelPlayback, setTopLevelPlayback] = useState(null);
 
-  const [bgState, setBgState] = useState({
-    isRunning: BgManager.isRunning,
-    isPaused: BgManager.isPaused,
-    activeTask: BgManager.activeTask,
-    pct: BgManager.pct,
-    downloadedBytes: BgManager.downloadedBytes,
-    estimatedTotalBytes: BgManager.estimatedTotalBytes,
-  });
+  // Enforce total immersive mode (hide notification bar & bottom system navigation bar) when Player opens
+  useEffect(() => {
+    const applyImmersiveBars = async () => {
+      try {
+        StatusBar.setHidden(true, 'none');
+        if (topLevelPlayback) {
+          await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
+        }
+      } catch (_) {}
+    };
+    applyImmersiveBars();
+  }, [topLevelPlayback]);
 
-  // Load local queue & subscribe to background downloader
+  // Load local queue & subscribe to concurrent background downloader
   useEffect(() => {
     let isMounted = true;
 
@@ -831,11 +918,18 @@ export default function Downloads({
       const list = await readLocalQueue();
       if (isMounted) {
         setQueueItems(list);
-        // Default-expand first downloaded series so episodes are visible like screenshot
         if (list.length > 0) {
           setExpandedSeriesMap((prev) => {
             if (Object.keys(prev).length > 0) return prev;
             return { [String(list[0].animeId)]: true };
+          });
+          setExpandedActiveMap((prev) => {
+            if (Object.keys(prev).length > 0) return prev;
+            const next = {};
+            list.forEach((item) => {
+              next[item.id] = true;
+            });
+            return next;
           });
         }
       }
@@ -843,15 +937,15 @@ export default function Downloads({
 
     loadQueue();
 
-    const listener = (stateSnap) => {
+    const listener = (snapshot) => {
       if (isMounted) {
-        setBgState(stateSnap);
+        setJobsMap(snapshot);
         loadQueue();
       }
     };
 
     BgManager.listeners.add(listener);
-    const poll = setInterval(loadQueue, 1800);
+    const poll = setInterval(loadQueue, 1500);
 
     return () => {
       isMounted = false;
@@ -860,7 +954,7 @@ export default function Downloads({
     };
   }, []);
 
-  // Listen to user watchlist (`users/{uid}/library`) for the bookmark badge & "..." menu
+  // Listen to user watchlist (`users/{uid}/library`) for the "..." menu
   useEffect(() => {
     if (!resolvedUid) return;
     const unsub = firestore()
@@ -880,7 +974,7 @@ export default function Downloads({
     return () => unsub();
   }, [resolvedUid]);
 
-  // Listen to watch_history so episode thumbnail shows accurate timestamp (e.g. 02:06 / 24:37)
+  // Listen to watch_history so episode thumbnail shows accurate timestamp
   useEffect(() => {
     if (!resolvedUid || !resolvedProfileId) return;
     const unsub = firestore()
@@ -945,46 +1039,34 @@ export default function Downloads({
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            if (BgManager.activeTask?.id === epItem.id) {
-              await handleCancelBg();
-              return;
-            }
-            if (epItem.targetFolder) {
-              await FileSystem.deleteAsync(epItem.targetFolder, { idempotent: true }).catch(() => {});
-            }
-            const list = await readLocalQueue();
-            const filtered = list.filter((i) => i.id !== epItem.id);
-            await writeLocalQueue(filtered);
-            setQueueItems(filtered);
-
-            if (resolvedUid && resolvedProfileId) {
-              firestore()
-                .collection('users')
-                .doc(String(resolvedUid))
-                .collection('profiles')
-                .doc(String(resolvedProfileId))
-                .collection('downloads')
-                .doc(`${epItem.animeId}_ep_${epItem.episodeNum}`)
-                .delete()
-                .catch(() => {});
-            }
+            await handleCancelJob(epItem.id);
+            const updated = await readLocalQueue();
+            setQueueItems(updated);
           },
         },
       ]
     );
   };
 
-  const handleOpenPlayerOnTop = (epItem) => {
+  const handleOpenPlayerOnTop = async (epItem) => {
     if (!epItem) return;
     setMenuTarget(null);
 
     const streamSource = epItem.localUri || epItem.streamUri;
     if (!streamSource) return;
 
-    const savedHist = watchHistoryMap[String(epItem.animeId)];
+    // Hide top notification bar & bottom system navigation bar before opening Player
+    try {
+      StatusBar.setHidden(true, 'none');
+      await NavigationBar.setVisibilityAsync('hidden');
+      await NavigationBar.setBehaviorAsync('overlay-swipe');
+    } catch (_) {}
+
+    const epHistId = `${epItem.animeId}_ep_${epItem.episodeNum}`;
+    const savedEpHist = watchHistoryMap[epHistId] || watchHistoryMap[String(epItem.animeId)];
     const resumeProgress =
-      savedHist && String(savedHist.episodeNum) === String(epItem.episodeNum)
-        ? Number(savedHist.progress || 0)
+      savedEpHist && String(savedEpHist.episodeNum) === String(epItem.episodeNum)
+        ? Number(savedEpHist.progress || 0)
         : 0;
 
     setTopLevelPlayback({
@@ -1009,17 +1091,12 @@ export default function Downloads({
     });
   };
 
-  // Compute Stats & Group Downloaded Series
-  const { activeDownloadItem, downloadedSeriesGroups, readyCount, inQueueCount, seriesCount } = useMemo(() => {
-    const active =
-      bgState.activeTask ||
-      queueItems.find((i) => i.status === 'downloading' || i.status === 'paused' || i.status === 'queued') ||
-      null;
-
-    const completedItems = queueItems.filter((i) => i.status === 'completed');
-    const pendingItems = queueItems.filter(
-      (i) => i.status === 'queued' || i.status === 'downloading' || i.status === 'paused'
+  // Compute Stats & Group Active Downloads + Completed Series
+  const { activeDownloadList, downloadedSeriesGroups, readyCount, inQueueCount, seriesCount } = useMemo(() => {
+    const activeItems = queueItems.filter(
+      (i) => i.status === 'downloading' || i.status === 'paused' || i.status === 'queued'
     );
+    const completedItems = queueItems.filter((i) => i.status === 'completed');
 
     const seriesMap = new Map();
     const allSeriesIds = new Set();
@@ -1053,18 +1130,25 @@ export default function Downloads({
     }));
 
     return {
-      activeDownloadItem: active,
+      activeDownloadList: activeItems,
       downloadedSeriesGroups: groups,
       readyCount: completedItems.length,
-      inQueueCount: Math.max(0, pendingItems.length - (active ? 1 : 0)),
+      inQueueCount: activeItems.length,
       seriesCount: allSeriesIds.size,
     };
-  }, [queueItems, bgState.activeTask]);
+  }, [queueItems]);
 
   const toggleExpandSeries = (animeId) => {
     setExpandedSeriesMap((prev) => ({
       ...prev,
       [String(animeId)]: !prev[String(animeId)],
+    }));
+  };
+
+  const toggleExpandActiveItem = (itemId) => {
+    setExpandedActiveMap((prev) => ({
+      ...prev,
+      [String(itemId)]: prev[String(itemId)] === false ? true : false,
     }));
   };
 
@@ -1105,130 +1189,153 @@ export default function Downloads({
       <View style={styles.fullDividerLine} />
 
       <FlatList
-        data={downloadedSeriesGroups}
+        data={downloadedDropdownOpen ? downloadedSeriesGroups : []}
         keyExtractor={(item) => String(item.animeId)}
         contentContainerStyle={styles.scrollPadding}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
           <>
-            {/* 3. "Downlaoding" SECTION */}
-            {activeDownloadItem && (
+            {/* 3. "Downlaoding" DROPDOWN SECTION (ALL DOWNLOADING AT ONCE) */}
+            {activeDownloadList.length > 0 && (
               <View style={styles.sectionBlock}>
-                <Text style={styles.sectionHeading}>Downlaoding</Text>
-
-                <View style={styles.mainCard}>
-                  {/* Left Vertical Portrait Poster with CC badge & Bookmark icon */}
-                  <View style={styles.posterContainer}>
-                    <ProxyImage
-                      source={{
-                        uri:
-                          activeDownloadItem.localPosterUri ||
-                          activeDownloadItem.coverImage ||
-                          activeDownloadItem.backdrop,
-                      }}
-                      style={styles.posterImage}
-                      resizeMode="cover"
-                    />
-                    <View style={styles.ccRedBadge}>
-                      <Text style={styles.ccRedBadgeText}>
-                        CC {activeDownloadItem.totalEpisodes || 134}
-                      </Text>
-                    </View>
-                    <TouchableOpacity
-                      style={styles.posterBookmarkBtn}
-                      activeOpacity={0.8}
-                      onPress={() => toggleBookmarkWatchlist(activeDownloadItem)}
-                    >
-                      <IconBookmark
-                        size={13}
-                        color={WHITE}
-                        filled={Boolean(watchlistMap[String(activeDownloadItem.animeId)])}
-                      />
-                    </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.dropdownHeaderRow}
+                  activeOpacity={0.8}
+                  onPress={() => setDownloadingDropdownOpen(!downloadingDropdownOpen)}
+                >
+                  <Text style={styles.sectionHeading}>
+                    Downlaoding ({activeDownloadList.length})
+                  </Text>
+                  <View style={!downloadingDropdownOpen && { transform: [{ rotate: '-90deg' }] }}>
+                    <IconChevronDown size={18} color={TEXT_GREY} />
                   </View>
+                </TouchableOpacity>
 
-                  {/* Right Details Column */}
-                  <View style={styles.cardRightCol}>
-                    <View style={styles.titleAndDotsRow}>
-                      <Text style={styles.animeMainTitle} numberOfLines={1}>
-                        {activeDownloadItem.animeTitle}
-                      </Text>
+                {downloadingDropdownOpen &&
+                  activeDownloadList.map((dlItem) => {
+                    const liveJob = jobsMap[dlItem.id];
+                    const currentPct = liveJob ? liveJob.pct : dlItem.progressPct || 0;
+                    const currentBytes = liveJob ? liveJob.downloadedBytes : dlItem.sizeBytes || 0;
+                    const totalBytes = liveJob
+                      ? liveJob.estimatedTotalBytes
+                      : dlItem.estimatedTotalBytes || 100 * 1024 * 1024;
+                    const isItemPaused = liveJob ? liveJob.isPaused : dlItem.status === 'paused';
+                    const isCardOpen = expandedActiveMap[dlItem.id] !== false;
+
+                    return (
                       <TouchableOpacity
-                        style={styles.dotsBtn}
-                        onPress={() => setMenuTarget(activeDownloadItem)}
+                        key={dlItem.id}
+                        style={[styles.mainCard, { marginBottom: 12 }]}
+                        activeOpacity={0.92}
+                        onPress={() => toggleExpandActiveItem(dlItem.id)}
                       >
-                        <IconDotsHorizontal size={18} color={WHITE} />
+                        {/* Left Vertical Portrait Poster (CLEAN - NO OVERLAYS) */}
+                        <View style={styles.posterContainer}>
+                          <ProxyImage
+                            source={{
+                              uri:
+                                dlItem.localPosterUri ||
+                                dlItem.coverImage ||
+                                dlItem.backdrop,
+                            }}
+                            style={styles.posterImage}
+                            resizeMode="cover"
+                          />
+                        </View>
+
+                        {/* Right Details Column */}
+                        <View style={styles.cardRightCol}>
+                          <View style={styles.titleAndDotsRow}>
+                            <Text style={styles.animeMainTitle} numberOfLines={1}>
+                              {dlItem.animeTitle}
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.dotsBtn}
+                              onPress={() => setMenuTarget(dlItem)}
+                            >
+                              <IconDotsHorizontal size={18} color={WHITE} />
+                            </TouchableOpacity>
+                          </View>
+
+                          <Text style={styles.episodeSubLabel} numberOfLines={1}>
+                            Episode {dlItem.episodeNum} : {dlItem.episodeTitle || `Episode ${dlItem.episodeNum}`}
+                          </Text>
+
+                          {/* Outlined Rectangular Spec Pills: 1080p | English | Sub */}
+                          <View style={styles.outlinedPillsRow}>
+                            <View style={styles.outlinedPill}>
+                              <Text style={styles.outlinedPillText}>
+                                {dlItem.quality || '1080p'}
+                              </Text>
+                            </View>
+                            <View style={styles.outlinedPill}>
+                              <Text style={styles.outlinedPillText} numberOfLines={1}>
+                                {(dlItem.subtitle?.label || 'English').split(' ')[0]}
+                              </Text>
+                            </View>
+                            <View style={styles.outlinedPill}>
+                              <Text style={styles.outlinedPillText}>
+                                {dlItem.audioType === 'dub' ? 'Dub' : 'Sub'}
+                              </Text>
+                            </View>
+                          </View>
+
+                          {/* Right-aligned MB ratio + Thin Red Progress Bar */}
+                          <View style={styles.progressSection}>
+                            <Text style={styles.mbRatioText}>
+                              {formatMbRatio(currentBytes, totalBytes)}
+                            </Text>
+                            <View style={styles.thinProgressBg}>
+                              <View
+                                style={[
+                                  styles.thinProgressFill,
+                                  { width: `${currentPct}%` },
+                                ]}
+                              />
+                            </View>
+                          </View>
+
+                          {/* Collapsible White Action Buttons ("pause" | "Cancel") */}
+                          {isCardOpen && (
+                            <View style={styles.whiteBtnsRow}>
+                              <TouchableOpacity
+                                style={styles.whiteActionBtn}
+                                activeOpacity={0.85}
+                                onPress={() => handleTogglePauseJob(dlItem.id)}
+                              >
+                                <Text style={styles.whiteActionBtnText}>
+                                  {isItemPaused ? 'resume' : 'pause'}
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                style={styles.whiteActionBtn}
+                                activeOpacity={0.85}
+                                onPress={() => handleCancelJob(dlItem.id)}
+                              >
+                                <Text style={styles.whiteActionBtnText}>Cancel</Text>
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
                       </TouchableOpacity>
-                    </View>
-
-                    <Text style={styles.episodeSubLabel} numberOfLines={1}>
-                      Episode {activeDownloadItem.episodeNum} : {activeDownloadItem.episodeTitle || `Episode ${activeDownloadItem.episodeNum}`}
-                    </Text>
-
-                    {/* Outlined Rectangular Spec Pills: 1080p | English | Sub */}
-                    <View style={styles.outlinedPillsRow}>
-                      <View style={styles.outlinedPill}>
-                        <Text style={styles.outlinedPillText}>
-                          {activeDownloadItem.quality || '1080p'}
-                        </Text>
-                      </View>
-                      <View style={styles.outlinedPill}>
-                        <Text style={styles.outlinedPillText} numberOfLines={1}>
-                          {(activeDownloadItem.subtitle?.label || 'English').split(' ')[0]}
-                        </Text>
-                      </View>
-                      <View style={styles.outlinedPill}>
-                        <Text style={styles.outlinedPillText}>
-                          {activeDownloadItem.audioType === 'dub' ? 'Dub' : 'Sub'}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Right-aligned MB ratio + Thin Red Progress Bar */}
-                    <View style={styles.progressSection}>
-                      <Text style={styles.mbRatioText}>
-                        {formatMbRatio(bgState.downloadedBytes, bgState.estimatedTotalBytes)}
-                      </Text>
-                      <View style={styles.thinProgressBg}>
-                        <View
-                          style={[
-                            styles.thinProgressFill,
-                            { width: `${bgState.pct || activeDownloadItem.progressPct || 0}%` },
-                          ]}
-                        />
-                      </View>
-                    </View>
-
-                    {/* White Buttons: "pause" and "Cancel" */}
-                    <View style={styles.whiteBtnsRow}>
-                      <TouchableOpacity
-                        style={styles.whiteActionBtn}
-                        activeOpacity={0.85}
-                        onPress={handleTogglePauseBg}
-                      >
-                        <Text style={styles.whiteActionBtnText}>
-                          {bgState.isPaused ? 'resume' : 'pause'}
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.whiteActionBtn}
-                        activeOpacity={0.85}
-                        onPress={handleCancelBg}
-                      >
-                        <Text style={styles.whiteActionBtnText}>Cancel</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                </View>
+                    );
+                  })}
               </View>
             )}
 
-            {/* 4. "Downlaoded" SECTION HEADER */}
+            {/* 4. "Downlaoded" DROPDOWN SECTION HEADER */}
             {downloadedSeriesGroups.length > 0 && (
-              <Text style={[styles.sectionHeading, { marginTop: 6, marginBottom: 12 }]}>
-                Downlaoded
-              </Text>
+              <TouchableOpacity
+                style={[styles.dropdownHeaderRow, { marginTop: 4, marginBottom: 12 }]}
+                activeOpacity={0.8}
+                onPress={() => setDownloadedDropdownOpen(!downloadedDropdownOpen)}
+              >
+                <Text style={styles.sectionHeading}>Downlaoded</Text>
+                <View style={!downloadedDropdownOpen && { transform: [{ rotate: '-90deg' }] }}>
+                  <IconChevronDown size={18} color={TEXT_GREY} />
+                </View>
+              </TouchableOpacity>
             )}
           </>
         }
@@ -1238,38 +1345,22 @@ export default function Downloads({
 
           return (
             <View style={styles.downloadedSeriesBlock}>
-              {/* Main Series Card */}
+              {/* Main Series Card (Dropdown Toggle) */}
               <TouchableOpacity
                 style={styles.mainCard}
                 activeOpacity={0.9}
                 onPress={() => toggleExpandSeries(series.animeId)}
               >
-                {/* Left Vertical Portrait Poster */}
+                {/* Left Vertical Portrait Poster (CLEAN - NOTHING ON SERIES COVER) */}
                 <View style={styles.posterContainer}>
                   <ProxyImage
                     source={{ uri: series.coverImage || series.backdrop }}
                     style={styles.posterImage}
                     resizeMode="cover"
                   />
-                  <View style={styles.ccRedBadge}>
-                    <Text style={styles.ccRedBadgeText}>
-                      CC {series.totalEpisodes || 134}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.posterBookmarkBtn}
-                    activeOpacity={0.8}
-                    onPress={() => toggleBookmarkWatchlist(firstEp || series)}
-                  >
-                    <IconBookmark
-                      size={13}
-                      color={WHITE}
-                      filled={Boolean(watchlistMap[String(series.animeId)])}
-                    />
-                  </TouchableOpacity>
                 </View>
 
-                {/* Right Series Info: Title, Outlined Genre Pills, Synopsis, Bottom-Right Chevron */}
+                {/* Right Series Info: Title, Outlined Genre Pills, Synopsis, Bottom-Right Dropdown Chevron */}
                 <View style={styles.cardRightCol}>
                   <View style={styles.titleAndDotsRow}>
                     <Text style={styles.animeMainTitle} numberOfLines={1}>
@@ -1303,11 +1394,12 @@ export default function Downloads({
                 </View>
               </TouchableOpacity>
 
-              {/* Expanded Episode Rows Underneath Card */}
+              {/* Dropdown Episode Rows Underneath Series Card */}
               {isExpanded && (
                 <View style={styles.expandedEpisodesList}>
                   {series.episodes.map((ep) => {
-                    const hist = watchHistoryMap[String(ep.animeId)];
+                    const epHistId = `${ep.animeId}_ep_${ep.episodeNum}`;
+                    const hist = watchHistoryMap[epHistId] || watchHistoryMap[String(ep.animeId)];
                     const isSameEp =
                       hist && String(hist.episodeNum) === String(ep.episodeNum);
                     const watchedSecs = isSameEp ? Number(hist.progress || 126) : 126;
@@ -1370,7 +1462,7 @@ export default function Downloads({
           );
         }}
         ListEmptyComponent={
-          !activeDownloadItem && (
+          activeDownloadList.length === 0 && (
             <View style={styles.emptyWrap}>
               <Text style={styles.emptyText}>No downloads yet</Text>
             </View>
@@ -1441,16 +1533,24 @@ export default function Downloads({
         </View>
       </Modal>
 
-      {/* TOP-MOST FULLSCREEN PLAYER MODAL (Renders on top of everything) */}
+      {/* TOP-MOST FULLSCREEN IMMERSIVE PLAYER MODAL (Hides notification bar & bottom bar completely) */}
       <Modal
         visible={Boolean(topLevelPlayback)}
         animationType="fade"
         transparent={false}
         hardwareAccelerated={true}
         statusBarTranslucent={true}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            await NavigationBar.setVisibilityAsync('hidden');
+            await NavigationBar.setBehaviorAsync('overlay-swipe');
+          } catch (_) {}
+        }}
         onRequestClose={() => setTopLevelPlayback(null)}
       >
         <View style={styles.topPlayerModalContainer}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
           {topLevelPlayback && (
             <Player
               route={{ params: topLevelPlayback }}
@@ -1474,6 +1574,8 @@ const styles = StyleSheet.create({
   topPlayerModalContainer: {
     flex: 1,
     backgroundColor: BLACK,
+    width: '100%',
+    height: '100%',
   },
 
   // Header
@@ -1540,15 +1642,21 @@ const styles = StyleSheet.create({
     paddingBottom: 110,
   },
 
-  // Section Headings
+  // Dropdown Section Headings
   sectionBlock: {
-    marginBottom: 22,
+    marginBottom: 18,
+  },
+  dropdownHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    paddingVertical: 4,
   },
   sectionHeading: {
     color: TEXT_GREY,
     fontSize: 14,
     fontWeight: '700',
-    marginBottom: 12,
   },
 
   // Main Rounded Card (Shared by Downloading & Downloaded)
@@ -1566,36 +1674,10 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: 'hidden',
     backgroundColor: DARK_GREY,
-    position: 'relative',
   },
   posterImage: {
     width: '100%',
     height: '100%',
-  },
-  ccRedBadge: {
-    position: 'absolute',
-    top: 7,
-    left: 7,
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  ccRedBadgeText: {
-    color: WHITE,
-    fontSize: 9,
-    fontWeight: '900',
-  },
-  posterBookmarkBtn: {
-    position: 'absolute',
-    top: 7,
-    right: 7,
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    backgroundColor: 'rgba(20,20,24,0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
 
   // Right Card Column
