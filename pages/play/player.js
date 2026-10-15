@@ -171,7 +171,6 @@ export default function Player({
     isOffline: paramIsOffline = false,
   } = params;
 
-  // Detect if an offline file URI was passed directly
   const initialOfflineUri =
     paramLocalUri ||
     (paramActiveUrl && String(paramActiveUrl).startsWith('file://') ? paramActiveUrl : null) ||
@@ -323,11 +322,16 @@ export default function Player({
 
   const hideUITimeout = useRef(null);
   const longPressTimerRef = useRef(null);
+  const didTriggerLongPressRef = useRef(false);
+  const touchStartTimeRef = useRef(0);
+  const touchStartPosRef = useRef({ x: 0, y: 0 });
 
   const activeMenuRef = useRef(activeMenu);
   const isLockedRef = useRef(isLocked);
+  const showUIRef = useRef(showUI);
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
+  useEffect(() => { showUIRef.current = showUI; }, [showUI]);
 
   const effectiveAnimeId = String(animeId || paramId || providerId || 'unknown');
 
@@ -356,7 +360,7 @@ export default function Player({
     selectedAudioType,
   ]);
 
-  // Persist Watch History & Progress inside Current Profile
+  // --- SAVE EVERY EPISODE'S PROGRESS (INCLUDING WATCHED EPISODES) FOR THE CURRENT PROFILE ---
   const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false) => {
     const meta = latestMetaRef.current;
     if (!meta.uid || !meta.profileId || !meta.animeId || meta.animeId === 'unknown') return;
@@ -368,9 +372,12 @@ export default function Player({
 
     if (!force && currentSecs <= 0) return;
 
-    const isCompleted = durMs > 10000 && currentSecs > (durationSecs * 0.85);
+    const isCompleted = durMs > 10000 && currentSecs >= Math.floor(durationSecs * 0.85);
+    const now = Date.now();
+    const epDocId = `${meta.animeId}_ep_${meta.epNum}`;
 
-    const payload = {
+    const episodePayload = {
+      id: epDocId,
       animeId: String(meta.animeId),
       profileId: String(meta.profileId),
       animeTitle: meta.animeTitle,
@@ -389,9 +396,31 @@ export default function Player({
       formattedTimestamp: formatTime(posMs),
       formattedDuration: formatTime(durMs),
       finishedEp: Boolean(isCompleted),
+      watched: true,
       audioType: meta.audioType,
-      timestamp: Date.now(),
+      timestamp: now,
       updatedAt: firestore.FieldValue.serverTimestamp(),
+    };
+
+    // Series-level document keeps the latest watched state + an `episodes` map of every episode's progress
+    const seriesPayload = {
+      ...episodePayload,
+      episodes: {
+        [String(meta.epNum)]: {
+          episodeNum: meta.epNum,
+          episodeTitle: meta.epTitle,
+          slug: meta.slug,
+          progress: currentSecs,
+          duration: durationSecs,
+          positionMillis: Math.floor(posMs),
+          durationMillis: Math.floor(durMs),
+          formattedTimestamp: formatTime(posMs),
+          formattedDuration: formatTime(durMs),
+          finishedEp: Boolean(isCompleted),
+          watched: true,
+          timestamp: now,
+        },
+      },
     };
 
     const currentProfileRef = firestore()
@@ -400,16 +429,30 @@ export default function Player({
       .collection('profiles')
       .doc(String(meta.profileId));
 
+    // 1. Save individual episode document so every episode's progress (even watched ones) is permanently stored
+    currentProfileRef
+      .collection(WATCH_HISTORY_COLLECTION)
+      .doc(epDocId)
+      .set(episodePayload, { merge: true })
+      .catch(() => {});
+
+    currentProfileRef
+      .collection('progress')
+      .doc(epDocId)
+      .set(episodePayload, { merge: true })
+      .catch(() => {});
+
+    // 2. Save series-level summary + episodes map for ContinueWatching & Play.js
     currentProfileRef
       .collection(WATCH_HISTORY_COLLECTION)
       .doc(String(meta.animeId))
-      .set(payload, { merge: true })
+      .set(seriesPayload, { merge: true })
       .catch(() => {});
 
     currentProfileRef
       .collection('progress')
       .doc(String(meta.animeId))
-      .set(payload, { merge: true })
+      .set(seriesPayload, { merge: true })
       .catch(() => {});
   }, []);
 
@@ -462,7 +505,6 @@ export default function Player({
     let isMounted = true;
 
     const resolveNextEpisode = async () => {
-      // First check if the next episode is available in local offline downloads
       try {
         const localDownloads = await readLocalDownloadsQueue();
         const nextOfflineEp = localDownloads.find(
@@ -491,7 +533,6 @@ export default function Player({
         }
       } catch (_) {}
 
-      // If in strictly offline mode and no next downloaded episode exists, stop here
       if (isOfflineMode) {
         if (isMounted) {
           setHasNextEpisode(false);
@@ -500,7 +541,6 @@ export default function Player({
         return;
       }
 
-      // Online API Next Episode Resolution
       try {
         let targetId = animeId || paramId;
         const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
@@ -562,11 +602,11 @@ export default function Player({
     return () => { isMounted = false; };
   }, [animeTitle, animeId, paramId, currentEpNum, currentSlug, isOfflineMode, effectiveAnimeId]);
 
-  // 2.5 Fetch Previous Playback Progress from Current Profile's Watch History
+  // 2.5 Fetch Previous Playback Progress for THIS Specific Episode (Even if Marked Watched)
   useEffect(() => {
     if (!resolvedUid || !currentProfileId || !effectiveAnimeId || effectiveAnimeId === 'unknown') return;
 
-    const fetchProgress = async () => {
+    const fetchEpisodeProgress = async () => {
       try {
         const profileRef = firestore()
           .collection('users')
@@ -574,38 +614,55 @@ export default function Player({
           .collection('profiles')
           .doc(String(currentProfileId));
 
-        let doc = await profileRef
-          .collection(WATCH_HISTORY_COLLECTION)
-          .doc(String(effectiveAnimeId))
-          .get();
+        const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
 
-        if (!doc.exists) {
-          doc = await profileRef
-            .collection('progress')
-            .doc(String(effectiveAnimeId))
-            .get();
+        // 1. Check dedicated per-episode progress document first
+        let epDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get();
+        if (!epDoc.exists) {
+          epDoc = await profileRef.collection('progress').doc(epDocId).get();
         }
 
-        if (doc.exists) {
-          const data = doc.data();
-          const targetSlug = currentSlug ? String(currentSlug) : String(currentEpNum);
-          const matchesEpisode =
-            String(data?.slug) === targetSlug ||
-            String(data?.episodeNum) === String(currentEpNum) ||
-            String(data?.lastWatchedEp) === String(currentEpNum);
+        let epData = epDoc.exists ? epDoc.data() : null;
 
-          if (matchesEpisode && !data?.finishedEp && data?.progress > 0) {
-            const savedMs = Number(data.progress) * 1000;
-            lastPositionRef.current = savedMs;
-            if (videoRef.current) {
-              await videoRef.current.setPositionAsync(savedMs).catch(() => {});
+        // 2. Fallback to series-level document (either nested episodes[epNum] or top-level match)
+        if (!epData) {
+          let seriesDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(String(effectiveAnimeId)).get();
+          if (!seriesDoc.exists) {
+            seriesDoc = await profileRef.collection('progress').doc(String(effectiveAnimeId)).get();
+          }
+          if (seriesDoc.exists) {
+            const sData = seriesDoc.data();
+            if (sData?.episodes?.[String(currentEpNum)]) {
+              epData = sData.episodes[String(currentEpNum)];
+            } else {
+              const targetSlug = currentSlug ? String(currentSlug) : String(currentEpNum);
+              const matchesTop =
+                String(sData?.slug) === targetSlug ||
+                String(sData?.episodeNum) === String(currentEpNum) ||
+                String(sData?.lastWatchedEp) === String(currentEpNum);
+              if (matchesTop) epData = sData;
             }
+          }
+        }
+
+        if (epData && Number(epData.progress) > 0) {
+          const progSec = Number(epData.progress);
+          const durSec = Number(epData.duration || 0);
+          // Resume from saved timestamp (even on watched episodes) unless it was at the very end (>= 98%)
+          const isAtVeryEnd = durSec > 0 && progSec >= durSec * 0.98;
+          const savedMs = isAtVeryEnd ? 0 : progSec * 1000;
+
+          lastPositionRef.current = savedMs;
+          if (durSec > 0) lastDurationRef.current = durSec * 1000;
+
+          if (videoRef.current && savedMs > 0) {
+            await videoRef.current.setPositionAsync(savedMs).catch(() => {});
           }
         }
       } catch (_) {}
     };
 
-    fetchProgress();
+    fetchEpisodeProgress();
   }, [resolvedUid, currentProfileId, effectiveAnimeId, currentSlug, currentEpNum]);
 
   // 3. Resolve Stream (Offline Local Vault Bundle OR Online M3U8 Stream)
@@ -622,7 +679,6 @@ export default function Player({
       let targetLocalSub = offlineSubUri;
       let offlineQualityLabel = params.quality || '1080p';
 
-      // Even if Player was opened from Play.js or ContinueWatching, check if this episode is already downloaded locally!
       if (!targetLocalM3u8) {
         try {
           const queue = await readLocalDownloadsQueue();
@@ -648,14 +704,12 @@ export default function Player({
         } catch (_) {}
       }
 
-      // If we have a valid local M3U8 file, load it directly from device storage
       if (targetLocalM3u8) {
         try {
           const m3u8Info = await FileSystem.getInfoAsync(targetLocalM3u8);
           if (m3u8Info.exists) {
             let metaJson = null;
 
-            // Load local metadata.json if available
             const inferredFolder = targetLocalM3u8.substring(0, targetLocalM3u8.lastIndexOf('/') + 1);
             const metaCandidate = targetLocalMeta || `${inferredFolder}metadata.json`;
             try {
@@ -666,7 +720,6 @@ export default function Player({
               }
             } catch (_) {}
 
-            // Load local subtitle.vtt if available
             const subCandidate =
               targetLocalSub ||
               metaJson?.subtitle?.localUri ||
@@ -820,17 +873,24 @@ export default function Player({
 
     const currentSecs = Math.floor(currentTimeSec);
     
+    // Save every 3 seconds while playing (saves progress even for already-watched episodes)
     if (status.isPlaying && currentSecs > 0) {
       if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
         lastSavedTimeRef.current = currentSecs;
         saveWatchHistory(currentMs, durationMs);
       }
     }
+
+    // If episode finishes playing to the end, force-save 100% completion
+    if (status.didJustFinish && durationMs > 0) {
+      saveWatchHistory(durationMs, durationMs, true);
+    }
   }, [
     status.isLoaded,
     status.positionMillis,
     status.durationMillis,
     status.isPlaying,
+    status.didJustFinish,
     status.naturalSize,
     subtitlesEnabled,
     parsedSubs,
@@ -844,7 +904,7 @@ export default function Player({
     }
   }, [resolvedUid, currentProfileId, currentEpTitle, resolvedBackdrop, saveWatchHistory]);
 
-  // 5. Seamless Next Episode Logic (Supports Offline -> Offline or Online -> Online)
+  // 5. Seamless Next Episode Logic
   const handleNextEpisode = () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
 
@@ -875,10 +935,63 @@ export default function Player({
     setCurrentSlug(nextEpisodeData.slug);
   };
 
-  const handleTouchStart = () => {
-    if (isLocked) return;
+  // --- UI VISIBILITY: SHOW ON TAP & HIDE ON TAP + AUTO-HIDE TIMER ---
+  const hideUINow = useCallback(() => {
+    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
+    Animated.timing(uiOpacity, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start(() => {
+      setShowUI(false);
+      showUIRef.current = false;
+    });
+  }, [uiOpacity]);
+
+  const resetHideTimer = useCallback(() => {
+    if (activeMenuRef.current) return;
+    setShowUI(true);
+    showUIRef.current = true;
+    Animated.timing(uiOpacity, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+
+    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
+    hideUITimeout.current = setTimeout(() => {
+      if (status.isPlaying && !activeMenuRef.current) {
+        hideUINow();
+      }
+    }, 3500);
+  }, [status.isPlaying, uiOpacity, hideUINow]);
+
+  // Toggle UI on single screen tap (if visible -> hide immediately; if hidden -> show & start timer)
+  const toggleUIOnTap = useCallback(() => {
+    if (activeMenuRef.current) {
+      setActiveMenu(null);
+      return;
+    }
+    if (showUIRef.current) {
+      hideUINow();
+    } else {
+      resetHideTimer();
+    }
+  }, [hideUINow, resetHideTimer]);
+
+  const handleTouchStart = (evt) => {
+    didTriggerLongPressRef.current = false;
+    touchStartTimeRef.current = Date.now();
+    const pageX = evt?.nativeEvent?.pageX || 0;
+    const pageY = evt?.nativeEvent?.pageY || 0;
+    touchStartPosRef.current = { x: pageX, y: pageY };
+
+    if (isLockedRef.current) return;
+
+    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = setTimeout(() => {
       if (status.isPlaying && videoRef.current) {
+        didTriggerLongPressRef.current = true;
         previousSpeedRef.current = playbackSpeed;
         videoRef.current.setRateAsync(2.0, true);
         setIs2xActive(true);
@@ -886,35 +999,43 @@ export default function Player({
     }, 450);
   };
 
-  const handleTouchEnd = () => {
+  const handleTouchEnd = (evt) => {
     if (longPressTimerRef.current) {
       clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
-    if (is2xActive) {
+
+    if (is2xActive || didTriggerLongPressRef.current) {
       setIs2xActive(false);
-      if (videoRef.current) videoRef.current.setRateAsync(previousSpeedRef.current, true);
+      didTriggerLongPressRef.current = false;
+      if (videoRef.current) {
+        videoRef.current.setRateAsync(previousSpeedRef.current, true);
+      }
+      return;
+    }
+
+    // If it was a quick tap (not a drag or long press), toggle UI visibility
+    const elapsed = Date.now() - touchStartTimeRef.current;
+    const pageX = evt?.nativeEvent?.pageX || touchStartPosRef.current.x;
+    const pageY = evt?.nativeEvent?.pageY || touchStartPosRef.current.y;
+    const moveDist = Math.hypot(
+      pageX - touchStartPosRef.current.x,
+      pageY - touchStartPosRef.current.y
+    );
+
+    if (elapsed < 350 && moveDist < 20) {
+      toggleUIOnTap();
     }
   };
 
-  const resetHideTimer = useCallback(() => {
-    if (activeMenu || isLocked) return; 
-    setShowUI(true);
-    Animated.timing(uiOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
-    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
-    hideUITimeout.current = setTimeout(() => {
-      if (status.isPlaying && !activeMenu) {
-        Animated.timing(uiOpacity, { toValue: 0, duration: 400, useNativeDriver: true }).start(() => setShowUI(false));
-      }
-    }, 3500);
-  }, [activeMenu, status.isPlaying, isLocked, uiOpacity]);
-
   useEffect(() => {
-    if (status.isPlaying) resetHideTimer();
-    else {
+    if (status.isPlaying) {
+      if (showUIRef.current) resetHideTimer();
+    } else {
       if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
       if (!isLocked) {
         setShowUI(true);
+        showUIRef.current = true;
         Animated.timing(uiOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
       }
       if (status.isLoaded && lastPositionRef.current > 0) {
@@ -925,7 +1046,6 @@ export default function Player({
 
   if (loadingStream) return <View style={styles.loaderContainerFull} />;
 
-  // Build Video source object (omit Referer headers for local file:// URIs so Android ExoPlayer doesn't reject local playback)
   const isLocalFileUri = Boolean(activeUrl && String(activeUrl).startsWith('file://'));
   const videoSource = isLocalFileUri
     ? {
@@ -970,6 +1090,14 @@ export default function Player({
         />
       ) : null}
 
+      {/* Fullscreen Tap Catcher so tapping empty video area always toggles UI on/off */}
+      <TouchableOpacity
+        style={styles.tapSurface}
+        activeOpacity={1}
+        onPressIn={handleTouchStart}
+        onPressOut={handleTouchEnd}
+      />
+
       {is2xActive && (
         <View style={styles.speedIndicatorBadge} pointerEvents="none">
           <Text style={styles.speedIndicatorText}>2X SPEED ▶▶</Text>
@@ -998,10 +1126,18 @@ export default function Player({
         status={status}
         videoRef={videoRef}
         resetHideTimer={resetHideTimer}
+        toggleUI={toggleUIOnTap}
         isLocked={isLocked}
         uiOpacity={uiOpacity}
         showUI={showUI}
-        setShowUI={setShowUI}
+        setShowUI={(val) => {
+          const nextVal = typeof val === 'function' ? val(showUIRef.current) : val;
+          if (nextVal) {
+            resetHideTimer();
+          } else {
+            hideUINow();
+          }
+        }}
         activeMenu={activeMenu}
         setActiveMenu={setActiveMenu}
         onTouchStart={handleTouchStart}
@@ -1018,7 +1154,7 @@ export default function Player({
 
       <Animated.View style={[styles.uiLayer, { opacity: uiOpacity }]} pointerEvents={showUI ? 'box-none' : 'none'}>
         {!isLocked && (
-          <View style={styles.topBarWrapper}>
+          <View style={styles.topBarWrapper} pointerEvents="box-none">
             <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
               <Defs>
                 <LinearGradient id="topCinematic" x1="0" y1="0" x2="0" y2="1">
@@ -1028,7 +1164,7 @@ export default function Player({
               </Defs>
               <Rect width="100%" height="100%" fill="url(#topCinematic)" />
             </Svg>
-            <View style={styles.topBarContent}>
+            <View style={styles.topBarContent} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
                 <TouchableOpacity
                   onPress={() => {
@@ -1040,7 +1176,7 @@ export default function Player({
                 >
                   <IconBack />
                 </TouchableOpacity>
-                <View style={styles.titleColumn}>
+                <View style={styles.titleColumn} pointerEvents="none">
                   <View style={styles.titleRowWithBadge}>
                     <Text style={styles.mainTitle} numberOfLines={1}>{animeTitle}</Text>
                     {isOfflineMode && (
@@ -1071,7 +1207,7 @@ export default function Player({
           </View>
         )}
 
-        <View style={styles.bottomBarWrapper}>
+        <View style={styles.bottomBarWrapper} pointerEvents="box-none">
           <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
             <Defs>
               <LinearGradient id="botCinematic" x1="0" y1="1" x2="0" y2="0">
@@ -1081,8 +1217,8 @@ export default function Player({
             </Defs>
             <Rect width="100%" height="100%" fill="url(#botCinematic)" />
           </Svg>
-          <View style={styles.bottomContent}>
-            <View style={styles.bottomToolsRow}>
+          <View style={styles.bottomContent} pointerEvents="box-none">
+            <View style={styles.bottomToolsRow} pointerEvents="box-none">
               <View style={styles.toolsLeft}>
                 <LockButton
                   isLocked={isLocked}
@@ -1128,7 +1264,7 @@ export default function Player({
                     if (videoRef.current) {
                       await videoRef.current.setPositionAsync(val).catch(() => {});
                       lastPositionRef.current = val;
-                      saveWatchHistory(val, status.durationMillis || lastDurationRef.current || 0);
+                      saveWatchHistory(val, status.durationMillis || lastDurationRef.current || 0, true);
                       resetHideTimer();
                     }
                   }}
@@ -1193,6 +1329,7 @@ export default function Player({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000', width: '100%', height: '100%' },
   videoPlayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' },
+  tapSurface: { ...StyleSheet.absoluteFillObject, zIndex: 1 },
   loaderContainerFull: { flex: 1, backgroundColor: '#000000' },
   speedIndicatorBadge: { position: 'absolute', top: 25, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', zIndex: 35 },
   speedIndicatorText: { color: '#FFF', fontSize: 13, fontWeight: '900', letterSpacing: 1 },
