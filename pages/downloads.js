@@ -1,13 +1,12 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
-  FlatList, StatusBar, Modal, Alert, 
-  DeviceEventEmitter, Animated 
+  FlatList, StatusBar, Modal, Alert, DeviceEventEmitter 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import * as FileSystem from 'expo-file-system';
-import Svg, { Path, Rect, Circle, G, Line, Polyline } from 'react-native-svg';
+import Svg, { Path, Circle, Polyline, Line } from 'react-native-svg';
 
 import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
@@ -19,9 +18,12 @@ try {
   AsyncStorage = mod?.default || mod;
 } catch (_) {}
 
-// --- STRICT 4-COLOR MONOCHROME + PURE RED PALETTE ---
+// --- STRICT PALETTE ---
 const BLACK = '#000000';
-const DARK_GREY = '#161616';
+const CARD_BG = '#0B0B0E';
+const DARK_GREY = '#18181C';
+const BORDER_GREY = '#26262C';
+const TEXT_GREY = '#8E8E93';
 const WHITE = '#FFFFFF';
 const PURE_RED = '#FF0000';
 
@@ -36,7 +38,7 @@ const VAULT_ROOT_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_vault/`
   : null;
 
-// --- PROXY & URL HELPERS ---
+// --- HELPERS ---
 const buildProxyUrl = (targetUrl, referer = 'https://vidwish.live/') => {
   if (!targetUrl) return '';
   if (targetUrl.startsWith('https://icy-wave-30d8.prashant-yash69.workers.dev')) {
@@ -61,12 +63,24 @@ const resolveRelativeUrl = (baseUrl, relativeOrAbsolute) => {
   }
 };
 
-const formatBytes = (bytes) => {
-  if (!bytes || bytes <= 0) return '0 MB';
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
-  return `${mb.toFixed(1)} MB`;
+const formatMbRatio = (downloadedBytes, totalEstimatedBytes) => {
+  const dlMb = Math.max(0, Math.round((downloadedBytes || 0) / (1024 * 1024)));
+  const totMb = Math.max(dlMb, Math.round((totalEstimatedBytes || 100 * 1024 * 1024) / (1024 * 1024)));
+  return `${dlMb}mb/${totMb}mb`;
 };
+
+const formatDurationClock = (seconds) => {
+  if (!seconds || isNaN(seconds) || seconds <= 0) return '00:00';
+  const total = Math.floor(seconds);
+  const m = Math.floor(total / 60).toString().padStart(2, '0');
+  const s = Math.floor(total % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
+};
+
+const stripNonAscii = (str) =>
+  String(str || '')
+    .replace(/[^\x20-\x7E]/g, '')
+    .trim();
 
 // --- LOCAL STORAGE READ / WRITE ---
 const readLocalQueue = async () => {
@@ -113,59 +127,56 @@ const writeLocalQueue = async (queueArray) => {
   } catch (_) {}
 };
 
-// --- PLAIN TEXT NOTIFICATION WITH LEFT PORTRAIT POSTER ---
-const pushPlainTextNotification = async (notifId, plainTitle, plainBody, pct, isPaused, posterUri) => {
+// --- EMOJI-FREE PLAIN TEXT NOTIFICATIONS WITH PORTRAIT POSTER ON LEFT ---
+const pushPlainNotification = async (notifId, titleText, bodyText, pct, isPaused, posterUri) => {
   try {
     if (typeof NotificationEngine?.showProgressNotification === 'function') {
-      await NotificationEngine.showProgressNotification(notifId, plainTitle, pct, {
-        body: plainBody,
-        subtitle: plainBody,
-        plainText: true,
-        isPaused: Boolean(isPaused),
-        largeIcon: posterUri || null,
-        posterUrl: posterUri || null,
-        imageUrl: posterUri || null,
-        ongoing: !isPaused,
-        actions: [
-          {
-            id: isPaused ? 'RESUME_DOWNLOAD' : 'PAUSE_DOWNLOAD',
-            title: isPaused ? 'Resume' : 'Pause',
-          },
-          {
-            id: 'CANCEL_DOWNLOAD',
-            title: 'Cancel',
-          },
-        ],
-      });
+      await NotificationEngine.showProgressNotification(
+        notifId,
+        stripNonAscii(titleText),
+        pct,
+        {
+          body: stripNonAscii(bodyText),
+          subtitle: stripNonAscii(bodyText),
+          plainText: true,
+          isPaused: Boolean(isPaused),
+          largeIcon: posterUri || null,
+          posterUrl: posterUri || null,
+          imageUrl: posterUri || null,
+          ongoing: !isPaused,
+          actions: [
+            {
+              id: isPaused ? 'RESUME_DOWNLOAD' : 'PAUSE_DOWNLOAD',
+              title: isPaused ? 'resume' : 'pause',
+            },
+            {
+              id: 'CANCEL_DOWNLOAD',
+              title: 'Cancel',
+            },
+          ],
+        }
+      );
     }
   } catch (_) {}
 };
 
-const pushPlainCompleteNotification = async (notifId, plainTitle, posterUri) => {
+const pushPlainDoneNotification = async (notifId, titleText, posterUri) => {
   try {
     if (typeof NotificationEngine?.showCompletionNotification === 'function') {
-      await NotificationEngine.showCompletionNotification(notifId, plainTitle, {
-        largeIcon: posterUri || null,
-        posterUrl: posterUri || null,
-        plainText: true,
-      });
+      await NotificationEngine.showCompletionNotification(
+        notifId,
+        stripNonAscii(titleText),
+        {
+          largeIcon: posterUri || null,
+          posterUrl: posterUri || null,
+          plainText: true,
+        }
+      );
     }
   } catch (_) {}
 };
 
-const pushPlainErrorNotification = async (notifId, plainTitle, posterUri) => {
-  try {
-    if (typeof NotificationEngine?.showErrorNotification === 'function') {
-      await NotificationEngine.showErrorNotification(notifId, plainTitle, {
-        largeIcon: posterUri || null,
-        posterUrl: posterUri || null,
-        plainText: true,
-      });
-    }
-  } catch (_) {}
-};
-
-const dismissNotification = async (notifId) => {
+const dismissPlainNotification = async (notifId) => {
   try {
     if (typeof NotificationEngine?.clearNotification === 'function') {
       await NotificationEngine.clearNotification(notifId);
@@ -173,49 +184,86 @@ const dismissNotification = async (notifId) => {
   } catch (_) {}
 };
 
+// --- FETCH ANIME SYNOPSIS, GENRES & PORTRAIT COVER FROM ANILIST ---
+const fetchAnimeDetailsForOffline = async (animeTitle) => {
+  try {
+    const query = `
+      query ($search: String) {
+        Media (search: $search, type: ANIME) {
+          description
+          genres
+          episodes
+          bannerImage
+          coverImage { extraLarge large }
+        }
+      }
+    `;
+    const res = await fetch('https://graphql.anilist.co', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables: { search: animeTitle } }),
+    });
+    const json = await res.json();
+    const media = json?.data?.Media;
+    if (!media) return null;
+
+    const cleanSynopsis = (media.description || '')
+      .replace(/<[^>]*>/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    return {
+      synopsis: cleanSynopsis,
+      genres: Array.isArray(media.genres) ? media.genres.slice(0, 3) : ['Action', 'Adventure'],
+      totalEpisodes: media.episodes || null,
+      coverImage: media.coverImage?.extraLarge || media.coverImage?.large || null,
+      backdrop: media.bannerImage || media.coverImage?.extraLarge || null,
+    };
+  } catch (_) {
+    return null;
+  }
+};
+
 // ============================================================================
-// PERSISTENT MODULE-LEVEL BACKGROUND DOWNLOAD MANAGER
-// Runs independently of component mount/unmount so downloads continue even
-// when the Downloads page is closed or the app is in the background.
+// PERSISTENT BACKGROUND DOWNLOAD SINGLETON
+// Continues downloading even when Downloads.js is unmounted or app is backgrounded
 // ============================================================================
-const BgDownloadState = {
+const BgManager = {
   isRunning: false,
   isPaused: false,
   isCanceled: false,
   activeTask: null,
   pct: 0,
-  downloadedChunks: 0,
-  totalChunks: 0,
-  sizeBytes: 0,
+  downloadedBytes: 0,
+  estimatedTotalBytes: 100 * 1024 * 1024,
   listeners: new Set(),
-  daemonStarted: false,
+  daemonInitialized: false,
 };
 
-const notifyBgListeners = () => {
-  const snapshot = {
-    isRunning: BgDownloadState.isRunning,
-    isPaused: BgDownloadState.isPaused,
-    activeTask: BgDownloadState.activeTask,
-    pct: BgDownloadState.pct,
-    downloadedChunks: BgDownloadState.downloadedChunks,
-    totalChunks: BgDownloadState.totalChunks,
-    sizeBytes: BgDownloadState.sizeBytes,
+const notifyListeners = () => {
+  const state = {
+    isRunning: BgManager.isRunning,
+    isPaused: BgManager.isPaused,
+    activeTask: BgManager.activeTask,
+    pct: BgManager.pct,
+    downloadedBytes: BgManager.downloadedBytes,
+    estimatedTotalBytes: BgManager.estimatedTotalBytes,
   };
-  BgDownloadState.listeners.forEach((cb) => {
+  BgManager.listeners.forEach((fn) => {
     try {
-      cb(snapshot);
+      fn(state);
     } catch (_) {}
   });
 };
 
-const updateQueueEntryBg = async (itemId, patch) => {
-  const currentList = await readLocalQueue();
-  const updatedList = currentList.map((item) =>
+const updateQueueRecord = async (itemId, patch) => {
+  const list = await readLocalQueue();
+  const updated = list.map((item) =>
     item.id === itemId ? { ...item, ...patch, updatedAt: Date.now() } : item
   );
-  await writeLocalQueue(updatedList);
+  await writeLocalQueue(updated);
 
-  const target = updatedList.find((i) => i.id === itemId);
+  const target = updated.find((i) => i.id === itemId);
   if (target && target.userUid && target.profileId) {
     firestore()
       .collection('users')
@@ -227,69 +275,117 @@ const updateQueueEntryBg = async (itemId, patch) => {
       .set(target, { merge: true })
       .catch(() => {});
   }
-  notifyBgListeners();
-  return updatedList;
+  notifyListeners();
+  return updated;
 };
 
-const runBackgroundDownloadJob = async (task) => {
-  if (!VAULT_ROOT_DIR || BgDownloadState.isRunning) return;
+const executeBackgroundDownload = async (task) => {
+  if (!VAULT_ROOT_DIR || BgManager.isRunning) return;
 
-  BgDownloadState.isRunning = true;
-  BgDownloadState.isPaused = false;
-  BgDownloadState.isCanceled = false;
-  BgDownloadState.activeTask = task;
-  BgDownloadState.pct = task.progressPct || 0;
-  BgDownloadState.downloadedChunks = task.downloadedChunks || 0;
-  BgDownloadState.totalChunks = task.totalChunks || 0;
-  BgDownloadState.sizeBytes = task.sizeBytes || 0;
-  notifyBgListeners();
+  BgManager.isRunning = true;
+  BgManager.isPaused = false;
+  BgManager.isCanceled = false;
+  BgManager.activeTask = task;
+  BgManager.pct = task.progressPct || 0;
+  BgManager.downloadedBytes = task.sizeBytes || 0;
+  BgManager.estimatedTotalBytes = task.estimatedTotalBytes || 100 * 1024 * 1024;
+  notifyListeners();
 
   const safeFolderId = String(task.id).replace(/[^a-zA-Z0-9_-]/g, '_');
   const epFolderUri = `${VAULT_ROOT_DIR}${safeFolderId}/`;
   const notifId = `dl-${task.id}`;
-
-  const plainTitle = `${task.animeTitle} - Episode ${task.episodeNum}`;
-  const audioLabel = String(task.audioType || 'sub').toUpperCase();
-  const qualityLabel = String(task.quality || '1080p');
-  let localPosterUri = task.coverImage || task.backdrop || null;
+  const notifTitle = `${task.animeTitle} - Episode ${task.episodeNum}`;
 
   try {
     await FileSystem.makeDirectoryAsync(epFolderUri, { intermediates: true });
 
-    // Cache vertical portrait poster locally so the Android notification left icon always renders
-    if (localPosterUri && localPosterUri.startsWith('http')) {
+    // 1. Fetch & Save Synopsis, Genres, Cover Image, and Episode Thumbnail for Offline Use
+    let synopsis = task.synopsis || task.description || '';
+    let epSynopsis = task.episodeSynopsis || task.episodeDescription || '';
+    let genres = Array.isArray(task.genres) && task.genres.length > 0 ? task.genres : null;
+    let remoteCover = task.coverImage || task.backdrop || '';
+    let remoteBackdrop = task.backdrop || task.coverImage || '';
+    let totalEpCount = task.totalEpisodes || 134;
+
+    if (!synopsis || !genres || !remoteCover) {
+      const details = await fetchAnimeDetailsForOffline(task.animeTitle);
+      if (details) {
+        if (!synopsis) synopsis = details.synopsis;
+        if (!genres) genres = details.genres;
+        if (!remoteCover && details.coverImage) remoteCover = details.coverImage;
+        if (!remoteBackdrop && details.backdrop) remoteBackdrop = details.backdrop;
+        if (details.totalEpisodes) totalEpCount = details.totalEpisodes;
+      }
+    }
+
+    if (!synopsis) {
+      synopsis = `${task.animeTitle} offline episode saved in ${task.quality || '1080p'}.`;
+    }
+    if (!epSynopsis) {
+      epSynopsis = task.episodeTitle
+        ? `${task.episodeTitle} - ${ synopsis.slice(0, 95) }`
+        : synopsis.slice(0, 110);
+    }
+    if (!genres || genres.length === 0) {
+      genres = ['Action', 'Adventure'];
+    }
+
+    // Download Portrait Cover Image locally
+    let localPosterUri = task.localPosterUri || remoteCover;
+    if (remoteCover && remoteCover.startsWith('http')) {
       try {
-        const posterDest = `${epFolderUri}poster.jpg`;
-        const pInfo = await FileSystem.getInfoAsync(posterDest);
-        if (!pInfo.exists) {
-          await FileSystem.downloadAsync(localPosterUri, posterDest);
+        const posterPath = `${epFolderUri}poster.jpg`;
+        const info = await FileSystem.getInfoAsync(posterPath);
+        if (!info.exists) {
+          await FileSystem.downloadAsync(remoteCover, posterPath);
         }
-        localPosterUri = posterDest;
+        localPosterUri = posterPath;
       } catch (_) {}
     }
 
-    await updateQueueEntryBg(task.id, {
+    // Download Horizontal Episode Thumbnail / Backdrop locally
+    let localThumbUri = task.localThumbUri || remoteBackdrop || localPosterUri;
+    if (remoteBackdrop && remoteBackdrop.startsWith('http')) {
+      try {
+        const thumbPath = `${epFolderUri}thumb.jpg`;
+        const info = await FileSystem.getInfoAsync(thumbPath);
+        if (!info.exists) {
+          await FileSystem.downloadAsync(remoteBackdrop, thumbPath);
+        }
+        localThumbUri = thumbPath;
+      } catch (_) {}
+    }
+
+    const updatedTaskMeta = {
+      ...task,
       status: 'downloading',
       targetFolder: epFolderUri,
       localPosterUri,
-    });
+      localThumbUri,
+      synopsis,
+      episodeSynopsis: epSynopsis,
+      genres,
+      totalEpisodes: totalEpCount,
+    };
+    BgManager.activeTask = updatedTaskMeta;
+    await updateQueueRecord(task.id, updatedTaskMeta);
 
-    await pushPlainTextNotification(
+    await pushPlainNotification(
       notifId,
-      plainTitle,
-      `Downloading ${audioLabel} ${qualityLabel} - 0%`,
+      notifTitle,
+      `0% - ${formatMbRatio(0, BgManager.estimatedTotalBytes)}`,
       0,
       false,
       localPosterUri
     );
 
+    // 2. Resolve Stream & Subtitle URLs
     let streamUri = task.streamUri;
     let referer = task.referer || 'https://vidwish.live/';
     let subtitleFileUrl = task.subtitle?.file || null;
-    const requestedQuality = qualityLabel.toLowerCase();
+    const requestedQuality = String(task.quality || '1080p').toLowerCase();
     const requestedAudio = String(task.audioType || 'sub').toLowerCase();
 
-    // 1. Resolve M3U8 URL if not already stored
     if (!streamUri) {
       const safeAnimeId = encodeURIComponent(task.animeId);
       const safeSlug = encodeURIComponent(task.slug || task.episodeNum);
@@ -318,10 +414,10 @@ const runBackgroundDownloadJob = async (task) => {
     }
 
     if (!streamUri) {
-      throw new Error('Could not resolve stream URL.');
+      throw new Error('Episode stream unavailable');
     }
 
-    // 2. Download Subtitle via Cloudflare Proxy
+    // 3. Download Subtitle (.vtt) to Local Storage
     let localSubtitleUri = null;
     if (subtitleFileUrl && task.subtitle?.lang !== 'none') {
       try {
@@ -340,12 +436,10 @@ const runBackgroundDownloadJob = async (task) => {
       } catch (_) {}
     }
 
-    // 3. Fetch Master / Variant M3U8 via Cloudflare Proxy
+    // 4. Resolve Variant Playlist for Requested Quality
     let activePlaylistUrl = streamUri;
     const masterRes = await fetch(buildProxyUrl(activePlaylistUrl, referer));
-    if (!masterRes.ok) {
-      throw new Error(`Playlist fetch failed (${masterRes.status})`);
-    }
+    if (!masterRes.ok) throw new Error('Stream unavailable');
     let playlistText = await masterRes.text();
 
     if (playlistText.includes('#EXT-X-STREAM-INF')) {
@@ -374,14 +468,12 @@ const runBackgroundDownloadJob = async (task) => {
           variants.sort((a, b) => b.height - a.height)[0];
         activePlaylistUrl = exactMatch.url;
         const variantRes = await fetch(buildProxyUrl(activePlaylistUrl, referer));
-        if (!variantRes.ok) {
-          throw new Error(`Variant playlist fetch failed (${variantRes.status})`);
-        }
+        if (!variantRes.ok) throw new Error('Quality stream unavailable');
         playlistText = await variantRes.text();
       }
     }
 
-    // 4. Parse Segment Chunks & Keys
+    // 5. Parse Media Segments & Keys
     const rawLines = playlistText.replace(/\r\n/g, '\n').split('\n');
     const segmentEntries = [];
     const rewrittenLines = [];
@@ -428,32 +520,29 @@ const runBackgroundDownloadJob = async (task) => {
     }
 
     if (segmentEntries.length === 0) {
-      throw new Error('No video segments found in playlist.');
+      throw new Error('No video data found');
     }
 
     const totalSegs = segmentEntries.length;
-    BgDownloadState.totalChunks = totalSegs;
-    notifyBgListeners();
-
-    // 5. Download Chunks using Background-Capable createDownloadResumable via Proxy
     let completedSegs = 0;
     let accumulatedBytes = task.sizeBytes || 0;
     const BATCH_SIZE = 4;
 
+    // 6. Download Video Data in Background-Capable Batches
     for (let i = 0; i < totalSegs; i += BATCH_SIZE) {
-      if (BgDownloadState.isCanceled) throw new Error('Canceled by user');
+      if (BgManager.isCanceled) throw new Error('Canceled');
 
-      while (BgDownloadState.isPaused && !BgDownloadState.isCanceled) {
+      while (BgManager.isPaused && !BgManager.isCanceled) {
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
 
-      if (BgDownloadState.isCanceled) throw new Error('Canceled by user');
+      if (BgManager.isCanceled) throw new Error('Canceled');
 
       const batch = segmentEntries.slice(i, i + BATCH_SIZE);
 
       await Promise.all(
         batch.map(async (seg) => {
-          if (BgDownloadState.isCanceled) return;
+          if (BgManager.isCanceled) return;
 
           const existingInfo = await FileSystem.getInfoAsync(seg.localUri);
           if (existingInfo.exists && (existingInfo.size || 0) > 0) {
@@ -461,9 +550,9 @@ const runBackgroundDownloadJob = async (task) => {
             return;
           }
 
-          const proxiedChunkUrl = buildProxyUrl(seg.remoteUrl, referer);
+          const proxiedUrl = buildProxyUrl(seg.remoteUrl, referer);
           const resumable = FileSystem.createDownloadResumable(
-            proxiedChunkUrl,
+            proxiedUrl,
             seg.localUri,
             { sessionType: FileSystem.FileSystemSessionType?.BACKGROUND || 0 }
           );
@@ -474,51 +563,61 @@ const runBackgroundDownloadJob = async (task) => {
             accumulatedBytes += fileStat?.size || 0;
             completedSegs++;
           } else {
-            throw new Error(`Segment download failed (${dlRes?.status})`);
+            throw new Error('Network interrupted');
           }
         })
       );
 
       const pct = Math.min(100, Math.round((completedSegs / totalSegs) * 100));
-      BgDownloadState.downloadedChunks = completedSegs;
-      BgDownloadState.pct = pct;
-      BgDownloadState.sizeBytes = accumulatedBytes;
-      notifyBgListeners();
+      const dynamicTotalBytes =
+        completedSegs > 4
+          ? Math.round((accumulatedBytes / completedSegs) * totalSegs)
+          : 100 * 1024 * 1024;
+
+      BgManager.pct = pct;
+      BgManager.downloadedBytes = accumulatedBytes;
+      BgManager.estimatedTotalBytes = dynamicTotalBytes;
+      notifyListeners();
 
       if (pct % 4 === 0 || pct === 100 || completedSegs === totalSegs) {
-        const plainStatus = `${audioLabel} ${qualityLabel} - ${pct}% (${completedSegs}/${totalSegs}) - ${formatBytes(accumulatedBytes)}`;
-        await pushPlainTextNotification(
+        const mbRatioStr = formatMbRatio(accumulatedBytes, dynamicTotalBytes);
+        await pushPlainNotification(
           notifId,
-          plainTitle,
-          plainStatus,
+          notifTitle,
+          `${pct}% - ${mbRatioStr}`,
           pct,
-          BgDownloadState.isPaused,
+          BgManager.isPaused,
           localPosterUri
         );
 
-        await updateQueueEntryBg(task.id, {
-          status: BgDownloadState.isPaused ? 'paused' : 'downloading',
+        await updateQueueRecord(task.id, {
+          status: BgManager.isPaused ? 'paused' : 'downloading',
           progressPct: pct,
-          downloadedChunks: completedSegs,
-          totalChunks: totalSegs,
           sizeBytes: accumulatedBytes,
+          estimatedTotalBytes: dynamicTotalBytes,
         });
       }
     }
 
-    // 6. Write Offline M3U8 & Metadata
+    // 7. Save Offline Video Index & Metadata JSON (with Subtitle, Cover Image, Synopsis)
     const localM3u8Uri = `${epFolderUri}index.m3u8`;
     await FileSystem.writeAsStringAsync(localM3u8Uri, rewrittenLines.join('\n'));
 
     const localMetaUri = `${epFolderUri}metadata.json`;
-    const metaObject = {
+    const fullOfflineMetadata = {
       id: task.id,
       animeId: task.animeId,
       animeTitle: task.animeTitle,
       episodeNum: task.episodeNum,
       episodeTitle: task.episodeTitle,
+      synopsis,
+      episodeSynopsis: epSynopsis,
+      genres,
+      totalEpisodes: totalEpCount,
       audioType: task.audioType,
       quality: task.quality,
+      coverImage: localPosterUri,
+      backdrop: localThumbUri,
       subtitle: {
         ...(task.subtitle || {}),
         localUri: localSubtitleUri,
@@ -527,88 +626,83 @@ const runBackgroundDownloadJob = async (task) => {
       sizeBytes: accumulatedBytes,
       downloadedAt: Date.now(),
     };
-    await FileSystem.writeAsStringAsync(localMetaUri, JSON.stringify(metaObject));
+    await FileSystem.writeAsStringAsync(localMetaUri, JSON.stringify(fullOfflineMetadata));
 
-    await updateQueueEntryBg(task.id, {
+    await updateQueueRecord(task.id, {
       status: 'completed',
       progressPct: 100,
-      downloadedChunks: totalSegs,
-      totalChunks: totalSegs,
       sizeBytes: accumulatedBytes,
+      estimatedTotalBytes: accumulatedBytes,
       localUri: localM3u8Uri,
       localMetaUri,
       localSubtitleUri,
       localPosterUri,
+      localThumbUri,
+      synopsis,
+      episodeSynopsis: epSynopsis,
+      genres,
+      totalEpisodes: totalEpCount,
       targetFolder: epFolderUri,
       downloadedAt: Date.now(),
     });
 
-    await pushPlainCompleteNotification(
-      notifId,
-      `Download Complete: ${plainTitle} (${qualityLabel})`,
-      localPosterUri
-    );
+    await pushPlainDoneNotification(notifId, `Downloaded ${notifTitle}`, localPosterUri);
   } catch (err) {
-    if (BgDownloadState.isCanceled || (err?.message && err.message.includes('Canceled'))) {
-      await dismissNotification(notifId);
+    if (BgManager.isCanceled || (err?.message && err.message.includes('Canceled'))) {
+      await dismissPlainNotification(notifId);
       try {
         await FileSystem.deleteAsync(epFolderUri, { idempotent: true });
       } catch (_) {}
     } else {
-      await pushPlainErrorNotification(notifId, `Download Failed: ${plainTitle}`, localPosterUri);
-      await updateQueueEntryBg(task.id, {
+      await dismissPlainNotification(notifId);
+      await updateQueueRecord(task.id, {
         status: 'failed',
-        errorMessage: err?.message || 'Download error',
       });
     }
   } finally {
-    BgDownloadState.isRunning = false;
-    BgDownloadState.isPaused = false;
-    BgDownloadState.activeTask = null;
-    BgDownloadState.pct = 0;
-    notifyBgListeners();
+    BgManager.isRunning = false;
+    BgManager.isPaused = false;
+    BgManager.activeTask = null;
+    BgManager.pct = 0;
+    notifyListeners();
   }
 };
 
-const togglePauseBackgroundDownload = async () => {
-  const task = BgDownloadState.activeTask;
+const handleTogglePauseBg = async () => {
+  const task = BgManager.activeTask;
   if (!task) return;
-  const nextPaused = !BgDownloadState.isPaused;
-  BgDownloadState.isPaused = nextPaused;
-  notifyBgListeners();
+  const nextPaused = !BgManager.isPaused;
+  BgManager.isPaused = nextPaused;
+  notifyListeners();
 
   const notifId = `dl-${task.id}`;
-  const plainTitle = `${task.animeTitle} - Episode ${task.episodeNum}`;
-  const audioLabel = String(task.audioType || 'sub').toUpperCase();
-  const qualityLabel = String(task.quality || '1080p');
-  const plainStatus = nextPaused
-    ? `Paused at ${BgDownloadState.pct}% - ${audioLabel} ${qualityLabel}`
-    : `Downloading ${audioLabel} ${qualityLabel} - ${BgDownloadState.pct}%`;
+  const notifTitle = `${task.animeTitle} - Episode ${task.episodeNum}`;
+  const mbRatioStr = formatMbRatio(BgManager.downloadedBytes, BgManager.estimatedTotalBytes);
 
-  await pushPlainTextNotification(
+  await pushPlainNotification(
     notifId,
-    plainTitle,
-    plainStatus,
-    BgDownloadState.pct,
+    notifTitle,
+    nextPaused ? `Paused - ${mbRatioStr}` : `${BgManager.pct}% - ${mbRatioStr}`,
+    BgManager.pct,
     nextPaused,
     task.localPosterUri || task.coverImage || task.backdrop
   );
 
-  await updateQueueEntryBg(task.id, {
+  await updateQueueRecord(task.id, {
     status: nextPaused ? 'paused' : 'downloading',
   });
 };
 
-const cancelBackgroundDownload = async () => {
-  const task = BgDownloadState.activeTask;
-  BgDownloadState.isCanceled = true;
-  BgDownloadState.isPaused = false;
-  notifyBgListeners();
+const handleCancelBg = async () => {
+  const task = BgManager.activeTask;
+  BgManager.isCanceled = true;
+  BgManager.isPaused = false;
+  notifyListeners();
 
   if (task) {
-    await dismissNotification(`dl-${task.id}`);
-    const currentList = await readLocalQueue();
-    const filtered = currentList.filter((i) => i.id !== task.id);
+    await dismissPlainNotification(`dl-${task.id}`);
+    const list = await readLocalQueue();
+    const filtered = list.filter((i) => i.id !== task.id);
     await writeLocalQueue(filtered);
 
     if (task.targetFolder) {
@@ -626,122 +720,77 @@ const cancelBackgroundDownload = async () => {
         .catch(() => {});
     }
   }
-  BgDownloadState.activeTask = null;
-  notifyBgListeners();
+  BgManager.activeTask = null;
+  notifyListeners();
 };
 
-// Start the background queue watcher once at module load so downloads run even when the screen is closed
-const startBackgroundDownloadDaemon = () => {
-  if (BgDownloadState.daemonStarted) return;
-  BgDownloadState.daemonStarted = true;
+const initBackgroundDaemon = () => {
+  if (BgManager.daemonInitialized) return;
+  BgManager.daemonInitialized = true;
 
   DeviceEventEmitter.addListener('PAUSE_DOWNLOAD', () => {
-    if (!BgDownloadState.isPaused) togglePauseBackgroundDownload();
+    if (!BgManager.isPaused) handleTogglePauseBg();
   });
   DeviceEventEmitter.addListener('RESUME_DOWNLOAD', () => {
-    if (BgDownloadState.isPaused) togglePauseBackgroundDownload();
+    if (BgManager.isPaused) handleTogglePauseBg();
   });
   DeviceEventEmitter.addListener('CANCEL_DOWNLOAD', () => {
-    cancelBackgroundDownload();
+    handleCancelBg();
   });
 
   setInterval(async () => {
-    if (BgDownloadState.isRunning || BgDownloadState.isPaused) return;
+    if (BgManager.isRunning || BgManager.isPaused) return;
     const queue = await readLocalQueue();
     const nextItem = queue.find(
       (item) => item.status === 'queued' || item.status === 'downloading'
     );
     if (nextItem) {
-      runBackgroundDownloadJob(nextItem);
+      executeBackgroundDownload(nextItem);
     }
-  }, 2200);
+  }, 2000);
 };
 
-startBackgroundDownloadDaemon();
+initBackgroundDaemon();
 
 // ============================================================================
-// HIGH-CRAFT SVG ICON SUITE (PURE WHITE, PURE RED, BLACK)
+// SVG ICONS MATCHING SCREENSHOT
 // ============================================================================
-const IconBackSvg = ({ size = 22, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+const IconChevronLeft = ({ size = 22, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <Path d="M15 18l-6-6 6-6" />
   </Svg>
 );
 
-const IconPlaySvg = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M7 4v16l13-8z" />
+const IconChevronDown = ({ size = 18, color = TEXT_GREY }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M6 9l6 6 6-6" />
   </Svg>
 );
 
-const IconPauseSvg = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Rect x="6" y="4" width="4.5" height="16" rx="1" />
-    <Rect x="13.5" y="4" width="4.5" height="16" rx="1" />
+const IconBookmark = ({ size = 14, color = WHITE, filled = false }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : 'none'} stroke={filled ? PURE_RED : color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
 
-const IconMoreDotsSvg = ({ size = 22, color = WHITE }) => (
+const IconDotsHorizontal = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Circle cx="5" cy="12" r="2.2" />
-    <Circle cx="12" cy="12" r="2.2" />
-    <Circle cx="19" cy="12" r="2.2" />
+    <Circle cx="5" cy="12" r="2" />
+    <Circle cx="12" cy="12" r="2" />
+    <Circle cx="19" cy="12" r="2" />
   </Svg>
 );
 
-const IconTrashSvg = ({ size = 20, color = PURE_RED }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+const IconPlay = ({ size = 18, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+    <Path d="M8 5v14l11-7z" />
+  </Svg>
+);
+
+const IconTrash = ({ size = 18, color = PURE_RED }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <Polyline points="3 6 5 6 21 6" />
     <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-    <Line x1="10" y1="11" x2="10" y2="17" />
-    <Line x1="14" y1="11" x2="14" y2="17" />
-  </Svg>
-);
-
-const IconListAddSvg = ({ size = 20, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <Line x1="8" y1="6" x2="21" y2="6" />
-    <Line x1="8" y1="12" x2="21" y2="12" />
-    <Line x1="8" y1="18" x2="16" y2="18" />
-    <Line x1="3" y1="6" x2="3.01" y2="6" />
-    <Line x1="3" y1="12" x2="3.01" y2="12" />
-    <Path d="M19 15v6M16 18h6" />
-  </Svg>
-);
-
-const IconCheckSvg = ({ size = 20, color = PURE_RED }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
-    <Polyline points="20 6 9 17 4 12" />
-  </Svg>
-);
-
-const IconCloseSvg = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.6" strokeLinecap="round">
-    <Path d="M18 6L6 18M6 6l12 12" />
-  </Svg>
-);
-
-const IconDownloadVaultSvg = ({ size = 24, color = PURE_RED }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-    <Polyline points="7 10 12 15 17 10" />
-    <Line x1="12" y1="15" x2="12" y2="3" />
-  </Svg>
-);
-
-const IconFilmSvg = ({ size = 14, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-    <Line x1="7" y1="2" x2="7" y2="22" />
-    <Line x1="17" y1="2" x2="17" y2="22" />
-    <Line x1="2" y1="12" x2="22" y2="12" />
-  </Svg>
-);
-
-const IconSubtitlesSvg = ({ size = 14, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Rect x="2" y="4" width="20" height="16" rx="2" />
-    <Path d="M6 15h4M14 15h4M6 11h8" />
   </Svg>
 );
 
@@ -759,65 +808,59 @@ export default function Downloads({
   const resolvedUid = resolvedUser?.uid || null;
 
   const [queueItems, setQueueItems] = useState([]);
-  const [bgState, setBgState] = useState({
-    isRunning: BgDownloadState.isRunning,
-    isPaused: BgDownloadState.isPaused,
-    activeTask: BgDownloadState.activeTask,
-    pct: BgDownloadState.pct,
-    downloadedChunks: BgDownloadState.downloadedChunks,
-    totalChunks: BgDownloadState.totalChunks,
-    sizeBytes: BgDownloadState.sizeBytes,
-  });
-
-  // "..." Options Modal State
-  const [menuTargetItem, setMenuTargetItem] = useState(null);
+  const [expandedSeriesMap, setExpandedSeriesMap] = useState({});
   const [watchlistMap, setWatchlistMap] = useState({});
-
-  // Top-most Fullscreen Player Modal State (opens above everything including BottomNav)
+  const [watchHistoryMap, setWatchHistoryMap] = useState({});
+  const [menuTarget, setMenuTarget] = useState(null);
   const [topLevelPlayback, setTopLevelPlayback] = useState(null);
 
-  const pulseAnim = useRef(new Animated.Value(0.35)).current;
+  const [bgState, setBgState] = useState({
+    isRunning: BgManager.isRunning,
+    isPaused: BgManager.isPaused,
+    activeTask: BgManager.activeTask,
+    pct: BgManager.pct,
+    downloadedBytes: BgManager.downloadedBytes,
+    estimatedTotalBytes: BgManager.estimatedTotalBytes,
+  });
 
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 0.35, duration: 700, useNativeDriver: true }),
-      ])
-    );
-    anim.start();
-    return () => anim.stop();
-  }, [pulseAnim]);
-
-  // Subscribe to background download engine updates & local storage queue
+  // Load local queue & subscribe to background downloader
   useEffect(() => {
     let isMounted = true;
 
     const loadQueue = async () => {
       const list = await readLocalQueue();
-      if (isMounted) setQueueItems(list);
+      if (isMounted) {
+        setQueueItems(list);
+        // Default-expand first downloaded series so episodes are visible like screenshot
+        if (list.length > 0) {
+          setExpandedSeriesMap((prev) => {
+            if (Object.keys(prev).length > 0) return prev;
+            return { [String(list[0].animeId)]: true };
+          });
+        }
+      }
     };
 
     loadQueue();
 
-    const listener = (snapshot) => {
+    const listener = (stateSnap) => {
       if (isMounted) {
-        setBgState(snapshot);
+        setBgState(stateSnap);
         loadQueue();
       }
     };
 
-    BgDownloadState.listeners.add(listener);
-    const interval = setInterval(loadQueue, 1800);
+    BgManager.listeners.add(listener);
+    const poll = setInterval(loadQueue, 1800);
 
     return () => {
       isMounted = false;
-      BgDownloadState.listeners.delete(listener);
-      clearInterval(interval);
+      BgManager.listeners.delete(listener);
+      clearInterval(poll);
     };
   }, []);
 
-  // Listen to User Watchlist (`users/{uid}/library`) so "..." menu shows live status
+  // Listen to user watchlist (`users/{uid}/library`) for the bookmark badge & "..." menu
   useEffect(() => {
     if (!resolvedUid) return;
     const unsub = firestore()
@@ -837,69 +880,80 @@ export default function Downloads({
     return () => unsub();
   }, [resolvedUid]);
 
-  // Add or Remove Anime from User Watchlist
-  const handleToggleUserList = async (item) => {
-    if (!item) return;
-    if (!resolvedUid) {
-      Alert.alert('Sign In Required', 'Please sign in to save anime to your list.');
-      return;
-    }
+  // Listen to watch_history so episode thumbnail shows accurate timestamp (e.g. 02:06 / 24:37)
+  useEffect(() => {
+    if (!resolvedUid || !resolvedProfileId) return;
+    const unsub = firestore()
+      .collection('users')
+      .doc(String(resolvedUid))
+      .collection('profiles')
+      .doc(String(resolvedProfileId))
+      .collection('watch_history')
+      .onSnapshot(
+        (snap) => {
+          const map = {};
+          snap?.forEach((doc) => {
+            map[doc.id] = doc.data();
+          });
+          setWatchHistoryMap(map);
+        },
+        () => {}
+      );
+    return () => unsub();
+  }, [resolvedUid, resolvedProfileId]);
 
-    const animeDocId = String(item.animeId);
+  const toggleBookmarkWatchlist = async (animeItem) => {
+    if (!animeItem || !resolvedUid) return;
+    const animeDocId = String(animeItem.animeId);
     const ref = firestore()
       .collection('users')
       .doc(String(resolvedUid))
       .collection('library')
       .doc(animeDocId);
 
-    const isAlreadyInList = Boolean(watchlistMap[animeDocId]);
-
     try {
-      if (isAlreadyInList) {
+      if (watchlistMap[animeDocId]) {
         await ref.delete();
       } else {
         await ref.set(
           {
             id: animeDocId,
             animeId: animeDocId,
-            title: item.animeTitle,
-            img: item.coverImage || item.backdrop || '',
-            backdrop: item.backdrop || item.coverImage || '',
+            title: animeItem.animeTitle,
+            img: animeItem.localPosterUri || animeItem.coverImage || animeItem.backdrop || '',
+            backdrop: animeItem.localThumbUri || animeItem.backdrop || animeItem.coverImage || '',
             profileId: resolvedProfileId,
             addedAt: firestore.FieldValue.serverTimestamp(),
           },
           { merge: true }
         );
       }
-      setMenuTargetItem(null);
-    } catch (e) {
-      Alert.alert('Error', 'Could not update your list.');
-    }
+      setMenuTarget(null);
+    } catch (_) {}
   };
 
-  // Delete Downloaded Video & Local Segments
-  const handleDeleteVideo = (item) => {
-    if (!item) return;
-    setMenuTargetItem(null);
+  const handleDeleteEpisode = (epItem) => {
+    if (!epItem) return;
+    setMenuTarget(null);
 
     Alert.alert(
-      'Delete Video',
-      `Remove ${item.animeTitle} - Episode ${item.episodeNum} from device storage?`,
+      'Delete Download',
+      `Remove ${epItem.animeTitle} - Episode ${epItem.episodeNum}?`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            if (BgDownloadState.activeTask?.id === item.id) {
-              await cancelBackgroundDownload();
+            if (BgManager.activeTask?.id === epItem.id) {
+              await handleCancelBg();
               return;
             }
-            if (item.targetFolder) {
-              await FileSystem.deleteAsync(item.targetFolder, { idempotent: true }).catch(() => {});
+            if (epItem.targetFolder) {
+              await FileSystem.deleteAsync(epItem.targetFolder, { idempotent: true }).catch(() => {});
             }
-            const currentList = await readLocalQueue();
-            const filtered = currentList.filter((i) => i.id !== item.id);
+            const list = await readLocalQueue();
+            const filtered = list.filter((i) => i.id !== epItem.id);
             await writeLocalQueue(filtered);
             setQueueItems(filtered);
 
@@ -910,7 +964,7 @@ export default function Downloads({
                 .collection('profiles')
                 .doc(String(resolvedProfileId))
                 .collection('downloads')
-                .doc(`${item.animeId}_ep_${item.episodeNum}`)
+                .doc(`${epItem.animeId}_ep_${epItem.episodeNum}`)
                 .delete()
                 .catch(() => {});
             }
@@ -920,411 +974,474 @@ export default function Downloads({
     );
   };
 
-  // Retry or Resume a Paused / Failed Item
-  const handleRetryOrStartItem = async (item) => {
-    setMenuTargetItem(null);
-    await updateQueueEntryBg(item.id, { status: 'queued' });
-  };
+  const handleOpenPlayerOnTop = (epItem) => {
+    if (!epItem) return;
+    setMenuTarget(null);
 
-  // Open Player on top of EVERYTHING (via full-screen Modal)
-  const handleOpenPlayerTop = (item) => {
-    if (!item) return;
-    setMenuTargetItem(null);
+    const streamSource = epItem.localUri || epItem.streamUri;
+    if (!streamSource) return;
 
-    const streamTarget = item.localUri || item.streamUri;
-    if (!streamTarget) {
-      Alert.alert('Not Ready', 'This episode is still downloading.');
-      return;
-    }
+    const savedHist = watchHistoryMap[String(epItem.animeId)];
+    const resumeProgress =
+      savedHist && String(savedHist.episodeNum) === String(epItem.episodeNum)
+        ? Number(savedHist.progress || 0)
+        : 0;
 
     setTopLevelPlayback({
-      activeUrl: streamTarget,
-      streamUrl: streamTarget,
-      localUri: item.localUri || null,
-      localMetaUri: item.localMetaUri || null,
-      localSubtitleUri: item.localSubtitleUri || null,
-      animeTitle: item.animeTitle,
-      animeBackdrop: item.backdrop || item.coverImage,
-      coverImage: item.coverImage || item.backdrop,
-      episodeNum: item.episodeNum,
-      episodeTitle: item.episodeTitle,
-      animeId: item.animeId,
-      slug: item.slug,
-      quality: item.quality || '1080p',
+      activeUrl: streamSource,
+      streamUrl: streamSource,
+      localUri: epItem.localUri || null,
+      localMetaUri: epItem.localMetaUri || null,
+      localSubtitleUri: epItem.localSubtitleUri || null,
+      animeTitle: epItem.animeTitle,
+      animeBackdrop: epItem.localThumbUri || epItem.backdrop || epItem.coverImage,
+      coverImage: epItem.localPosterUri || epItem.coverImage || epItem.backdrop,
+      episodeNum: epItem.episodeNum,
+      episodeTitle: epItem.episodeTitle,
+      animeId: epItem.animeId,
+      slug: epItem.slug,
+      quality: epItem.quality || '1080p',
+      progress: resumeProgress,
       userUid: resolvedUid,
       activeProfileId: resolvedProfileId,
-      targetType: item.audioType || 'sub',
-      isOffline: Boolean(item.localUri),
+      targetType: epItem.audioType || 'sub',
+      isOffline: Boolean(epItem.localUri),
     });
   };
 
-  const { activeTask, pct, downloadedChunks, totalChunks, sizeBytes, isPaused } = bgState;
+  // Compute Stats & Group Downloaded Series
+  const { activeDownloadItem, downloadedSeriesGroups, readyCount, inQueueCount, seriesCount } = useMemo(() => {
+    const active =
+      bgState.activeTask ||
+      queueItems.find((i) => i.status === 'downloading' || i.status === 'paused' || i.status === 'queued') ||
+      null;
 
-  const { totalStorageBytes, completedTotal } = useMemo(() => {
-    let bytes = 0;
-    let count = 0;
-    queueItems.forEach((i) => {
-      bytes += Number(i.sizeBytes || 0);
-      if (i.status === 'completed') count++;
+    const completedItems = queueItems.filter((i) => i.status === 'completed');
+    const pendingItems = queueItems.filter(
+      (i) => i.status === 'queued' || i.status === 'downloading' || i.status === 'paused'
+    );
+
+    const seriesMap = new Map();
+    const allSeriesIds = new Set();
+
+    queueItems.forEach((item) => {
+      if (item.animeId) allSeriesIds.add(String(item.animeId));
     });
-    return { totalStorageBytes: bytes, completedTotal: count };
-  }, [queueItems]);
+
+    completedItems.forEach((item) => {
+      const sKey = String(item.animeId || item.animeTitle);
+      if (!seriesMap.has(sKey)) {
+        seriesMap.set(sKey, {
+          animeId: sKey,
+          animeTitle: item.animeTitle || 'Unknown',
+          coverImage: item.localPosterUri || item.coverImage || item.backdrop || '',
+          backdrop: item.localThumbUri || item.backdrop || item.coverImage || '',
+          genres: Array.isArray(item.genres) && item.genres.length > 0 ? item.genres : ['Action', 'Adventure'],
+          synopsis:
+            item.synopsis ||
+            `${item.animeTitle} offline episodes saved with subtitles and cover art.`,
+          totalEpisodes: item.totalEpisodes || completedItems.length,
+          episodes: [],
+        });
+      }
+      seriesMap.get(sKey).episodes.push(item);
+    });
+
+    const groups = Array.from(seriesMap.values()).map((g) => ({
+      ...g,
+      episodes: g.episodes.sort((a, b) => Number(a.episodeNum) - Number(b.episodeNum)),
+    }));
+
+    return {
+      activeDownloadItem: active,
+      downloadedSeriesGroups: groups,
+      readyCount: completedItems.length,
+      inQueueCount: Math.max(0, pendingItems.length - (active ? 1 : 0)),
+      seriesCount: allSeriesIds.size,
+    };
+  }, [queueItems, bgState.activeTask]);
+
+  const toggleExpandSeries = (animeId) => {
+    setExpandedSeriesMap((prev) => ({
+      ...prev,
+      [String(animeId)]: !prev[String(animeId)],
+    }));
+  };
 
   return (
     <View style={styles.container}>
       <StatusBar hidden={true} />
 
-      {/* TOP VAULT BAR */}
-      <View style={styles.headerBar}>
-        <View style={styles.headerLeftGroup}>
-          <TouchableOpacity
-            style={styles.backBtnBox}
-            activeOpacity={0.8}
-            onPress={onBack || (() => navigation?.goBack?.())}
-          >
-            <IconBackSvg size={22} color={WHITE} />
-          </TouchableOpacity>
-          <View>
-            <Text style={styles.headerTitle}>DOWNLOADS</Text>
-            <Text style={styles.headerSub}>
-              {completedTotal} VIDEOS • {formatBytes(totalStorageBytes)}
-            </Text>
-          </View>
-        </View>
+      {/* 1. HEADER: "< Downloads" */}
+      <View style={styles.headerRow}>
+        <TouchableOpacity
+          style={styles.backTouch}
+          activeOpacity={0.75}
+          onPress={onBack || (() => navigation?.goBack?.())}
+        >
+          <IconChevronLeft size={22} color={WHITE} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitleText}>Downloads</Text>
+      </View>
 
-        <View style={styles.headerRightBadge}>
-          <IconDownloadVaultSvg size={18} color={PURE_RED} />
-          <Text style={styles.headerRightBadgeText}>BACKGROUND ENGINE</Text>
+      {/* 2. TOP STATS BOX: READY OFFLINE | IN QUEUE | SERIES */}
+      <View style={styles.statsContainer}>
+        <View style={styles.statColumn}>
+          <Text style={styles.statNumber}>{readyCount}</Text>
+          <Text style={styles.statLabel}>READY OFFLINE</Text>
+        </View>
+        <View style={styles.statDivider} />
+        <View style={styles.statColumn}>
+          <Text style={styles.statNumber}>{inQueueCount}</Text>
+          <Text style={styles.statLabel}>IN QUEUE</Text>
+        </View>
+        <View style={styles.statDivider} />
+        <View style={styles.statColumn}>
+          <Text style={styles.statNumber}>{seriesCount}</Text>
+          <Text style={styles.statLabel}>SERIES</Text>
         </View>
       </View>
 
-      {/* THICK VERTICAL ANIME VIDEO CARDS LIST */}
+      <View style={styles.fullDividerLine} />
+
       <FlatList
-        data={queueItems}
-        keyExtractor={(item) => String(item.id)}
-        contentContainerStyle={styles.listContent}
+        data={downloadedSeriesGroups}
+        keyExtractor={(item) => String(item.animeId)}
+        contentContainerStyle={styles.scrollPadding}
         showsVerticalScrollIndicator={false}
         ListHeaderComponent={
-          activeTask ? (
-            <View style={styles.activeSectionWrap}>
-              <View style={styles.activeSectionHeader}>
-                <Animated.View style={[styles.redPulseDot, { opacity: pulseAnim }]} />
-                <Text style={styles.activeSectionTitle}>
-                  {isPaused ? 'BACKGROUND DOWNLOAD PAUSED' : 'ACTIVE BACKGROUND DOWNLOAD'}
-                </Text>
-              </View>
+          <>
+            {/* 3. "Downlaoding" SECTION */}
+            {activeDownloadItem && (
+              <View style={styles.sectionBlock}>
+                <Text style={styles.sectionHeading}>Downlaoding</Text>
 
-              {/* THICK ACTIVE DOWNLOAD CARD WITH VERTICAL PORTRAIT IMAGE */}
-              <View style={styles.thickActiveCard}>
-                <View style={styles.verticalPosterWrap}>
-                  <ProxyImage
-                    source={{ uri: activeTask.coverImage || activeTask.backdrop }}
-                    style={styles.verticalPosterImg}
-                    resizeMode="cover"
-                  />
-                  <View style={styles.posterAudioRibbon}>
-                    <Text style={styles.posterAudioRibbonText}>
-                      {(activeTask.audioType || 'sub').toUpperCase()}
+                <View style={styles.mainCard}>
+                  {/* Left Vertical Portrait Poster with CC badge & Bookmark icon */}
+                  <View style={styles.posterContainer}>
+                    <ProxyImage
+                      source={{
+                        uri:
+                          activeDownloadItem.localPosterUri ||
+                          activeDownloadItem.coverImage ||
+                          activeDownloadItem.backdrop,
+                      }}
+                      style={styles.posterImage}
+                      resizeMode="cover"
+                    />
+                    <View style={styles.ccRedBadge}>
+                      <Text style={styles.ccRedBadgeText}>
+                        CC {activeDownloadItem.totalEpisodes || 134}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.posterBookmarkBtn}
+                      activeOpacity={0.8}
+                      onPress={() => toggleBookmarkWatchlist(activeDownloadItem)}
+                    >
+                      <IconBookmark
+                        size={13}
+                        color={WHITE}
+                        filled={Boolean(watchlistMap[String(activeDownloadItem.animeId)])}
+                      />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Right Details Column */}
+                  <View style={styles.cardRightCol}>
+                    <View style={styles.titleAndDotsRow}>
+                      <Text style={styles.animeMainTitle} numberOfLines={1}>
+                        {activeDownloadItem.animeTitle}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.dotsBtn}
+                        onPress={() => setMenuTarget(activeDownloadItem)}
+                      >
+                        <IconDotsHorizontal size={18} color={WHITE} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <Text style={styles.episodeSubLabel} numberOfLines={1}>
+                      Episode {activeDownloadItem.episodeNum} : {activeDownloadItem.episodeTitle || `Episode ${activeDownloadItem.episodeNum}`}
                     </Text>
+
+                    {/* Outlined Rectangular Spec Pills: 1080p | English | Sub */}
+                    <View style={styles.outlinedPillsRow}>
+                      <View style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText}>
+                          {activeDownloadItem.quality || '1080p'}
+                        </Text>
+                      </View>
+                      <View style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText} numberOfLines={1}>
+                          {(activeDownloadItem.subtitle?.label || 'English').split(' ')[0]}
+                        </Text>
+                      </View>
+                      <View style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText}>
+                          {activeDownloadItem.audioType === 'dub' ? 'Dub' : 'Sub'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Right-aligned MB ratio + Thin Red Progress Bar */}
+                    <View style={styles.progressSection}>
+                      <Text style={styles.mbRatioText}>
+                        {formatMbRatio(bgState.downloadedBytes, bgState.estimatedTotalBytes)}
+                      </Text>
+                      <View style={styles.thinProgressBg}>
+                        <View
+                          style={[
+                            styles.thinProgressFill,
+                            { width: `${bgState.pct || activeDownloadItem.progressPct || 0}%` },
+                          ]}
+                        />
+                      </View>
+                    </View>
+
+                    {/* White Buttons: "pause" and "Cancel" */}
+                    <View style={styles.whiteBtnsRow}>
+                      <TouchableOpacity
+                        style={styles.whiteActionBtn}
+                        activeOpacity={0.85}
+                        onPress={handleTogglePauseBg}
+                      >
+                        <Text style={styles.whiteActionBtnText}>
+                          {bgState.isPaused ? 'resume' : 'pause'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.whiteActionBtn}
+                        activeOpacity={0.85}
+                        onPress={handleCancelBg}
+                      >
+                        <Text style={styles.whiteActionBtnText}>Cancel</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
-
-                <View style={styles.thickCardBody}>
-                  <View style={styles.cardTopRow}>
-                    <View style={{ flex: 1, paddingRight: 8 }}>
-                      <Text style={styles.cardAnimeTitle} numberOfLines={2}>
-                        {activeTask.animeTitle}
-                      </Text>
-                      <Text style={styles.cardEpTitle} numberOfLines={1}>
-                        EPISODE {activeTask.episodeNum} • {activeTask.episodeTitle}
-                      </Text>
-                    </View>
-
-                    <TouchableOpacity
-                      style={styles.dotsMenuBtn}
-                      activeOpacity={0.75}
-                      onPress={() => setMenuTargetItem(activeTask)}
-                    >
-                      <IconMoreDotsSvg size={22} color={WHITE} />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={styles.svgMetaRow}>
-                    <View style={styles.svgSpecTagRed}>
-                      <IconFilmSvg size={12} color={WHITE} />
-                      <Text style={styles.svgSpecTagText}>{activeTask.quality || '1080p'}</Text>
-                    </View>
-                    <View style={styles.svgSpecTagDark}>
-                      <IconSubtitlesSvg size={12} color={WHITE} />
-                      <Text style={styles.svgSpecTagText} numberOfLines={1}>
-                        {activeTask.subtitle?.label || 'Off'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.progressTextRow}>
-                    <Text style={styles.chunkInfoText}>
-                      {totalChunks > 0
-                        ? `${downloadedChunks}/${totalChunks} CHUNKS • ${formatBytes(sizeBytes)}`
-                        : 'FETCHING M3U8 VIA PROXY...'}
-                    </Text>
-                    <Text style={styles.pctBigText}>{pct}%</Text>
-                  </View>
-
-                  <View style={styles.thickProgressBarBg}>
-                    <View style={[styles.thickProgressBarFill, { width: `${pct}%` }]} />
-                  </View>
-
-                  <View style={styles.activeButtonsRow}>
-                    <TouchableOpacity
-                      style={styles.redActionBtn}
-                      activeOpacity={0.85}
-                      onPress={togglePauseBackgroundDownload}
-                    >
-                      {isPaused ? (
-                        <IconPlaySvg size={15} color={WHITE} />
-                      ) : (
-                        <IconPauseSvg size={15} color={WHITE} />
-                      )}
-                      <Text style={styles.redActionBtnText}>
-                        {isPaused ? 'RESUME' : 'PAUSE'}
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.blackCancelBtn}
-                      activeOpacity={0.85}
-                      onPress={cancelBackgroundDownload}
-                    >
-                      <IconCloseSvg size={15} color={PURE_RED} />
-                      <Text style={styles.blackCancelBtnText}>CANCEL</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
               </View>
-            </View>
-          ) : null
+            )}
+
+            {/* 4. "Downlaoded" SECTION HEADER */}
+            {downloadedSeriesGroups.length > 0 && (
+              <Text style={[styles.sectionHeading, { marginTop: 6, marginBottom: 12 }]}>
+                Downlaoded
+              </Text>
+            )}
+          </>
         }
-        renderItem={({ item }) => {
-          if (activeTask?.id === item.id) return null;
-
-          const isCompleted = item.status === 'completed';
-          const isFailed = item.status === 'failed';
-          const isInUserList = Boolean(watchlistMap[String(item.animeId)]);
-          const itemPct = isCompleted ? 100 : item.progressPct || 0;
+        renderItem={({ item: series }) => {
+          const isExpanded = Boolean(expandedSeriesMap[String(series.animeId)]);
+          const firstEp = series.episodes[0];
 
           return (
-            <TouchableOpacity
-              style={styles.thickVideoCard}
-              activeOpacity={0.9}
-              onPress={() =>
-                isCompleted ? handleOpenPlayerTop(item) : setMenuTargetItem(item)
-              }
-            >
-              {/* LEFT VERTICAL PORTRAIT ANIME POSTER */}
-              <View style={styles.verticalPosterWrap}>
-                <ProxyImage
-                  source={{ uri: item.coverImage || item.backdrop }}
-                  style={styles.verticalPosterImg}
-                  resizeMode="cover"
-                />
-                <View style={styles.posterAudioRibbon}>
-                  <Text style={styles.posterAudioRibbonText}>
-                    {(item.audioType || 'sub').toUpperCase()}
-                  </Text>
-                </View>
-                {isCompleted && (
-                  <View style={styles.posterCenterPlayCircle}>
-                    <IconPlaySvg size={20} color={WHITE} />
-                  </View>
-                )}
-              </View>
-
-              {/* RIGHT THICK VIDEO INFO COLUMN */}
-              <View style={styles.thickCardBody}>
-                <View style={styles.cardTopRow}>
-                  <View style={{ flex: 1, paddingRight: 8 }}>
-                    <Text style={styles.cardAnimeTitle} numberOfLines={2}>
-                      {item.animeTitle}
-                    </Text>
-                    <Text style={styles.cardEpTitle} numberOfLines={1}>
-                      EPISODE {item.episodeNum} • {item.episodeTitle || `Episode ${item.episodeNum}`}
+            <View style={styles.downloadedSeriesBlock}>
+              {/* Main Series Card */}
+              <TouchableOpacity
+                style={styles.mainCard}
+                activeOpacity={0.9}
+                onPress={() => toggleExpandSeries(series.animeId)}
+              >
+                {/* Left Vertical Portrait Poster */}
+                <View style={styles.posterContainer}>
+                  <ProxyImage
+                    source={{ uri: series.coverImage || series.backdrop }}
+                    style={styles.posterImage}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.ccRedBadge}>
+                    <Text style={styles.ccRedBadgeText}>
+                      CC {series.totalEpisodes || 134}
                     </Text>
                   </View>
-
-                  {/* "..." THREE DOTS OPTIONS BUTTON */}
                   <TouchableOpacity
-                    style={styles.dotsMenuBtn}
-                    activeOpacity={0.75}
-                    onPress={() => setMenuTargetItem(item)}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    style={styles.posterBookmarkBtn}
+                    activeOpacity={0.8}
+                    onPress={() => toggleBookmarkWatchlist(firstEp || series)}
                   >
-                    <IconMoreDotsSvg size={22} color={WHITE} />
+                    <IconBookmark
+                      size={13}
+                      color={WHITE}
+                      filled={Boolean(watchlistMap[String(series.animeId)])}
+                    />
                   </TouchableOpacity>
                 </View>
 
-                <View style={styles.svgMetaRow}>
-                  <View style={styles.svgSpecTagRed}>
-                    <IconFilmSvg size={12} color={WHITE} />
-                    <Text style={styles.svgSpecTagText}>{item.quality || '1080p'}</Text>
-                  </View>
-                  <View style={styles.svgSpecTagDark}>
-                    <IconSubtitlesSvg size={12} color={WHITE} />
-                    <Text style={styles.svgSpecTagText} numberOfLines={1}>
-                      {item.subtitle?.label || 'Off'}
+                {/* Right Series Info: Title, Outlined Genre Pills, Synopsis, Bottom-Right Chevron */}
+                <View style={styles.cardRightCol}>
+                  <View style={styles.titleAndDotsRow}>
+                    <Text style={styles.animeMainTitle} numberOfLines={1}>
+                      {series.animeTitle}
                     </Text>
+                    <TouchableOpacity
+                      style={styles.dotsBtn}
+                      onPress={() => setMenuTarget(firstEp || series)}
+                    >
+                      <IconDotsHorizontal size={18} color={WHITE} />
+                    </TouchableOpacity>
                   </View>
-                  {isInUserList && (
-                    <View style={styles.svgSpecTagDark}>
-                      <IconCheckSvg size={12} color={PURE_RED} />
-                      <Text style={styles.svgSpecTagText}>IN LIST</Text>
-                    </View>
-                  )}
-                </View>
 
-                <View style={styles.thickProgressBarBg}>
-                  <View
-                    style={[
-                      styles.thickProgressBarFill,
-                      { width: `${itemPct}%` },
-                    ]}
-                  />
-                </View>
+                  <View style={[styles.outlinedPillsRow, { marginTop: 8 }]}>
+                    {series.genres.slice(0, 2).map((genre, idx) => (
+                      <View key={idx} style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText}>{genre}</Text>
+                      </View>
+                    ))}
+                  </View>
 
-                <View style={styles.cardFooterRow}>
-                  <Text style={styles.cardStorageSizeText}>
-                    {isCompleted
-                      ? `OFFLINE READY • ${formatBytes(item.sizeBytes)}`
-                      : isFailed
-                        ? 'DOWNLOAD FAILED'
-                        : `QUEUED (${itemPct}%)`}
+                  <Text style={styles.seriesSynopsisText} numberOfLines={3}>
+                    {series.synopsis}
                   </Text>
 
-                  {isCompleted ? (
-                    <TouchableOpacity
-                      style={styles.watchNowBtn}
-                      activeOpacity={0.85}
-                      onPress={() => handleOpenPlayerTop(item)}
-                    >
-                      <IconPlaySvg size={14} color={WHITE} />
-                      <Text style={styles.watchNowBtnText}>PLAY NOW</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.watchNowBtn}
-                      activeOpacity={0.85}
-                      onPress={() => handleRetryOrStartItem(item)}
-                    >
-                      <Text style={styles.watchNowBtnText}>
-                        {isFailed ? 'RETRY' : 'START'}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+                  <View style={styles.chevronBottomRightWrap}>
+                    <View style={isExpanded && { transform: [{ rotate: '180deg' }] }}>
+                      <IconChevronDown size={18} color={TEXT_GREY} />
+                    </View>
+                  </View>
                 </View>
-              </View>
-            </TouchableOpacity>
+              </TouchableOpacity>
+
+              {/* Expanded Episode Rows Underneath Card */}
+              {isExpanded && (
+                <View style={styles.expandedEpisodesList}>
+                  {series.episodes.map((ep) => {
+                    const hist = watchHistoryMap[String(ep.animeId)];
+                    const isSameEp =
+                      hist && String(hist.episodeNum) === String(ep.episodeNum);
+                    const watchedSecs = isSameEp ? Number(hist.progress || 126) : 126;
+                    const totalSecs =
+                      isSameEp && Number(hist.duration) > 0
+                        ? Number(hist.duration)
+                        : 1477;
+                    const barPct = Math.min(100, Math.max(8, (watchedSecs / totalSecs) * 100));
+                    const timeOverlayStr = `${formatDurationClock(watchedSecs)} / ${formatDurationClock(totalSecs)}`;
+
+                    return (
+                      <TouchableOpacity
+                        key={ep.id}
+                        style={styles.episodeItemRow}
+                        activeOpacity={0.85}
+                        onPress={() => handleOpenPlayerOnTop(ep)}
+                      >
+                        {/* Left Horizontal Episode Thumbnail with Timestamp & Red Progress Line */}
+                        <View style={styles.epThumbBox}>
+                          <ProxyImage
+                            source={{
+                              uri: ep.localThumbUri || ep.backdrop || ep.localPosterUri || ep.coverImage,
+                            }}
+                            style={styles.epThumbImg}
+                            resizeMode="cover"
+                          />
+                          <View style={styles.epTimestampBadge}>
+                            <Text style={styles.epTimestampText}>{timeOverlayStr}</Text>
+                          </View>
+                          <View style={styles.epBottomProgressTrack}>
+                            <View style={[styles.epBottomProgressFill, { width: `${barPct}%` }]} />
+                          </View>
+                        </View>
+
+                        {/* Right Episode Number, Synopsis & "..." Button */}
+                        <View style={styles.epRowRightCol}>
+                          <View style={styles.epHeaderRow}>
+                            <Text style={styles.epRowTitle} numberOfLines={1}>
+                              Episode {ep.episodeNum}
+                            </Text>
+                            <TouchableOpacity
+                              style={styles.epDotsBtn}
+                              onPress={() => setMenuTarget(ep)}
+                              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                            >
+                              <IconDotsHorizontal size={16} color={TEXT_GREY} />
+                            </TouchableOpacity>
+                          </View>
+
+                          <Text style={styles.epRowSynopsis} numberOfLines={2}>
+                            {ep.episodeSynopsis || ep.episodeTitle || series.synopsis}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
           );
         }}
         ListEmptyComponent={
-          !activeTask && (
-            <View style={styles.emptyBox}>
-              <View style={styles.emptySvgCircle}>
-                <IconDownloadVaultSvg size={42} color={PURE_RED} />
-              </View>
-              <Text style={styles.emptyTitle}>NO DOWNLOADED VIDEOS</Text>
-              <Text style={styles.emptySubtitle}>
-                Choose Sub or Dub, Subtitle, and Quality on any episode to download it in the background.
-              </Text>
+          !activeDownloadItem && (
+            <View style={styles.emptyWrap}>
+              <Text style={styles.emptyText}>No downloads yet</Text>
             </View>
           )
         }
       />
 
-      {/* "..." OPTIONS ACTION SHEET MODAL (Delete, Add User List, Play) */}
+      {/* "..." OPTIONS BOTTOM SHEET MODAL (Play, Add to User List, Delete) */}
       <Modal
-        visible={Boolean(menuTargetItem)}
+        visible={Boolean(menuTarget)}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setMenuTargetItem(null)}
+        onRequestClose={() => setMenuTarget(null)}
       >
-        <View style={styles.menuBackdrop}>
+        <View style={styles.modalOverlay}>
           <TouchableOpacity
             style={StyleSheet.absoluteFillObject}
             activeOpacity={1}
-            onPress={() => setMenuTargetItem(null)}
+            onPress={() => setMenuTarget(null)}
           />
 
-          {menuTargetItem && (
-            <View style={styles.menuSheet}>
-              <View style={styles.menuHeaderRow}>
-                <ProxyImage
-                  source={{ uri: menuTargetItem.coverImage || menuTargetItem.backdrop }}
-                  style={styles.menuMiniPoster}
-                  resizeMode="cover"
-                />
-                <View style={{ flex: 1, marginLeft: 14 }}>
-                  <Text style={styles.menuAnimeTitle} numberOfLines={1}>
-                    {menuTargetItem.animeTitle}
-                  </Text>
-                  <Text style={styles.menuEpSub} numberOfLines={1}>
-                    EPISODE {menuTargetItem.episodeNum} • {(menuTargetItem.audioType || 'sub').toUpperCase()} • {menuTargetItem.quality || '1080p'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.menuCloseIconBtn}
-                  onPress={() => setMenuTargetItem(null)}
-                >
-                  <IconCloseSvg size={18} color={WHITE} />
-                </TouchableOpacity>
-              </View>
+          {menuTarget && (
+            <View style={styles.actionSheetBox}>
+              <Text style={styles.sheetTitle} numberOfLines={1}>
+                {menuTarget.animeTitle} {menuTarget.episodeNum ? `• Episode ${menuTarget.episodeNum}` : ''}
+              </Text>
 
-              <View style={styles.menuDivider} />
-
-              {/* Option 1: Play Video on Top */}
-              {menuTargetItem.status === 'completed' && (
+              {menuTarget.status === 'completed' && (
                 <TouchableOpacity
-                  style={styles.menuOptionBtnRed}
-                  activeOpacity={0.85}
-                  onPress={() => handleOpenPlayerTop(menuTargetItem)}
+                  style={styles.sheetOptionRow}
+                  activeOpacity={0.8}
+                  onPress={() => handleOpenPlayerOnTop(menuTarget)}
                 >
-                  <IconPlaySvg size={20} color={WHITE} />
-                  <Text style={styles.menuOptionTextWhite}>PLAY EPISODE NOW</Text>
+                  <IconPlay size={18} color={WHITE} />
+                  <Text style={styles.sheetOptionText}>Play Episode</Text>
                 </TouchableOpacity>
               )}
 
-              {/* Option 2: Add / Remove User List (Watchlist) */}
               <TouchableOpacity
-                style={styles.menuOptionBtnDark}
-                activeOpacity={0.85}
-                onPress={() => handleToggleUserList(menuTargetItem)}
+                style={styles.sheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => toggleBookmarkWatchlist(menuTarget)}
               >
-                {watchlistMap[String(menuTargetItem.animeId)] ? (
-                  <IconCheckSvg size={20} color={PURE_RED} />
-                ) : (
-                  <IconListAddSvg size={20} color={WHITE} />
-                )}
-                <Text style={styles.menuOptionTextWhite}>
-                  {watchlistMap[String(menuTargetItem.animeId)]
-                    ? 'REMOVE FROM USER LIST'
-                    : 'ADD TO USER LIST'}
+                <IconBookmark
+                  size={18}
+                  color={WHITE}
+                  filled={Boolean(watchlistMap[String(menuTarget.animeId)])}
+                />
+                <Text style={styles.sheetOptionText}>
+                  {watchlistMap[String(menuTarget.animeId)]
+                    ? 'Remove from User List'
+                    : 'Add to User List'}
                 </Text>
               </TouchableOpacity>
 
-              {/* Option 3: Delete Video */}
               <TouchableOpacity
-                style={styles.menuOptionBtnDelete}
-                activeOpacity={0.85}
-                onPress={() => handleDeleteVideo(menuTargetItem)}
+                style={styles.sheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => handleDeleteEpisode(menuTarget)}
               >
-                <IconTrashSvg size={20} color={PURE_RED} />
-                <Text style={styles.menuOptionTextRed}>DELETE DOWNLOAD</Text>
+                <IconTrash size={18} color={PURE_RED} />
+                <Text style={[styles.sheetOptionText, { color: PURE_RED }]}>
+                  Delete Download
+                </Text>
               </TouchableOpacity>
             </View>
           )}
         </View>
       </Modal>
 
-      {/* TOP-MOST FULLSCREEN PLAYER MODAL (Renders above BottomNav and all overlays) */}
+      {/* TOP-MOST FULLSCREEN PLAYER MODAL (Renders on top of everything) */}
       <Modal
         visible={Boolean(topLevelPlayback)}
         animationType="fade"
@@ -1333,7 +1450,7 @@ export default function Downloads({
         statusBarTranslucent={true}
         onRequestClose={() => setTopLevelPlayback(null)}
       >
-        <View style={styles.topMostPlayerContainer}>
+        <View style={styles.topPlayerModalContainer}>
           {topLevelPlayback && (
             <Player
               route={{ params: topLevelPlayback }}
@@ -1354,440 +1471,361 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: BLACK,
   },
-  topMostPlayerContainer: {
+  topPlayerModalContainer: {
     flex: 1,
     backgroundColor: BLACK,
   },
 
   // Header
-  headerBar: {
+  headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 36,
+    paddingTop: 38,
     paddingBottom: 16,
-    paddingHorizontal: 16,
-    backgroundColor: BLACK,
-    borderBottomWidth: 2,
-    borderBottomColor: DARK_GREY,
+    paddingHorizontal: 18,
   },
-  headerLeftGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  backTouch: {
+    paddingRight: 12,
+    paddingVertical: 4,
   },
-  backBtnBox: {
-    width: 42,
-    height: 42,
-    borderRadius: 6,
-    backgroundColor: DARK_GREY,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerTitle: {
+  headerTitleText: {
     color: WHITE,
-    fontSize: 20,
-    fontWeight: '900',
-    letterSpacing: 1.2,
-  },
-  headerSub: {
-    color: PURE_RED,
-    fontSize: 11,
-    fontWeight: '900',
-    letterSpacing: 0.8,
-    marginTop: 2,
-  },
-  headerRightBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: DARK_GREY,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: PURE_RED,
-  },
-  headerRightBadgeText: {
-    color: WHITE,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 0.6,
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
 
-  listContent: {
-    paddingHorizontal: 14,
-    paddingTop: 18,
+  // 3-Column Stats Strip
+  statsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#111115',
+    marginHorizontal: 16,
+    borderRadius: 12,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: '#1F1F26',
+  },
+  statColumn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statNumber: {
+    color: WHITE,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  statLabel: {
+    color: TEXT_GREY,
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  statDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: '#26262E',
+  },
+  fullDividerLine: {
+    height: 1,
+    backgroundColor: '#141418',
+    marginTop: 18,
+  },
+
+  scrollPadding: {
+    paddingHorizontal: 16,
+    paddingTop: 14,
     paddingBottom: 110,
   },
 
-  // Active Download Section
-  activeSectionWrap: {
+  // Section Headings
+  sectionBlock: {
     marginBottom: 22,
   },
-  activeSectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
-  },
-  redPulseDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: PURE_RED,
-  },
-  activeSectionTitle: {
-    color: WHITE,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 1,
+  sectionHeading: {
+    color: TEXT_GREY,
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 12,
   },
 
-  // Thick Vertical Video Cards
-  thickActiveCard: {
+  // Main Rounded Card (Shared by Downloading & Downloaded)
+  mainCard: {
     flexDirection: 'row',
-    backgroundColor: DARK_GREY,
-    borderRadius: 8,
-    borderWidth: 2,
-    borderColor: PURE_RED,
-    overflow: 'hidden',
-    minHeight: 196,
+    backgroundColor: CARD_BG,
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: BORDER_GREY,
   },
-  thickVideoCard: {
-    flexDirection: 'row',
-    backgroundColor: DARK_GREY,
-    borderRadius: 8,
-    borderWidth: 1.5,
-    borderColor: BLACK,
+  posterContainer: {
+    width: 105,
+    height: 152,
+    borderRadius: 10,
     overflow: 'hidden',
-    marginBottom: 16,
-    minHeight: 188,
-  },
-  verticalPosterWrap: {
-    width: 126,
-    height: '100%',
-    minHeight: 188,
-    backgroundColor: BLACK,
+    backgroundColor: DARK_GREY,
     position: 'relative',
   },
-  verticalPosterImg: {
+  posterImage: {
     width: '100%',
     height: '100%',
   },
-  posterAudioRibbon: {
+  ccRedBadge: {
     position: 'absolute',
-    top: 8,
-    left: 8,
+    top: 7,
+    left: 7,
     backgroundColor: PURE_RED,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
     borderRadius: 4,
   },
-  posterAudioRibbonText: {
+  ccRedBadgeText: {
     color: WHITE,
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '900',
-    letterSpacing: 0.5,
   },
-  posterCenterPlayCircle: {
+  posterBookmarkBtn: {
     position: 'absolute',
-    top: '50%',
-    left: '50%',
-    marginLeft: -22,
-    marginTop: -22,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: PURE_RED,
+    top: 7,
+    right: 7,
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    backgroundColor: 'rgba(20,20,24,0.85)',
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: WHITE,
   },
 
-  // Right Card Body
-  thickCardBody: {
+  // Right Card Column
+  cardRightCol: {
     flex: 1,
-    padding: 14,
+    marginLeft: 14,
     justifyContent: 'space-between',
+    paddingVertical: 2,
   },
-  cardTopRow: {
+  titleAndDotsRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
   },
-  cardAnimeTitle: {
+  animeMainTitle: {
     color: WHITE,
     fontSize: 17,
-    fontWeight: '900',
-    lineHeight: 21,
+    fontWeight: '800',
+    flex: 1,
+    paddingRight: 6,
   },
-  cardEpTitle: {
-    color: WHITE,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 4,
+  dotsBtn: {
+    padding: 4,
   },
-  dotsMenuBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 6,
-    backgroundColor: BLACK,
-    justifyContent: 'center',
-    alignItems: 'center',
+  episodeSubLabel: {
+    color: TEXT_GREY,
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 2,
   },
 
-  // SVG Spec Tags
-  svgMetaRow: {
+  // Outlined Rectangular Spec / Genre Pills
+  outlinedPillsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginVertical: 10,
+    marginTop: 6,
   },
-  svgSpecTagRed: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 8,
+  outlinedPill: {
+    paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#2E2E36',
+    backgroundColor: '#121216',
   },
-  svgSpecTagDark: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: BLACK,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
-  },
-  svgSpecTagText: {
-    color: WHITE,
-    fontSize: 10,
-    fontWeight: '900',
+  outlinedPillText: {
+    color: TEXT_GREY,
+    fontSize: 11,
+    fontWeight: '600',
   },
 
-  progressTextRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
+  // Downloading Progress + MB Ratio
+  progressSection: {
+    marginTop: 8,
   },
-  chunkInfoText: {
-    color: WHITE,
+  mbRatioText: {
+    color: TEXT_GREY,
     fontSize: 10,
-    fontWeight: '800',
+    fontWeight: '600',
+    textAlign: 'right',
+    marginBottom: 4,
   },
-  pctBigText: {
-    color: PURE_RED,
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  thickProgressBarBg: {
+  thinProgressBg: {
     width: '100%',
-    height: 7,
-    backgroundColor: BLACK,
-    borderRadius: 3,
+    height: 3,
+    backgroundColor: '#26262E',
+    borderRadius: 2,
     overflow: 'hidden',
   },
-  thickProgressBarFill: {
+  thinProgressFill: {
     height: '100%',
     backgroundColor: PURE_RED,
   },
 
-  // Active Buttons
-  activeButtonsRow: {
+  // White Buttons ("pause" | "Cancel")
+  whiteBtnsRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 12,
+    marginTop: 10,
   },
-  redActionBtn: {
-    flex: 1,
-    flexDirection: 'row',
+  whiteActionBtn: {
+    backgroundColor: WHITE,
+    paddingVertical: 6,
+    paddingHorizontal: 18,
+    borderRadius: 5,
+    minWidth: 78,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    backgroundColor: PURE_RED,
-    paddingVertical: 10,
-    borderRadius: 6,
   },
-  redActionBtnText: {
-    color: WHITE,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0.6,
-  },
-  blackCancelBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: BLACK,
-    paddingVertical: 10,
-    borderRadius: 6,
-    borderWidth: 1.5,
-    borderColor: PURE_RED,
-  },
-  blackCancelBtnText: {
-    color: PURE_RED,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0.6,
+  whiteActionBtnText: {
+    color: BLACK,
+    fontSize: 13,
+    fontWeight: '700',
   },
 
-  cardFooterRow: {
+  // Downloaded Series Card Synopsis & Chevron
+  downloadedSeriesBlock: {
+    marginBottom: 18,
+  },
+  seriesSynopsisText: {
+    color: TEXT_GREY,
+    fontSize: 11.5,
+    lineHeight: 16,
+    fontWeight: '500',
+    marginTop: 8,
+  },
+  chevronBottomRightWrap: {
+    alignItems: 'flex-end',
+    marginTop: 4,
+  },
+
+  // Expanded Episode Thumbnail Item Row
+  expandedEpisodesList: {
+    marginTop: 12,
+    paddingLeft: 4,
+    gap: 12,
+  },
+  episodeItemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+  },
+  epThumbBox: {
+    width: 146,
+    height: 84,
+    borderRadius: 6,
+    overflow: 'hidden',
+    backgroundColor: DARK_GREY,
+    position: 'relative',
+  },
+  epThumbImg: {
+    width: '100%',
+    height: '100%',
+  },
+  epTimestampBadge: {
+    position: 'absolute',
+    bottom: 7,
+    right: 6,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 3,
+  },
+  epTimestampText: {
+    color: WHITE,
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  epBottomProgressTrack: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 2.5,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+  },
+  epBottomProgressFill: {
+    height: '100%',
+    backgroundColor: PURE_RED,
+  },
+  epRowRightCol: {
+    flex: 1,
+    marginLeft: 12,
+    paddingTop: 2,
+  },
+  epHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 10,
   },
-  cardStorageSizeText: {
+  epRowTitle: {
     color: WHITE,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
   },
-  watchNowBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 5,
+  epDotsBtn: {
+    padding: 4,
   },
-  watchNowBtnText: {
-    color: WHITE,
-    fontSize: 12,
-    fontWeight: '900',
-    letterSpacing: 0.5,
+  epRowSynopsis: {
+    color: TEXT_GREY,
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 4,
+    fontWeight: '500',
   },
 
   // Empty State
-  emptyBox: {
-    paddingVertical: 80,
-    paddingHorizontal: 28,
+  emptyWrap: {
+    paddingVertical: 70,
     alignItems: 'center',
   },
-  emptySvgCircle: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: DARK_GREY,
-    borderWidth: 2,
-    borderColor: PURE_RED,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 18,
-  },
-  emptyTitle: {
-    color: WHITE,
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  emptySubtitle: {
-    color: WHITE,
-    fontSize: 13,
+  emptyText: {
+    color: TEXT_GREY,
+    fontSize: 14,
     fontWeight: '600',
-    textAlign: 'center',
-    lineHeight: 20,
   },
 
-  // "..." Options Action Sheet Modal
-  menuBackdrop: {
+  // "..." Action Sheet Modal
+  modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.88)',
+    backgroundColor: 'rgba(0,0,0,0.8)',
     justifyContent: 'flex-end',
   },
-  menuSheet: {
-    width: '100%',
-    backgroundColor: DARK_GREY,
+  actionSheetBox: {
+    backgroundColor: '#121216',
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
-    padding: 20,
-    borderTopWidth: 3,
-    borderTopColor: PURE_RED,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderTopColor: BORDER_GREY,
   },
-  menuHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  menuMiniPoster: {
-    width: 52,
-    height: 74,
-    borderRadius: 6,
-    backgroundColor: BLACK,
-  },
-  menuAnimeTitle: {
+  sheetTitle: {
     color: WHITE,
-    fontSize: 17,
-    fontWeight: '900',
-  },
-  menuEpSub: {
-    color: PURE_RED,
-    fontSize: 12,
+    fontSize: 15,
     fontWeight: '800',
-    marginTop: 4,
+    marginBottom: 14,
   },
-  menuCloseIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 6,
-    backgroundColor: BLACK,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuDivider: {
-    height: 2,
-    backgroundColor: BLACK,
-    marginVertical: 16,
-  },
-  menuOptionBtnRed: {
+  sheetOptionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    backgroundColor: PURE_RED,
-    paddingVertical: 15,
-    paddingHorizontal: 18,
-    borderRadius: 8,
-    marginBottom: 10,
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#1E1E24',
   },
-  menuOptionBtnDark: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: BLACK,
-    paddingVertical: 15,
-    paddingHorizontal: 18,
-    borderRadius: 8,
-    marginBottom: 10,
-  },
-  menuOptionBtnDelete: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: BLACK,
-    paddingVertical: 15,
-    paddingHorizontal: 18,
-    borderRadius: 8,
-    borderWidth: 1.5,
-    borderColor: PURE_RED,
-    marginBottom: 10,
-  },
-  menuOptionTextWhite: {
+  sheetOptionText: {
     color: WHITE,
     fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0.6,
-  },
-  menuOptionTextRed: {
-    color: PURE_RED,
-    fontSize: 14,
-    fontWeight: '900',
-    letterSpacing: 0.6,
+    fontWeight: '700',
   },
 });
