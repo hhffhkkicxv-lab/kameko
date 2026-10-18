@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, Dimensions, 
-  TouchableOpacity, StatusBar, 
+  TouchableOpacity, Share, StatusBar, 
   ActivityIndicator, FlatList, Modal, ScrollView, Alert 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
@@ -12,8 +12,8 @@ import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
 import Player from './play/player';
-import ShareSheet from '../components/share'; 
-import RoomComponent from '../components/room';   
+import ShareModalComponent from '../components/share';
+import RoomModalComponent from '../components/room';
 
 const { width, height } = Dimensions.get('window');
 const BRAND_RED = '#E50914';
@@ -23,7 +23,7 @@ const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const EPISODE_CHUNK_SIZE = 50;
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
-// Local Storage File Paths (via expo-file-system)
+// Local Storage File Paths via expo-file-system
 const PLAY_PREFS_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_play_prefs.json`
   : null;
@@ -71,7 +71,7 @@ const writeLocalJson = async (fileUri, data) => {
   } catch (_) {}
 };
 
-// --- UI SVG ICONS ---
+// UI Icons
 const IconBack = ({ size = 20 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M15 18l-6-6 6-6" />
@@ -195,6 +195,7 @@ export default function Play({
     auth().currentUser?.uid ||
     null;
 
+  // Fallback: Fetch active profile from Firestore if Play was opened without one
   useEffect(() => {
     if (resolvedProfileId || !resolvedUid) return;
     let isMounted = true;
@@ -250,33 +251,38 @@ export default function Play({
   const [moreLikeThis, setMoreLikeThis] = useState([]);
   const [sequelsAndRelated, setSequelsAndRelated] = useState([]);
 
+  // Progress Tracking
   const [userProgressMap, setUserProgressMap] = useState({});
   const [latestWatched, setLatestWatched] = useState(null);
 
+  // TMDB Metadata
   const [titleLogo, setTitleLogo] = useState(null);
   const [tmdbSynopsis, setTmdbSynopsis] = useState(currentAnime.description);
   const [isUpcoming, setIsUpcoming] = useState(currentAnime.status?.toUpperCase() === 'UPCOMING');
 
+  // Episodes List & Pagination
   const [vercelAnimeId, setVercelAnimeId] = useState(animeDocId);
   const [episodes, setEpisodes] = useState([]);
   const [episodesLoading, setEpisodesLoading] = useState(true);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const hasRestoredLocalChunkRef = useRef(false);
 
+  // Player Overlay
   const [loadingEpisode, setLoadingEpisode] = useState(null);
   const [activePlayback, setActivePlayback] = useState(null);
 
+  // Top Right Vertical "..." Menu & Sub-Modals (Share & Room)
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
 
-  // --- DOWNLOAD SHEET STATES ---
+  // --- DOWNLOAD SHEET STATES (Supports Single Episode Direct OR Multi-Episode Selector) ---
   const [downloadModalVisible, setDownloadModalVisible] = useState(false);
   const [isSingleEpisodeDownload, setIsSingleEpisodeDownload] = useState(false);
   const [downloadTargetEp, setDownloadTargetEp] = useState(null);
   const [selectedEpNumsMap, setSelectedEpNumsMap] = useState({});
   const [downloadChunkIndex, setDownloadChunkIndex] = useState(0);
-  const [downloadStep, setDownloadStep] = useState(1);
+  const [downloadStep, setDownloadStep] = useState(1); // 1: Select Episodes, 2: Audio + Sub + Quality
   const [selectedDownloadType, setSelectedDownloadType] = useState('sub');
   const [downloadSubTracks, setDownloadSubTracks] = useState([]);
   const [selectedSubTrack, setSelectedSubTrack] = useState(null);
@@ -286,6 +292,7 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
+  // Show phone's bottom navigation bar while keeping top notification bar hidden when Download Menu is open
   useEffect(() => {
     const syncSystemBars = async () => {
       try {
@@ -298,6 +305,7 @@ export default function Play({
     syncSystemBars();
   }, [downloadModalVisible]);
 
+  // --- LOAD & SAVE PREFERENCES IN LOCAL STORAGE ---
   const updateLocalPreferences = useCallback(async (patch) => {
     const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const merged = {
@@ -355,6 +363,7 @@ export default function Play({
     });
   }, [animeDocId, resolvedTitle, updateLocalPreferences]);
 
+  // 1. Firebase Watch History & Watchlist Listener
   useEffect(() => {
     if (!resolvedUid) return;
 
@@ -462,7 +471,7 @@ export default function Play({
     }
   };
 
-  // --- UNIFIED DOWNLOAD OPTIONS RESOLVER ---
+  // --- UNIFIED DOWNLOAD OPTIONS RESOLVER (Subtitles Available in Both SUB & DUB) ---
   const fetchUnifiedDownloadOptions = useCallback(async (epItem, audioType) => {
     if (!epItem) return;
     setIsFetchingDownloadData(true);
@@ -615,7 +624,7 @@ export default function Play({
     }
   }, [vercelAnimeId, animeDocId]);
 
-  // A. SINGLE EPISODE DOWNLOAD (Skips Step 1 Choose Episodes completely!)
+  // A. Single Episode Download (From Episode List Icon -> Skips Choose Episodes Module!)
   const handleOpenSingleEpisodeDownload = async (episodeItem) => {
     if (!episodeItem) return;
     const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
@@ -630,7 +639,7 @@ export default function Play({
     fetchUnifiedDownloadOptions(episodeItem, initialAudio);
   };
 
-  // B. MULTI-EPISODE DOWNLOAD (From Main Hero Download or Top Menu)
+  // B. Multi-Episode Download (From Hero Button or Top Menu)
   const handleOpenMultiEpisodeDownload = async (defaultEp) => {
     const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
@@ -641,7 +650,7 @@ export default function Play({
     setSelectedEpNumsMap({ [initialEp.num]: true });
     setDownloadChunkIndex(currentChunkIndex);
     setSelectedDownloadType(initialAudio);
-    setDownloadStep(1); // Shows Episode Selector module first
+    setDownloadStep(1);
     setDownloadModalVisible(true);
   };
 
@@ -987,7 +996,7 @@ export default function Play({
   }, [episodes]);
 
   const currentEpisodesToRender = episodeChunks[currentChunkIndex] || episodeChunks[0] || [];
-  const downloadChunkEpisodes = episodeChunks[downloadChunkIndex] || episodeChunks[0] || episodes;
+  const currentDownloadChunkEpisodes = episodeChunks[downloadChunkIndex] || episodeChunks[0] || episodes;
 
   // 4. Playback Navigation Handler
   const handlePlayEpisode = async (episodeItem) => {
@@ -1183,7 +1192,6 @@ export default function Play({
           )}
         </TouchableOpacity>
 
-        {/* Hero Action Buttons */}
         <View style={styles.actionsBar}>
           <TouchableOpacity style={styles.actionTab} onPress={toggleLibrary} activeOpacity={0.7}>
             {inLibrary ? <IconCheck /> : <IconPlus />}
@@ -1326,6 +1334,9 @@ export default function Play({
   const selectedDownloadCount = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]).length;
   const isAllEpisodesSelected = episodes.length > 0 && selectedDownloadCount === episodes.length;
 
+  const ResolvedShareComp = ShareModalComponent?.default || ShareModalComponent;
+  const ResolvedRoomComp = RoomModalComponent?.default || RoomModalComponent;
+
   return (
     <View style={styles.screenContainer}>
       <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1399,7 +1410,7 @@ export default function Play({
                   )}
                 </TouchableOpacity>
 
-                {/* Single Episode Download Button -> Skips Step 1 Choose Episodes Module */}
+                {/* Single Episode Download Button -> Skips Choose Episodes Module! */}
                 <TouchableOpacity
                   style={styles.downloadIconBtn}
                   activeOpacity={0.7}
@@ -1513,7 +1524,7 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* SHARE COMPONENT MODAL */}
+      {/* SHARE.JS COMPONENT MODAL */}
       <Modal
         visible={shareModalVisible}
         animationType="slide"
@@ -1521,8 +1532,8 @@ export default function Play({
         onRequestClose={() => setShareModalVisible(false)}
       >
         <View style={styles.fullscreenModalOverlay}>
-          {typeof ShareSheet === 'function' ? (
-            <ShareSheet
+          {typeof ResolvedShareComp === 'function' ? (
+            <ResolvedShareComp
               anime={currentAnime}
               user={resolvedUser}
               activeProfile={resolvedProfile}
@@ -1533,7 +1544,7 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* ROOM COMPONENT MODAL */}
+      {/* ROOM.JS COMPONENT MODAL */}
       <Modal
         visible={roomModalVisible}
         animationType="slide"
@@ -1541,8 +1552,8 @@ export default function Play({
         onRequestClose={() => setRoomModalVisible(false)}
       >
         <View style={styles.fullscreenModalOverlay}>
-          {typeof RoomComponent === 'function' ? (
-            <RoomComponent
+          {typeof ResolvedRoomComp === 'function' ? (
+            <ResolvedRoomComp
               anime={currentAnime}
               user={resolvedUser}
               activeProfile={resolvedProfile}
@@ -1553,7 +1564,7 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET (Step 1 for Multi, Step 2 for Single/Proceed) --- */}
+      {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET --- */}
       <Modal
         visible={downloadModalVisible}
         animationType="slide"
@@ -1598,7 +1609,7 @@ export default function Play({
               </TouchableOpacity>
             </View>
 
-            {/* STEP 1: MULTI-EPISODE SELECTOR (SKIPPED FOR SINGLE EPISODE DOWNLOAD) */}
+            {/* STEP 1: MULTI-EPISODE SELECTOR (ONLY FOR MULTI-DOWNLOAD) */}
             {!isSingleEpisodeDownload && downloadStep === 1 && (
               <View style={{ flex: 1 }}>
                 <View style={styles.multiEpSelectTopBar}>
@@ -1623,7 +1634,6 @@ export default function Play({
                   </TouchableOpacity>
                 </View>
 
-                {/* 1-50 Rectangle Chunk Selector for Longer Series */}
                 {episodeChunks.length > 1 && (
                   <View style={{ marginBottom: 10 }}>
                     <FlatList
@@ -1656,7 +1666,7 @@ export default function Play({
                   contentContainerStyle={styles.multiEpGridContainer}
                   showsVerticalScrollIndicator={false}
                 >
-                  {downloadChunkEpisodes.map((ep) => {
+                  {currentDownloadChunkEpisodes.map((ep) => {
                     const isSelected = Boolean(selectedEpNumsMap[ep.num]);
                     return (
                       <TouchableOpacity
@@ -1685,7 +1695,17 @@ export default function Play({
                   ]}
                   activeOpacity={0.85}
                   disabled={selectedDownloadCount === 0}
-                  onPress={handleProceedFromMultiEpStep}
+                  onPress={() => {
+                    const nums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
+                    if (nums.length === 0) return;
+                    const firstEpObj =
+                      episodes.find((e) => String(e.num) === String(nums[0])) ||
+                      downloadTargetEp ||
+                      episodes[0];
+                    setDownloadTargetEp(firstEpObj);
+                    setDownloadStep(2);
+                    fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType);
+                  }}
                 >
                   <IconDownload size={18} color="#FFF" />
                   <Text style={styles.sheetDownloadSubmitText}>
@@ -1695,7 +1715,7 @@ export default function Play({
               </View>
             )}
 
-            {/* STEP 2: UNIFIED AUDIO (SUB/DUB), SUBTITLES & QUALITY */}
+            {/* STEP 2: AUDIO, SUBTITLES & QUALITY */}
             {(isSingleEpisodeDownload || downloadStep === 2) && (
               <View style={{ flex: 1 }}>
                 <ScrollView
@@ -1722,7 +1742,7 @@ export default function Play({
                     })}
                   </View>
 
-                  <Text style={styles.sheetSectionLabel}>Subtitles (Available in Sub & Dub)</Text>
+                  <Text style={styles.sheetSectionLabel}>Subtitles</Text>
                   {isFetchingDownloadData ? (
                     <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
                   ) : (
@@ -1772,7 +1792,7 @@ export default function Play({
                     </ScrollView>
                   )}
 
-                  <Text style={styles.sheetSectionLabel}>Quality (No Auto)</Text>
+                  <Text style={styles.sheetSectionLabel}>Quality</Text>
                   {isFetchingDownloadData ? (
                     <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
                   ) : (
@@ -1930,7 +1950,7 @@ const styles = StyleSheet.create({
   epMiniProgressBg: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.1)' },
   epMiniProgressFill: { height: '100%', backgroundColor: PURE_RED },
 
-  // RecentSlider-matched UI for Bottom Sequel Slider & More Like This Grid
+  // RecentSlider-matched UI for Bottom Sequel Slider
   recentStyleSection: { marginTop: 18, marginBottom: 25 },
   recentHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
   recentSectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
