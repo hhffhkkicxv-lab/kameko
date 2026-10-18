@@ -1,24 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, Dimensions, 
-  TouchableOpacity, Share, StatusBar, 
+  TouchableOpacity, StatusBar, 
   ActivityIndicator, FlatList, Modal, ScrollView, Alert 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Defs, LinearGradient, Stop, Rect, Path, Circle } from 'react-native-svg';
 import * as FileSystem from 'expo-file-system';
+import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
 import Player from './play/player';
-import ShareComponent from '../components/share'; // Assumes Share component path
-import RoomComponent from '../components/room';   // Assumes Room component path
-
-let AsyncStorage = null;
-try {
-  const mod = require('@react-native-async-storage/async-storage');
-  AsyncStorage = mod?.default || mod;
-} catch (_) {}
+import ShareSheet from '../components/share'; 
+import RoomComponent from '../components/room';   
 
 const { width, height } = Dimensions.get('window');
 const BRAND_RED = '#E50914';
@@ -28,9 +23,7 @@ const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const EPISODE_CHUNK_SIZE = 50;
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
-// Local Storage Keys & File Paths
-const PLAY_PREFS_STORAGE_KEY = '@kameko_play_preferences_v2';
-const DOWNLOAD_QUEUE_STORAGE_KEY = '@kameko_downloads_queue_v1';
+// Local Storage File Paths (via expo-file-system)
 const PLAY_PREFS_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_play_prefs.json`
   : null;
@@ -39,8 +32,8 @@ const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
   : null;
 
 const GRID_COLUMNS = 3;
-const GRID_SPACING = 10;
-const GRID_CARD_WIDTH = Math.floor((width - 32 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
+const GRID_SPACING = 12;
+const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   const controller = new AbortController();
@@ -55,15 +48,8 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   }
 };
 
-// --- LOCAL STORAGE HELPERS ---
-const readLocalJson = async (storageKey, fileUri, fallback = {}) => {
-  try {
-    if (AsyncStorage?.getItem) {
-      const raw = await AsyncStorage.getItem(storageKey);
-      if (raw) return JSON.parse(raw);
-    }
-  } catch (_) {}
-
+// --- BUILD-SAFE LOCAL STORAGE HELPERS ---
+const readLocalJson = async (fileUri, fallback = {}) => {
   try {
     if (fileUri) {
       const info = await FileSystem.getInfoAsync(fileUri);
@@ -73,40 +59,19 @@ const readLocalJson = async (storageKey, fileUri, fallback = {}) => {
       }
     }
   } catch (_) {}
-
-  try {
-    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
-      const raw = globalThis.localStorage.getItem(storageKey);
-      if (raw) return JSON.parse(raw);
-    }
-  } catch (_) {}
-
   return fallback;
 };
 
-const writeLocalJson = async (storageKey, fileUri, data) => {
-  const serialized = JSON.stringify(data);
-
-  try {
-    if (AsyncStorage?.setItem) {
-      await AsyncStorage.setItem(storageKey, serialized);
-    }
-  } catch (_) {}
-
+const writeLocalJson = async (fileUri, data) => {
   try {
     if (fileUri) {
+      const serialized = JSON.stringify(data);
       await FileSystem.writeAsStringAsync(fileUri, serialized);
-    }
-  } catch (_) {}
-
-  try {
-    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
-      globalThis.localStorage.setItem(storageKey, serialized);
     }
   } catch (_) {}
 };
 
-// UI Icons
+// --- UI SVG ICONS ---
 const IconBack = ({ size = 20 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M15 18l-6-6 6-6" />
@@ -147,6 +112,11 @@ const IconVerticalDots = ({ size = 22, color = "#FFF" }) => (
     <Circle cx="12" cy="5" r="2" />
     <Circle cx="12" cy="12" r="2" />
     <Circle cx="12" cy="19" r="2" />
+  </Svg>
+);
+const BookmarkIcon = ({ filled }) => (
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : "#FFFFFF"} strokeWidth="2.5">
+    <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
 
@@ -225,7 +195,6 @@ export default function Play({
     auth().currentUser?.uid ||
     null;
 
-  // Fallback: Fetch active profile from Firestore if Play was opened without one
   useEffect(() => {
     if (resolvedProfileId || !resolvedUid) return;
     let isMounted = true;
@@ -277,39 +246,37 @@ export default function Play({
 
   const [activeTab, setActiveTab] = useState('episodes'); 
   const [descExpanded, setDescExpanded] = useState(false);
-  const [inLibrary, setInLibrary] = useState(false);
+  const [librarySet, setLibrarySet] = useState(new Set());
   const [moreLikeThis, setMoreLikeThis] = useState([]);
   const [sequelsAndRelated, setSequelsAndRelated] = useState([]);
 
-  // Progress Tracking
   const [userProgressMap, setUserProgressMap] = useState({});
   const [latestWatched, setLatestWatched] = useState(null);
 
-  // TMDB Metadata
   const [titleLogo, setTitleLogo] = useState(null);
   const [tmdbSynopsis, setTmdbSynopsis] = useState(currentAnime.description);
   const [isUpcoming, setIsUpcoming] = useState(currentAnime.status?.toUpperCase() === 'UPCOMING');
 
-  // Episodes List & Pagination
   const [vercelAnimeId, setVercelAnimeId] = useState(animeDocId);
   const [episodes, setEpisodes] = useState([]);
   const [episodesLoading, setEpisodesLoading] = useState(true);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const hasRestoredLocalChunkRef = useRef(false);
 
-  // Player Overlay
   const [loadingEpisode, setLoadingEpisode] = useState(null);
   const [activePlayback, setActivePlayback] = useState(null);
 
-  // --- TOP BAR VERTICAL MENU MODAL ---
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
 
-  // --- MULTI-EPISODE DOWNLOAD MODAL STATES ---
+  // --- DOWNLOAD SHEET STATES ---
   const [downloadModalVisible, setDownloadModalVisible] = useState(false);
+  const [isSingleEpisodeDownload, setIsSingleEpisodeDownload] = useState(false);
+  const [downloadTargetEp, setDownloadTargetEp] = useState(null);
   const [selectedEpNumsMap, setSelectedEpNumsMap] = useState({});
-  const [downloadStep, setDownloadStep] = useState(1); // 1: Select Episodes, 2: Audio & Subtitle, 3: Quality
+  const [downloadChunkIndex, setDownloadChunkIndex] = useState(0);
+  const [downloadStep, setDownloadStep] = useState(1);
   const [selectedDownloadType, setSelectedDownloadType] = useState('sub');
   const [downloadSubTracks, setDownloadSubTracks] = useState([]);
   const [selectedSubTrack, setSelectedSubTrack] = useState(null);
@@ -317,9 +284,22 @@ export default function Play({
   const [selectedDownloadQuality, setSelectedDownloadQuality] = useState(null);
   const [isFetchingDownloadData, setIsFetchingDownloadData] = useState(false);
 
-  // --- LOAD & SAVE PREFERENCES IN LOCAL STORAGE ---
+  const inLibrary = librarySet.has(animeDocId);
+
+  useEffect(() => {
+    const syncSystemBars = async () => {
+      try {
+        StatusBar.setHidden(true, 'none');
+        if (downloadModalVisible) {
+          await NavigationBar.setVisibilityAsync('visible');
+        }
+      } catch (_) {}
+    };
+    syncSystemBars();
+  }, [downloadModalVisible]);
+
   const updateLocalPreferences = useCallback(async (patch) => {
-    const existing = await readLocalJson(PLAY_PREFS_STORAGE_KEY, PLAY_PREFS_FILE_URI, {});
+    const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const merged = {
       ...existing,
       ...patch,
@@ -329,7 +309,7 @@ export default function Play({
       },
       updatedAt: Date.now(),
     };
-    await writeLocalJson(PLAY_PREFS_STORAGE_KEY, PLAY_PREFS_FILE_URI, merged);
+    await writeLocalJson(PLAY_PREFS_FILE_URI, merged);
     return merged;
   }, []);
 
@@ -338,7 +318,7 @@ export default function Play({
     hasRestoredLocalChunkRef.current = false;
 
     const restoreSavedSelection = async () => {
-      const savedPrefs = await readLocalJson(PLAY_PREFS_STORAGE_KEY, PLAY_PREFS_FILE_URI, {});
+      const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
       if (!isMounted) return;
 
       const savedChunk = savedPrefs?.selectedChunksByAnime?.[animeDocId];
@@ -375,18 +355,21 @@ export default function Play({
     });
   }, [animeDocId, resolvedTitle, updateLocalPreferences]);
 
-  // 1. Firebase Watch History & Watchlist Listener
   useEffect(() => {
-    if (!resolvedUid || !animeDocId) return;
+    if (!resolvedUid) return;
 
-    const libRef = firestore()
+    const libColRef = firestore()
       .collection('users')
       .doc(String(resolvedUid))
-      .collection('library')
-      .doc(animeDocId);
-    const libUnsub = libRef.onSnapshot(doc => setInLibrary(doc?.exists || false), () => {});
+      .collection('library');
 
-    if (!resolvedProfileId) {
+    const libUnsub = libColRef.onSnapshot((snap) => {
+      const nextSet = new Set();
+      snap?.forEach((doc) => nextSet.add(String(doc.id)));
+      setLibrarySet(nextSet);
+    }, () => {});
+
+    if (!resolvedProfileId || !animeDocId) {
       return () => libUnsub();
     }
 
@@ -398,18 +381,18 @@ export default function Play({
       .collection(WATCH_HISTORY_COLLECTION)
       .where('animeId', '==', animeDocId);
       
-    const historyUnsub = historyRef.onSnapshot(snapshot => {
+    const historyUnsub = historyRef.onSnapshot((snapshot) => {
       if (snapshot && !snapshot.empty) {
         const pMap = {};
         let latest = null;
-        snapshot.forEach(doc => {
+        snapshot.forEach((doc) => {
           const data = doc.data();
           const epKey = String(data.slug || data.episodeNum || data.lastWatchedEp || '');
           if (epKey) pMap[epKey] = data;
           if (data.episodeNum) pMap[`ep_${data.episodeNum}`] = data;
           if (data.lastWatchedEp) pMap[`ep_${data.lastWatchedEp}`] = data;
           if (data.episodes && typeof data.episodes === 'object') {
-            Object.keys(data.episodes).forEach(k => {
+            Object.keys(data.episodes).forEach((k) => {
               pMap[`ep_${k}`] = data.episodes[k];
               if (data.episodes[k]?.slug) pMap[String(data.episodes[k].slug)] = data.episodes[k];
             });
@@ -455,37 +438,38 @@ export default function Play({
     }
   };
 
-  // --- MULTI-EPISODE DOWNLOAD FLOW & OPTIONS RESOLVER ---
-  const handleOpenDownload = async (episodeItem) => {
-    if (!episodeItem) return;
-    const savedPrefs = await readLocalJson(PLAY_PREFS_STORAGE_KEY, PLAY_PREFS_FILE_URI, {});
-    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+  const toggleCardLibraryItem = async (cardItem) => {
+    if (!resolvedUid || !cardItem?.id) return;
+    const targetId = String(cardItem.id);
+    const ref = firestore()
+      .collection('users')
+      .doc(String(resolvedUid))
+      .collection('library')
+      .doc(targetId);
 
-    setSelectedEpNumsMap({ [episodeItem.num]: true });
-    setDownloadStep(1);
-    setSelectedDownloadType(initialAudio);
-    setDownloadModalVisible(true);
-  };
-
-  const handleProceedToDownloadStep2 = (selectedMap) => {
-    const nums = Object.keys(selectedMap).filter(k => selectedMap[k]);
-    if (nums.length === 0) {
-      Alert.alert('Selection Required', 'Please select at least one episode to download.');
-      return;
+    if (librarySet.has(targetId)) {
+      await ref.delete().catch(() => {});
+    } else {
+      await ref.set({
+        id: targetId,
+        animeId: targetId,
+        title: cardItem.title,
+        img: cardItem.coverImage || cardItem.image || cardItem.backdrop,
+        backdrop: cardItem.backdrop || cardItem.coverImage || cardItem.image,
+        profileId: resolvedProfileId,
+        addedAt: firestore.FieldValue.serverTimestamp(),
+      }).catch(() => {});
     }
-    setDownloadStep(2);
-    // Fetch subtitles for the first selected episode
-    const firstEpObj = episodes.find(e => String(e.num) === String(nums[0])) || episodes[0];
-    fetchDownloadSubtitlesAndQualities(firstEpObj, selectedDownloadType);
   };
 
-  const fetchDownloadSubtitlesAndQualities = async (epItem, audioType) => {
+  // --- UNIFIED DOWNLOAD OPTIONS RESOLVER ---
+  const fetchUnifiedDownloadOptions = useCallback(async (epItem, audioType) => {
     if (!epItem) return;
     setIsFetchingDownloadData(true);
 
     try {
       const safeId = encodeURIComponent(vercelAnimeId || animeDocId);
-      const safeEp = encodeURIComponent(String(epItem.slug));
+      const safeEp = encodeURIComponent(String(epItem.slug || epItem.num));
       const servers = ['hd-1', 'hd-2', 'vidstream-2'];
 
       let targetMasterUrl = null;
@@ -510,7 +494,6 @@ export default function Play({
         } catch (_) {}
       }
 
-      // Ensure DUB also has subtitles by checking SUB stream
       if (audioType === 'dub' || collectedSubtitles.length === 0) {
         for (const srv of servers) {
           try {
@@ -524,7 +507,7 @@ export default function Play({
               if (subPayload.referer) targetReferer = subPayload.referer;
             }
             if (Array.isArray(subPayload?.subtitles) && subPayload.subtitles.length > 0) {
-              const seen = new Set(collectedSubtitles.map(s => s.label || s.lang));
+              const seen = new Set(collectedSubtitles.map((s) => s.label || s.lang));
               for (const s of subPayload.subtitles) {
                 const lbl = s.label || s.lang;
                 if (lbl && !seen.has(lbl)) {
@@ -539,13 +522,26 @@ export default function Play({
       }
 
       setDownloadSubTracks(collectedSubtitles);
-      setSelectedSubTrack(
-        collectedSubtitles.find(s => String(s.label || '').toLowerCase().includes('eng')) ||
-        collectedSubtitles[0] ||
-        { label: 'No Subtitles / Off', file: null, lang: 'none' }
-      );
+      setSelectedSubTrack((prev) => {
+        if (prev && prev.lang === 'none') return prev;
+        if (prev) {
+          const match = collectedSubtitles.find(
+            (s) => (s.label || s.lang) === (prev.label || prev.lang)
+          );
+          if (match) return match;
+        }
+        if (collectedSubtitles.length > 0) {
+          return (
+            collectedSubtitles.find((s) =>
+              String(s.label || s.lang || '').toLowerCase().includes('eng')
+            ) ||
+            collectedSubtitles.find((s) => s.default) ||
+            collectedSubtitles[0]
+          );
+        }
+        return { label: 'No Subtitles / Off', file: null, lang: 'none' };
+      });
 
-      // Resolve Qualities (strictly excluding Auto)
       let explicitQualities = [];
       if (targetMasterUrl) {
         try {
@@ -595,36 +591,112 @@ export default function Play({
               { label: '1080p', resolution: 1080, uri: targetMasterUrl || '', referer: targetReferer },
               { label: '720p', resolution: 720, uri: targetMasterUrl || '', referer: targetReferer },
               { label: '480p', resolution: 480, uri: targetMasterUrl || '', referer: targetReferer },
+              { label: '360p', resolution: 360, uri: targetMasterUrl || '', referer: targetReferer },
             ];
 
       setDownloadQualities(finalQualities);
-      setSelectedDownloadQuality(finalQualities[0]);
+      setSelectedDownloadQuality((prev) => {
+        if (prev) {
+          const matchedQ = finalQualities.find((q) => q.label === prev.label);
+          if (matchedQ) return matchedQ;
+        }
+        return finalQualities[0];
+      });
     } catch (_) {
       const fallback = [
         { label: '1080p', resolution: 1080, uri: '' },
         { label: '720p', resolution: 720, uri: '' },
+        { label: '480p', resolution: 480, uri: '' },
       ];
       setDownloadQualities(fallback);
       setSelectedDownloadQuality(fallback[0]);
     } finally {
       setIsFetchingDownloadData(false);
     }
+  }, [vercelAnimeId, animeDocId]);
+
+  // A. SINGLE EPISODE DOWNLOAD (Skips Step 1 Choose Episodes completely!)
+  const handleOpenSingleEpisodeDownload = async (episodeItem) => {
+    if (!episodeItem) return;
+    const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+
+    setIsSingleEpisodeDownload(true);
+    setDownloadTargetEp(episodeItem);
+    setSelectedEpNumsMap({ [episodeItem.num]: true });
+    setSelectedDownloadType(initialAudio);
+    setDownloadStep(2);
+    setDownloadModalVisible(true);
+    fetchUnifiedDownloadOptions(episodeItem, initialAudio);
   };
 
-  const handleConfirmMultiDownloadFinal = async () => {
+  // B. MULTI-EPISODE DOWNLOAD (From Main Hero Download or Top Menu)
+  const handleOpenMultiEpisodeDownload = async (defaultEp) => {
+    const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+    const initialEp = defaultEp || episodes[0] || { num: 1, slug: '1', title: 'Episode 1' };
+
+    setIsSingleEpisodeDownload(false);
+    setDownloadTargetEp(initialEp);
+    setSelectedEpNumsMap({ [initialEp.num]: true });
+    setDownloadChunkIndex(currentChunkIndex);
+    setSelectedDownloadType(initialAudio);
+    setDownloadStep(1); // Shows Episode Selector module first
+    setDownloadModalVisible(true);
+  };
+
+  const handleProceedFromMultiEpStep = () => {
+    const selectedNums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
+    if (selectedNums.length === 0) return;
+
+    const firstEpObj =
+      episodes.find((e) => String(e.num) === String(selectedNums[0])) ||
+      downloadTargetEp ||
+      episodes[0];
+
+    setDownloadTargetEp(firstEpObj);
+    setDownloadStep(2);
+    fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType);
+  };
+
+  const handleSwitchDownloadAudioType = (type) => {
+    setSelectedDownloadType(type);
+    updateLocalPreferences({ preferredDownloadType: type });
+    const refEp =
+      downloadTargetEp ||
+      episodes.find((e) => selectedEpNumsMap[e.num]) ||
+      episodes[0];
+    if (refEp) {
+      fetchUnifiedDownloadOptions(refEp, type);
+    }
+  };
+
+  const handleConfirmDownloadFinal = async () => {
     const finalQuality = selectedDownloadQuality || downloadQualities[0];
-    const selectedNums = Object.keys(selectedEpNumsMap).filter(k => selectedEpNumsMap[k]);
+    const selectedNums = isSingleEpisodeDownload && downloadTargetEp
+      ? [String(downloadTargetEp.num)]
+      : Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
+
     if (!finalQuality || selectedNums.length === 0) return;
 
     setDownloadModalVisible(false);
 
-    const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_STORAGE_KEY, DOWNLOAD_QUEUE_FILE_URI, []);
+    const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
     const queueArray = Array.isArray(existingQueue) ? existingQueue : [];
     const newRecords = [];
 
     for (const numStr of selectedNums) {
       const epNum = Number(numStr);
-      const epObj = episodes.find(e => Number(e.num) === epNum) || { num: epNum, slug: String(epNum), title: `Episode ${epNum}` };
+      const epObj =
+        episodes.find((e) => Number(e.num) === epNum) ||
+        downloadTargetEp || {
+          num: epNum,
+          slug: String(epNum),
+          title: `Episode ${epNum}`,
+        };
+
+      const isSameAsFetchedTarget =
+        downloadTargetEp && Number(downloadTargetEp.num) === epNum;
 
       const downloadRecord = {
         id: `${animeDocId}_ep_${epNum}_${selectedDownloadType}_${finalQuality.label}`,
@@ -641,11 +713,11 @@ export default function Play({
         audioType: selectedDownloadType,
         subtitle: {
           label: selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off',
-          file: selectedSubTrack?.file || null,
+          file: isSameAsFetchedTarget ? selectedSubTrack?.file || null : null,
           lang: selectedSubTrack?.lang || 'none',
         },
         quality: finalQuality.label,
-        streamUri: finalQuality.uri || null,
+        streamUri: isSameAsFetchedTarget ? finalQuality.uri || null : null,
         referer: finalQuality.referer || 'https://vidwish.live/',
         profileId: resolvedProfileId || 'default',
         userUid: resolvedUid || null,
@@ -668,9 +740,18 @@ export default function Play({
       }
     }
 
-    const filteredQueue = queueArray.filter(item => !newRecords.some(n => n.id === item.id));
+    const filteredQueue = queueArray.filter(
+      (item) => !newRecords.some((n) => n.id === item.id)
+    );
     const updatedQueue = [...newRecords, ...filteredQueue];
-    await writeLocalJson(DOWNLOAD_QUEUE_STORAGE_KEY, DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
+    await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
+
+    await updateLocalPreferences({
+      preferredDownloadType: selectedDownloadType,
+      preferredSubtitleLang: selectedSubTrack?.label || selectedSubTrack?.lang || 'Off',
+      preferredDownloadQuality: finalQuality.label,
+      lastDownload: newRecords[0],
+    });
   };
 
   // 2. Fetch TMDB Data, Sequels/Related Slider, and "More Like This" Grid
@@ -694,7 +775,7 @@ export default function Play({
           if (detailJson?.overview && isMounted) setTmdbSynopsis(detailJson.overview);
 
           const logos = detailJson?.images?.logos || [];
-          const bestLogo = logos.find(l => l.iso_639_1 === 'en') || logos.find(l => l.iso_639_1 === 'ja') || logos[0];
+          const bestLogo = logos.find((l) => l.iso_639_1 === 'en') || logos.find((l) => l.iso_639_1 === 'ja') || logos[0];
           if (bestLogo && isMounted) setTitleLogo(`https://image.tmdb.org/t/p/w500${bestLogo.file_path}`);
         }
       } catch (_) {}
@@ -714,6 +795,7 @@ export default function Play({
                     bannerImage
                     coverImage { extraLarge large }
                     format
+                    episodes
                     seasonYear
                     averageScore
                     status
@@ -731,6 +813,7 @@ export default function Play({
                     bannerImage
                     coverImage { extraLarge large }
                     format
+                    episodes
                     seasonYear
                     averageScore
                     status
@@ -750,7 +833,7 @@ export default function Play({
         const media = aJson?.data?.Media;
 
         const relationEdges = (media?.relations?.edges || []).filter(
-          e => e?.node && (!e.node.type || e.node.type === 'ANIME')
+          (e) => e?.node && (!e.node.type || e.node.type === 'ANIME')
         );
 
         const relationPriority = {
@@ -765,16 +848,19 @@ export default function Play({
         };
 
         const formattedRelations = relationEdges
-          .map(edge => {
+          .map((edge) => {
             const node = edge.node;
             const relType = edge.relationType || 'RELATED';
             return {
               id: String(node.id),
               animeId: String(node.id),
               title: node.title?.english || node.title?.romaji || 'Untitled',
+              image: node.coverImage?.extraLarge || node.coverImage?.large || '',
               coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
               backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '',
               format: node.format || 'TV',
+              episodesCount: node.episodes || 12,
+              sub: node.episodes || 12,
               score: node.averageScore || 85,
               year: node.seasonYear || '',
               status: node.status || 'FINISHED',
@@ -786,21 +872,24 @@ export default function Play({
           .sort((a, b) => a.priority - b.priority);
 
         const recNodes = (media?.recommendations?.nodes || [])
-          .map(n => n?.mediaRecommendation)
+          .map((n) => n?.mediaRecommendation)
           .filter(Boolean);
 
         const combinedMore = [
-          ...recNodes.map(node => ({
+          ...recNodes.map((node) => ({
             id: String(node.id),
             animeId: String(node.id),
             title: node.title?.english || node.title?.romaji || 'Untitled',
+            image: node.coverImage?.extraLarge || node.coverImage?.large || '',
             coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
             backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '',
             format: node.format || 'TV',
+            episodesCount: node.episodes || 12,
+            sub: node.episodes || 12,
             score: node.averageScore || 85,
             year: node.seasonYear || '',
             status: node.status || 'FINISHED',
-            relationType: 'RECOMMENDED',
+            relationType: node.format || 'TV',
             description: node.description ? node.description.replace(/<[^>]*>/g, '') : '',
           })),
           ...formattedRelations,
@@ -847,7 +936,7 @@ export default function Play({
         const searchJson = await searchRes.json();
         const matches = searchJson?.data || [];
         if (matches.length > 0) {
-          const exact = matches.find(m => (m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
+          const exact = matches.find((m) => (m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
           targetId = exact.id;
         }
         if (isMounted) setVercelAnimeId(targetId);
@@ -871,14 +960,14 @@ export default function Play({
           if (!hasRestoredLocalChunkRef.current) {
             const targetEpNum = latestWatched?.episodeNum || latestWatched?.lastWatchedEp || currentAnime?.episodeNum;
             if (targetEpNum) {
-              const epIndex = formatted.findIndex(e => String(e.num) === String(targetEpNum));
+              const epIndex = formatted.findIndex((e) => String(e.num) === String(targetEpNum));
               if (epIndex !== -1) {
                 setCurrentChunkIndex(Math.floor(epIndex / EPISODE_CHUNK_SIZE));
               }
             }
           }
         }
-      } catch (err) {
+      } catch (_) {
         if (isMounted) setEpisodes([]);
       } finally {
         if (isMounted) setEpisodesLoading(false);
@@ -898,6 +987,7 @@ export default function Play({
   }, [episodes]);
 
   const currentEpisodesToRender = episodeChunks[currentChunkIndex] || episodeChunks[0] || [];
+  const downloadChunkEpisodes = episodeChunks[downloadChunkIndex] || episodeChunks[0] || episodes;
 
   // 4. Playback Navigation Handler
   const handlePlayEpisode = async (episodeItem) => {
@@ -937,7 +1027,7 @@ export default function Play({
         animeId: animeDocId,
         providerId: vercelAnimeId || animeDocId,
         slug: String(episodeItem.slug),
-        progress: savedEpProgress && !savedEpProgress.finishedEp ? Number(savedEpProgress.progress || 0) : 0,
+        progress: savedEpProgress ? Number(savedEpProgress.progress || 0) : 0,
         duration: savedEpProgress ? Number(savedEpProgress.duration || 0) : 0,
         userUid: resolvedUid,
         uid: resolvedUid,
@@ -1003,20 +1093,20 @@ export default function Play({
     if (episodes.length === 0) return null;
     if (latestWatched) {
       const lastEp = episodes.find(
-        e =>
+        (e) =>
           String(e.slug) === String(latestWatched.slug) ||
           String(e.num) === String(latestWatched.episodeNum || latestWatched.lastWatchedEp)
       );
       if (lastEp) {
         if (latestWatched.finishedEp) {
-          const nextEpIndex = episodes.findIndex(e => e.slug === lastEp.slug) + 1;
+          const nextEpIndex = episodes.findIndex((e) => e.slug === lastEp.slug) + 1;
           if (nextEpIndex < episodes.length) return episodes[nextEpIndex];
         }
         return lastEp;
       }
     }
     if (currentAnime?.episodeNum) {
-      const matched = episodes.find(e => String(e.num) === String(currentAnime.episodeNum));
+      const matched = episodes.find((e) => String(e.num) === String(currentAnime.episodeNum));
       if (matched) return matched;
     }
     return episodes[0];
@@ -1093,12 +1183,13 @@ export default function Play({
           )}
         </TouchableOpacity>
 
+        {/* Hero Action Buttons */}
         <View style={styles.actionsBar}>
           <TouchableOpacity style={styles.actionTab} onPress={toggleLibrary} activeOpacity={0.7}>
             {inLibrary ? <IconCheck /> : <IconPlus />}
             <Text style={styles.actionTabText}>Watchlist</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.actionTab} onPress={() => targetEp && handleOpenDownload(targetEp)} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.actionTab} onPress={() => handleOpenMultiEpisodeDownload(targetEp)} activeOpacity={0.7}>
             <IconDownload />
             <Text style={styles.actionTabText}>Download</Text>
           </TouchableOpacity>
@@ -1170,10 +1261,9 @@ export default function Play({
     if (activeTab !== 'episodes' || sequelsAndRelated.length === 0) return null;
 
     return (
-      <View style={styles.relatedSliderSection}>
-        <View style={styles.relatedHeaderRow}>
-          <View style={styles.relatedRedBar} />
-          <Text style={styles.relatedSectionTitle}>Sequels & Related Anime</Text>
+      <View style={styles.recentStyleSection}>
+        <View style={styles.recentHeaderRow}>
+          <Text style={styles.recentSectionTitle}>Sequels & Related Anime</Text>
         </View>
 
         <FlatList
@@ -1181,42 +1271,60 @@ export default function Play({
           data={sequelsAndRelated}
           showsHorizontalScrollIndicator={false}
           keyExtractor={(item) => `seq-${item.id}`}
-          contentContainerStyle={styles.relatedSliderPadding}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.relatedSliderCard}
-              activeOpacity={0.85}
-              onPress={() => handleSelectRelatedAnime(item)}
-            >
-              <View style={styles.relatedPosterWrap}>
-                <ProxyImage
-                  source={{ uri: item.coverImage }}
-                  style={styles.relatedPosterImg}
-                  resizeMode="cover"
-                />
-                <View style={styles.relatedTypeBadge}>
-                  <Text style={styles.relatedTypeBadgeText}>
-                    {item.relationType || 'SEQUEL'}
-                  </Text>
+          contentContainerStyle={styles.recentListPadding}
+          snapToInterval={155}
+          decelerationRate="fast"
+          renderItem={({ item }) => {
+            const isAdded = librarySet.has(String(item.id));
+            return (
+              <TouchableOpacity
+                style={styles.recentCardContainer}
+                activeOpacity={0.85}
+                onPress={() => handleSelectRelatedAnime(item)}
+              >
+                <View style={styles.recentImageWrapper}>
+                  <ProxyImage
+                    source={{ uri: item.coverImage || item.image }}
+                    style={styles.recentCoverImage}
+                    resizeMode="cover"
+                  />
+
+                  <View style={styles.recentBadgeContainer}>
+                    <View style={styles.recentEpBadge}>
+                      <Text style={styles.recentEpBadgeText}>
+                        {item.relationType || item.format || 'SEQUEL'}
+                      </Text>
+                    </View>
+                    <View style={styles.recentCcBadge}>
+                      <Text style={styles.recentCcBadgeText}>
+                        CC {item.sub || item.episodesCount || 12}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    style={[styles.recentSaveBtn, isAdded && styles.recentSaveBtnActive]}
+                    onPress={() => toggleCardLibraryItem(item)}
+                    activeOpacity={0.8}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                  >
+                    <BookmarkIcon filled={isAdded} />
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.relatedScoreBadge}>
-                  <Text style={styles.relatedScoreText}>★ {item.score}%</Text>
-                </View>
-              </View>
-              <Text style={styles.relatedCardTitle} numberOfLines={2}>
-                {item.title}
-              </Text>
-              <Text style={styles.relatedCardMeta} numberOfLines={1}>
-                {item.format}{item.year ? ` • ${item.year}` : ''}
-              </Text>
-            </TouchableOpacity>
-          )}
+                <Text style={styles.recentAnimeTitle} numberOfLines={1}>
+                  {item.title}
+                </Text>
+              </TouchableOpacity>
+            );
+          }}
         />
       </View>
     );
   };
 
   const isEpisodesTab = activeTab === 'episodes';
+  const selectedDownloadCount = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]).length;
+  const isAllEpisodesSelected = episodes.length > 0 && selectedDownloadCount === episodes.length;
 
   return (
     <View style={styles.screenContainer}>
@@ -1291,13 +1399,20 @@ export default function Play({
                   )}
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.downloadIconBtn} activeOpacity={0.7} onPress={() => handleOpenDownload(item)}>
+                {/* Single Episode Download Button -> Skips Step 1 Choose Episodes Module */}
+                <TouchableOpacity
+                  style={styles.downloadIconBtn}
+                  activeOpacity={0.7}
+                  onPress={() => handleOpenSingleEpisodeDownload(item)}
+                >
                   <IconDownload size={22} color={isFinished ? "rgba(255,255,255,0.4)" : "#FFF"} />
                 </TouchableOpacity>
               </View>
             );
           }
 
+          // GRID CARD FOR "MORE LIKE THIS" STYLED LIKE RecentSlider.js
+          const isAdded = librarySet.has(String(item.id));
           return (
             <TouchableOpacity
               style={styles.gridAnimeCard}
@@ -1305,16 +1420,32 @@ export default function Play({
               onPress={() => handleSelectRelatedAnime(item)}
             >
               <View style={styles.gridPosterBox}>
-                <ProxyImage source={{ uri: item.coverImage }} style={styles.gridPosterImg} resizeMode="cover" />
-                <View style={styles.gridScoreBadge}>
-                  <Text style={styles.gridScoreText}>★ {item.score}%</Text>
+                <ProxyImage
+                  source={{ uri: item.coverImage || item.image }}
+                  style={styles.recentCoverImage}
+                  resizeMode="cover"
+                />
+
+                <View style={styles.recentBadgeContainer}>
+                  <View style={styles.recentEpBadge}>
+                    <Text style={styles.recentEpBadgeText}>{item.format || 'TV'}</Text>
+                  </View>
+                  <View style={styles.recentCcBadge}>
+                    <Text style={styles.recentCcBadgeText}>CC {item.sub || item.episodesCount || 12}</Text>
+                  </View>
                 </View>
+
+                <TouchableOpacity
+                  style={[styles.recentSaveBtn, isAdded && styles.recentSaveBtnActive]}
+                  onPress={() => toggleCardLibraryItem(item)}
+                  activeOpacity={0.8}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <BookmarkIcon filled={isAdded} />
+                </TouchableOpacity>
               </View>
-              <Text style={styles.gridAnimeTitle} numberOfLines={2}>
+              <Text style={styles.recentAnimeTitle} numberOfLines={1}>
                 {item.title}
-              </Text>
-              <Text style={styles.gridAnimeMeta} numberOfLines={1}>
-                {item.format}{item.year ? ` • ${item.year}` : ''}
               </Text>
             </TouchableOpacity>
           );
@@ -1331,32 +1462,50 @@ export default function Play({
         onRequestClose={() => setTopMenuVisible(false)}
       >
         <View style={styles.topMenuOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setTopMenuVisible(false)} />
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setTopMenuVisible(false)}
+          />
           <View style={styles.topMenuContainer}>
             <TouchableOpacity 
               style={styles.topMenuItem} 
-              onPress={() => { setTopMenuVisible(false); toggleLibrary(); }}
+              onPress={() => {
+                setTopMenuVisible(false);
+                toggleLibrary();
+              }}
             >
-              <Text style={styles.topMenuItemText}>{inLibrary ? 'Remove from User List' : 'Add to User List'}</Text>
+              <Text style={styles.topMenuItemText}>
+                {inLibrary ? 'Remove from List' : 'Add to List'}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity 
               style={styles.topMenuItem} 
-              onPress={() => { setTopMenuVisible(false); if (targetEp) handleOpenDownload(targetEp); }}
+              onPress={() => {
+                setTopMenuVisible(false);
+                handleOpenMultiEpisodeDownload(targetEp);
+              }}
             >
               <Text style={styles.topMenuItemText}>Download</Text>
             </TouchableOpacity>
 
             <TouchableOpacity 
               style={styles.topMenuItem} 
-              onPress={() => { setTopMenuVisible(false); setShareModalVisible(true); }}
+              onPress={() => {
+                setTopMenuVisible(false);
+                setShareModalVisible(true);
+              }}
             >
               <Text style={styles.topMenuItemText}>Share</Text>
             </TouchableOpacity>
 
             <TouchableOpacity 
               style={styles.topMenuItem} 
-              onPress={() => { setTopMenuVisible(false); setRoomModalVisible(true); }}
+              onPress={() => {
+                setTopMenuVisible(false);
+                setRoomModalVisible(true);
+              }}
             >
               <Text style={styles.topMenuItemText}>Room</Text>
             </TouchableOpacity>
@@ -1365,27 +1514,61 @@ export default function Play({
       </Modal>
 
       {/* SHARE COMPONENT MODAL */}
-      <Modal visible={shareModalVisible} animationType="slide" transparent={true} onRequestClose={() => setShareModalVisible(false)}>
+      <Modal
+        visible={shareModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setShareModalVisible(false)}
+      >
         <View style={styles.fullscreenModalOverlay}>
-          <ShareComponent anime={currentAnime} user={resolvedUser} onBack={() => setShareModalVisible(false)} />
+          {typeof ShareSheet === 'function' ? (
+            <ShareSheet
+              anime={currentAnime}
+              user={resolvedUser}
+              activeProfile={resolvedProfile}
+              onClose={() => setShareModalVisible(false)}
+              onBack={() => setShareModalVisible(false)}
+            />
+          ) : null}
         </View>
       </Modal>
 
       {/* ROOM COMPONENT MODAL */}
-      <Modal visible={roomModalVisible} animationType="slide" transparent={true} onRequestClose={() => setRoomModalVisible(false)}>
+      <Modal
+        visible={roomModalVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setRoomModalVisible(false)}
+      >
         <View style={styles.fullscreenModalOverlay}>
-          <RoomComponent anime={currentAnime} user={resolvedUser} activeProfile={resolvedProfile} onBack={() => setRoomModalVisible(false)} />
+          {typeof RoomComponent === 'function' ? (
+            <RoomComponent
+              anime={currentAnime}
+              user={resolvedUser}
+              activeProfile={resolvedProfile}
+              activeProfileId={resolvedProfileId}
+              onBack={() => setRoomModalVisible(false)}
+            />
+          ) : null}
         </View>
       </Modal>
 
-      {/* --- MULTI-EPISODE SELECTOR & DOWNLOAD SHEET MODAL --- */}
+      {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET (Step 1 for Multi, Step 2 for Single/Proceed) --- */}
       <Modal
         visible={downloadModalVisible}
         animationType="slide"
         transparent={true}
+        statusBarTranslucent={false}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            await NavigationBar.setVisibilityAsync('visible');
+          } catch (_) {}
+        }}
         onRequestClose={() => setDownloadModalVisible(false)}
       >
         <View style={styles.bottomSheetOverlay}>
+          <StatusBar hidden={true} />
           <TouchableOpacity
             style={StyleSheet.absoluteFillObject}
             activeOpacity={1}
@@ -1398,10 +1581,16 @@ export default function Play({
             <View style={styles.modalHeaderRow}>
               <View style={{ flex: 1, paddingRight: 10 }}>
                 <Text style={styles.modalTitle} numberOfLines={1}>
-                  {downloadStep === 1 ? 'Select Episodes to Download' : `Download Settings (${Object.keys(selectedEpNumsMap).filter(k => selectedEpNumsMap[k]).length} Eps)`}
+                  {isSingleEpisodeDownload
+                    ? `Download Episode ${downloadTargetEp?.num || 1}`
+                    : downloadStep === 1
+                      ? 'Select Episodes to Download'
+                      : `Download (${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'})`}
                 </Text>
                 <Text style={styles.modalSubHeader} numberOfLines={1}>
-                  {resolvedTitle}
+                  {isSingleEpisodeDownload
+                    ? downloadTargetEp?.title || resolvedTitle
+                    : resolvedTitle}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setDownloadModalVisible(false)} style={styles.modalCloseBtn}>
@@ -1409,25 +1598,65 @@ export default function Play({
               </TouchableOpacity>
             </View>
 
-            {/* STEP 1: SELECT MULTIPLE EPISODES (1 TO 50 RECTANGLE SELECTOR PILLS) */}
-            {downloadStep === 1 && (
+            {/* STEP 1: MULTI-EPISODE SELECTOR (SKIPPED FOR SINGLE EPISODE DOWNLOAD) */}
+            {!isSingleEpisodeDownload && downloadStep === 1 && (
               <View style={{ flex: 1 }}>
                 <View style={styles.multiEpSelectTopBar}>
-                  <Text style={styles.sheetSectionLabel}>Tap episodes to select/deselect:</Text>
+                  <Text style={styles.sheetSectionLabel}>
+                    Selected ({selectedDownloadCount}/{episodes.length})
+                  </Text>
                   <TouchableOpacity
-                    style={styles.selectAllToggleBtn}
+                    style={[styles.selectAllToggleBtn, isAllEpisodesSelected && { backgroundColor: PURE_RED }]}
                     onPress={() => {
-                      const allSelected = {};
-                      episodes.forEach(e => { allSelected[e.num] = true; });
-                      setSelectedEpNumsMap(allSelected);
+                      if (isAllEpisodesSelected) {
+                        setSelectedEpNumsMap({});
+                      } else {
+                        const allMap = {};
+                        episodes.forEach((e) => { allMap[e.num] = true; });
+                        setSelectedEpNumsMap(allMap);
+                      }
                     }}
                   >
-                    <Text style={styles.selectAllToggleText}>Select All</Text>
+                    <Text style={[styles.selectAllToggleText, isAllEpisodesSelected && { color: '#FFF' }]}>
+                      {isAllEpisodesSelected ? 'Deselect All' : 'Select All'}
+                    </Text>
                   </TouchableOpacity>
                 </View>
 
-                <ScrollView style={styles.sheetScrollArea} contentContainerStyle={styles.multiEpGridContainer}>
-                  {episodes.map((ep) => {
+                {/* 1-50 Rectangle Chunk Selector for Longer Series */}
+                {episodeChunks.length > 1 && (
+                  <View style={{ marginBottom: 10 }}>
+                    <FlatList
+                      horizontal
+                      data={episodeChunks}
+                      showsHorizontalScrollIndicator={false}
+                      keyExtractor={(_, index) => `dl-chunk-${index}`}
+                      contentContainerStyle={{ gap: 8 }}
+                      renderItem={({ item, index }) => {
+                        const rangeLabel = `${item[0].num} - ${item[item.length - 1].num}`;
+                        const isActive = downloadChunkIndex === index;
+                        return (
+                          <TouchableOpacity
+                            style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
+                            activeOpacity={0.85}
+                            onPress={() => setDownloadChunkIndex(index)}
+                          >
+                            <Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>
+                              {rangeLabel}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      }}
+                    />
+                  </View>
+                )}
+
+                <ScrollView
+                  style={styles.sheetScrollArea}
+                  contentContainerStyle={styles.multiEpGridContainer}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {downloadChunkEpisodes.map((ep) => {
                     const isSelected = Boolean(selectedEpNumsMap[ep.num]);
                     return (
                       <TouchableOpacity
@@ -1435,9 +1664,9 @@ export default function Play({
                         style={[styles.multiEpPill, isSelected && styles.multiEpPillActive]}
                         activeOpacity={0.8}
                         onPress={() => {
-                          setSelectedEpNumsMap(prev => ({
+                          setSelectedEpNumsMap((prev) => ({
                             ...prev,
-                            [ep.num]: !prev[ep.num]
+                            [ep.num]: !prev[ep.num],
                           }));
                         }}
                       >
@@ -1452,125 +1681,148 @@ export default function Play({
                 <TouchableOpacity
                   style={[
                     styles.sheetDownloadSubmitBtn,
-                    Object.keys(selectedEpNumsMap).filter(k => selectedEpNumsMap[k]).length === 0 && { opacity: 0.5 }
+                    selectedDownloadCount === 0 && { opacity: 0.5 },
                   ]}
                   activeOpacity={0.85}
-                  disabled={Object.keys(selectedEpNumsMap).filter(k => selectedEpNumsMap[k]).length === 0}
-                  onPress={() => handleProceedToDownloadStep2(selectedEpNumsMap)}
+                  disabled={selectedDownloadCount === 0}
+                  onPress={handleProceedFromMultiEpStep}
                 >
-                  <Text style={styles.sheetDownloadSubmitText}>Next: Audio & Quality</Text>
+                  <IconDownload size={18} color="#FFF" />
+                  <Text style={styles.sheetDownloadSubmitText}>
+                    Choose Quality & Subtitles ({selectedDownloadCount})
+                  </Text>
                 </TouchableOpacity>
               </View>
             )}
 
-            {/* STEP 2: AUDIO, SUBTITLES & QUALITY */}
-            {downloadStep === 2 && (
-              <ScrollView style={styles.sheetScrollArea} contentContainerStyle={styles.sheetScrollContent} showsVerticalScrollIndicator={false}>
-                <Text style={styles.sheetSectionLabel}>Audio</Text>
-                <View style={styles.sheetPillRow}>
-                  {['sub', 'dub'].map((type) => {
-                    const isSelected = selectedDownloadType === type;
-                    return (
-                      <TouchableOpacity
-                        key={type}
-                        style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
-                        activeOpacity={0.85}
-                        onPress={() => {
-                          setSelectedDownloadType(type);
-                          updateLocalPreferences({ preferredDownloadType: type });
-                          if (downloadTargetEp) fetchUnifiedDownloadOptions(downloadTargetEp, type);
-                        }}
-                      >
-                        <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                          {type === 'sub' ? 'SUB (Japanese)' : 'DUB (English)'}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-
-                <Text style={styles.sheetSectionLabel}>Subtitles (Available in Sub & Dub)</Text>
-                {isFetchingDownloadData ? (
-                  <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
-                ) : (
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sheetHorizontalPills}>
-                    {downloadSubTracks.map((sub, idx) => {
-                      const label = sub.label || sub.lang || `Subtitle ${idx + 1}`;
-                      const isSelected =
-                        selectedSubTrack?.lang !== 'none' &&
-                        (selectedSubTrack?.label || selectedSubTrack?.lang) === label;
+            {/* STEP 2: UNIFIED AUDIO (SUB/DUB), SUBTITLES & QUALITY */}
+            {(isSingleEpisodeDownload || downloadStep === 2) && (
+              <View style={{ flex: 1 }}>
+                <ScrollView
+                  style={styles.sheetScrollArea}
+                  contentContainerStyle={styles.sheetScrollContent}
+                  showsVerticalScrollIndicator={false}
+                >
+                  <Text style={styles.sheetSectionLabel}>Audio</Text>
+                  <View style={styles.sheetPillRow}>
+                    {['sub', 'dub'].map((type) => {
+                      const isSelected = selectedDownloadType === type;
                       return (
                         <TouchableOpacity
-                          key={idx}
+                          key={type}
                           style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
                           activeOpacity={0.85}
-                          onPress={() => setSelectedSubTrack(sub)}
+                          onPress={() => handleSwitchDownloadAudioType(type)}
                         >
                           <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                            {label}
+                            {type === 'sub' ? 'SUB (Japanese)' : 'DUB (English)'}
                           </Text>
                         </TouchableOpacity>
                       );
                     })}
-                    <TouchableOpacity
-                      style={[
-                        styles.sheetRectPill,
-                        selectedSubTrack?.lang === 'none' && styles.sheetRectPillActive,
-                      ]}
-                      activeOpacity={0.85}
-                      onPress={() => setSelectedSubTrack({ label: 'No Subtitles / Off', file: null, lang: 'none' })}
-                    >
-                      <Text style={[styles.sheetRectPillText, selectedSubTrack?.lang === 'none' && styles.sheetRectPillTextActive]}>
-                        Off
-                      </Text>
-                    </TouchableOpacity>
-                  </ScrollView>
-                )}
+                  </View>
 
-                <Text style={styles.sheetSectionLabel}>Quality (No Auto)</Text>
-                {isFetchingDownloadData ? (
-                  <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
-                ) : (
-                  <View style={styles.sheetPillRow}>
-                    {downloadQualities
-                      .filter(q => q.label && q.label.toLowerCase() !== 'auto')
-                      .map((q, idx) => {
-                        const isSelected = selectedDownloadQuality?.label === q.label;
+                  <Text style={styles.sheetSectionLabel}>Subtitles (Available in Sub & Dub)</Text>
+                  {isFetchingDownloadData ? (
+                    <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
+                  ) : (
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.sheetHorizontalPills}
+                    >
+                      {downloadSubTracks.map((sub, idx) => {
+                        const label = sub.label || sub.lang || `Subtitle ${idx + 1}`;
+                        const isSelected =
+                          selectedSubTrack?.lang !== 'none' &&
+                          (selectedSubTrack?.label || selectedSubTrack?.lang) === label;
                         return (
                           <TouchableOpacity
                             key={idx}
                             style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
                             activeOpacity={0.85}
-                            onPress={() => setSelectedDownloadQuality(q)}
+                            onPress={() => setSelectedSubTrack(sub)}
                           >
                             <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                              {q.label}
+                              {label}
                             </Text>
                           </TouchableOpacity>
                         );
                       })}
-                  </View>
-                )}
+
+                      <TouchableOpacity
+                        style={[
+                          styles.sheetRectPill,
+                          selectedSubTrack?.lang === 'none' && styles.sheetRectPillActive,
+                        ]}
+                        activeOpacity={0.85}
+                        onPress={() =>
+                          setSelectedSubTrack({ label: 'No Subtitles / Off', file: null, lang: 'none' })
+                        }
+                      >
+                        <Text
+                          style={[
+                            styles.sheetRectPillText,
+                            selectedSubTrack?.lang === 'none' && styles.sheetRectPillTextActive,
+                          ]}
+                        >
+                          Off
+                        </Text>
+                      </TouchableOpacity>
+                    </ScrollView>
+                  )}
+
+                  <Text style={styles.sheetSectionLabel}>Quality (No Auto)</Text>
+                  {isFetchingDownloadData ? (
+                    <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
+                  ) : (
+                    <View style={styles.sheetPillRow}>
+                      {downloadQualities
+                        .filter((q) => q.label && q.label.toLowerCase() !== 'auto')
+                        .map((q, idx) => {
+                          const isSelected = selectedDownloadQuality?.label === q.label;
+                          return (
+                            <TouchableOpacity
+                              key={idx}
+                              style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
+                              activeOpacity={0.85}
+                              onPress={() => setSelectedDownloadQuality(q)}
+                            >
+                              <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
+                                {q.label}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                    </View>
+                  )}
+                </ScrollView>
 
                 <View style={styles.step2FooterRow}>
-                  <TouchableOpacity style={styles.step2BackBtn} onPress={() => setDownloadStep(1)}>
-                    <Text style={styles.step2BackText}>← Back to Episodes</Text>
-                  </TouchableOpacity>
+                  {!isSingleEpisodeDownload && (
+                    <TouchableOpacity style={styles.step2BackBtn} onPress={() => setDownloadStep(1)}>
+                      <Text style={styles.step2BackText}>← Episodes</Text>
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity
                     style={[
                       styles.sheetDownloadSubmitBtn,
+                      { flex: 1, marginTop: 0 },
                       (isFetchingDownloadData || !selectedDownloadQuality) && { opacity: 0.5 },
-                      { flex: 1, marginTop: 0 }
                     ]}
                     activeOpacity={0.85}
                     disabled={isFetchingDownloadData || !selectedDownloadQuality}
                     onPress={handleConfirmDownloadFinal}
                   >
-                    <IconDownload size={16} color="#FFF" />
-                    <Text style={styles.sheetDownloadSubmitText}>Start Download</Text>
+                    <IconDownload size={18} color="#FFF" />
+                    <Text style={styles.sheetDownloadSubmitText}>
+                      {isSingleEpisodeDownload
+                        ? 'Download Episode'
+                        : `Download ${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'}`}
+                    </Text>
                   </TouchableOpacity>
                 </View>
-              </ScrollView>
+              </View>
             )}
           </View>
         </View>
@@ -1678,142 +1930,40 @@ const styles = StyleSheet.create({
   epMiniProgressBg: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.1)' },
   epMiniProgressFill: { height: '100%', backgroundColor: PURE_RED },
 
-  // Sequels & Related Anime Bottom Slider
-  relatedSliderSection: {
-    marginTop: 22,
-    paddingTop: 18,
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.08)',
-  },
-  relatedHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    marginBottom: 14,
-  },
-  relatedRedBar: {
-    width: 3.5,
-    height: 18,
-    backgroundColor: PURE_RED,
-    marginRight: 8,
-    borderRadius: 2,
-  },
-  relatedSectionTitle: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  relatedSliderPadding: {
-    paddingHorizontal: 16,
-    gap: 12,
-  },
-  relatedSliderCard: {
-    width: 124,
-  },
-  relatedPosterWrap: {
-    width: 124,
-    height: 178,
-    borderRadius: 6,
-    overflow: 'hidden',
-    backgroundColor: '#161616',
-    marginBottom: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.1)',
-  },
-  relatedPosterImg: {
-    width: '100%',
-    height: '100%',
-  },
-  relatedTypeBadge: {
-    position: 'absolute',
-    top: 6,
-    left: 6,
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 3,
-  },
-  relatedTypeBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 9,
-    fontWeight: '900',
-  },
-  relatedScoreBadge: {
-    position: 'absolute',
-    bottom: 6,
-    right: 6,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 3,
-  },
-  relatedScoreText: {
-    color: '#FACC15',
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  relatedCardTitle: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  relatedCardMeta: {
-    color: '#888888',
-    fontSize: 10,
-    marginTop: 2,
-    fontWeight: '600',
-  },
+  // RecentSlider-matched UI for Bottom Sequel Slider & More Like This Grid
+  recentStyleSection: { marginTop: 18, marginBottom: 25 },
+  recentHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
+  recentSectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  recentListPadding: { paddingHorizontal: 20 },
+  recentCardContainer: { width: 140, marginRight: 15 },
+  recentImageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: '#2A2A2A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  recentCoverImage: { width: '100%', height: '100%' },
+  recentBadgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
+  recentEpBadge: { backgroundColor: '#FFFFFF', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 3 },
+  recentEpBadgeText: { color: '#000000', fontSize: 10, fontWeight: '900' },
+  recentCcBadge: { backgroundColor: 'rgba(229,9,20,0.9)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
+  recentCcBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: 'bold' },
+  recentSaveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  recentSaveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: BRAND_RED },
+  recentAnimeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
 
-  // "More Like This" Grid Styles
   gridRowWrapper: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 20,
     justifyContent: 'flex-start',
     gap: GRID_SPACING,
-    marginBottom: 16,
+    marginBottom: 18,
   },
   gridAnimeCard: {
     width: GRID_CARD_WIDTH,
   },
   gridPosterBox: {
     width: GRID_CARD_WIDTH,
-    height: Math.floor(GRID_CARD_WIDTH * 1.45),
-    borderRadius: 6,
+    height: Math.floor(GRID_CARD_WIDTH * 1.5),
+    borderRadius: 8,
     overflow: 'hidden',
-    backgroundColor: '#161616',
-    marginBottom: 6,
+    backgroundColor: '#2A2A2A',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.08)',
-  },
-  gridPosterImg: {
-    width: '100%',
-    height: '100%',
-  },
-  gridScoreBadge: {
-    position: 'absolute',
-    top: 6,
-    right: 6,
-    backgroundColor: 'rgba(0,0,0,0.78)',
-    paddingHorizontal: 5,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  gridScoreText: {
-    color: '#FACC15',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  gridAnimeTitle: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  gridAnimeMeta: {
-    color: '#888888',
-    fontSize: 10,
-    marginTop: 2,
-    fontWeight: '600',
   },
 
   emptyContainer: { paddingVertical: 40, alignItems: 'center' },
@@ -1825,11 +1975,11 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'flex-start',
     alignItems: 'flex-end',
-    paddingTop: 80,
+    paddingTop: 82,
     paddingRight: 16,
   },
   topMenuContainer: {
-    width: 200,
+    width: 195,
     backgroundColor: '#18181C',
     borderRadius: 10,
     paddingVertical: 6,
@@ -1847,7 +1997,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  // Bottom Half-Screen Multi-Episode Download Sheet Styles
+  // Bottom Half-Screen Download Sheet
   bottomSheetOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.72)',
@@ -1855,13 +2005,13 @@ const styles = StyleSheet.create({
   },
   halfScreenSheet: {
     width: '100%',
-    height: Math.floor(height * 0.58),
+    height: Math.floor(height * 0.54),
     backgroundColor: '#111115',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingHorizontal: 20,
     paddingTop: 10,
-    paddingBottom: 20,
+    paddingBottom: 18,
     borderTopWidth: 1.5,
     borderTopColor: 'rgba(255,255,255,0.12)',
     elevation: 25,
@@ -1897,15 +2047,17 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   selectAllToggleBtn: {
-    backgroundColor: 'rgba(255,255,255,0.08)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    backgroundColor: '#1B1B22',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderRadius: 4,
+    borderWidth: 1,
+    borderColor: PURE_RED,
   },
   selectAllToggleText: {
     color: PURE_RED,
     fontSize: 11,
-    fontWeight: '800',
+    fontWeight: '900',
   },
   multiEpGridContainer: {
     flexDirection: 'row',
@@ -1921,7 +2073,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.12)',
-    marginBottom: 4,
   },
   multiEpPillActive: {
     backgroundColor: PURE_RED,
@@ -1985,15 +2136,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    marginTop: 12,
+    marginTop: 10,
   },
   step2BackBtn: {
     paddingVertical: 12,
+    paddingHorizontal: 10,
   },
   step2BackText: {
-    color: '#AAA',
+    color: '#CCCCCC',
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   sheetDownloadSubmitBtn: {
     flexDirection: 'row',
