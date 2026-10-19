@@ -20,14 +20,9 @@ import {
 import { Video, Audio, ResizeMode } from 'expo-av';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
-import Svg, { Path, Rect, Circle, Line, Polyline, G } from 'react-native-svg';
+import Svg, { Path, Rect, Circle, Line, Polyline } from 'react-native-svg';
 
-let Clipboard = null;
-try {
-  Clipboard = require('expo-clipboard');
-} catch (_) {}
-
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 
 const BLACK = '#000000';
 const CARD_BG = '#111115';
@@ -36,7 +31,6 @@ const BORDER_GREY = '#282832';
 const TEXT_GREY = '#8E8E98';
 const WHITE = '#FFFFFF';
 const PURE_RED = '#FF0000';
-const BRAND_RED = '#E50914';
 const EMERALD = '#10B981';
 
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
@@ -136,13 +130,6 @@ const IconTrash = ({ size = 14, color = WHITE }) => (
 const IconPlay = ({ size = 16, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
     <Path d="M8 5v14l11-7z" />
-  </Svg>
-);
-
-const IconPause = ({ size = 16, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Rect x="6" y="4" width="4" height="16" rx="1" />
-    <Rect x="14" y="4" width="4" height="16" rx="1" />
   </Svg>
 );
 
@@ -320,7 +307,6 @@ export default function Room({
             title: ep.title || `Episode ${ep.num || idx + 1}`,
           }));
           setAllEpisodes(formatted);
-          // Pre-select Episode 1 by default
           setSelectedEpMap({ [formatted[0].num]: formatted[0] });
         } else if (isMounted) {
           const fallbackEp = [{ id: '1', slug: '1', num: 1, title: 'Episode 1' }];
@@ -342,7 +328,6 @@ export default function Room({
     return () => { isMounted = false; };
   }, [animeDocId, animeTitle]);
 
-  // Chunk episodes into 1–50 rectangular pills
   const episodeChunks = useMemo(() => {
     const chunks = [];
     for (let i = 0; i < allEpisodes.length; i += EPISODE_CHUNK_SIZE) {
@@ -381,7 +366,7 @@ export default function Room({
     });
   };
 
-  // 2. Create Room in Firestore (Global `rooms/{code}` + Profile `users/{uid}/profiles/{profileId}/rooms/{code}`)
+  // 2. Create Room in Firestore
   const handleCreateRoom = async () => {
     const chosenList = Object.values(selectedEpMap).sort((a, b) => a.num - b.num);
     if (chosenList.length === 0) {
@@ -433,10 +418,8 @@ export default function Room({
         createdAt: Date.now(),
       };
 
-      // Save to global rooms collection
       await firestore().collection('rooms').doc(generatedCode).set(roomPayload);
 
-      // Save under current profile in database: users/{uid}/profiles/{profileId}/rooms/{roomCode}
       if (resolvedUid && resolvedUid !== 'guest_uid') {
         await firestore()
           .collection('users')
@@ -458,7 +441,6 @@ export default function Room({
 
       setRoomCode(generatedCode);
       setIsInsideRoom(true);
-      // Show Invite QR + Alphanumeric Code Modal immediately after creating
       setInviteModalVisible(true);
     } catch (err) {
       Alert.alert('Room Error', `Could not create room: ${err.message}`);
@@ -520,7 +502,6 @@ export default function Room({
         { merge: true }
       );
 
-      // Save joined room under current profile
       if (resolvedUid && resolvedUid !== 'guest_uid') {
         await firestore()
           .collection('users')
@@ -567,7 +548,6 @@ export default function Room({
 
         const data = doc.data();
 
-        // Check if current user was kicked/deleted by admin
         if (
           Array.isArray(data.kickedKeys) &&
           data.kickedKeys.includes(memberKey)
@@ -582,7 +562,6 @@ export default function Room({
 
         setActiveRoomData(data);
 
-        // Sync playing episode if changed in room
         if (
           data.currentEpisode &&
           (!playingEpisode || String(playingEpisode.num) !== String(data.currentEpisode.num))
@@ -680,7 +659,7 @@ export default function Room({
     activeRoomData?.playbackState?.updatedAt,
   ]);
 
-  // 6. Microphone Capture & Voice Activity Sync (via expo-av Audio)
+  // 6. Microphone Capture & Voice Activity Sync
   const stopMicCapture = useCallback(async () => {
     try {
       if (recordingRef.current) {
@@ -718,7 +697,6 @@ export default function Room({
       return;
     }
 
-    // Request Mic permission and monitor live voice metering
     try {
       const perm = await Audio.requestPermissionsAsync();
       if (perm.status !== 'granted') {
@@ -768,9 +746,7 @@ export default function Room({
 
       await rec.startAsync();
       recordingRef.current = rec;
-    } catch (_) {
-      // Even if hardware recording is busy with video playback, keep mic status unmuted in room state
-    }
+    } catch (_) {}
   };
 
   useEffect(() => {
@@ -779,7 +755,7 @@ export default function Room({
     };
   }, [stopMicCapture]);
 
-  // 7. Admin & Viewer Room Actions (Kick User, Leave Room, Close Room, Send Chat)
+  // 7. Admin & Viewer Room Actions
   const isCurrentUserAdmin = activeRoomData?.adminKey === memberKey;
 
   const joinedMembersList = useMemo(() => {
@@ -907,17 +883,13 @@ export default function Room({
 
   const handleCopyRoomCode = async () => {
     if (!roomCode) return;
+    setCopiedFeedback(true);
+    setTimeout(() => setCopiedFeedback(false), 2000);
     try {
-      if (Clipboard?.setStringAsync) {
-        await Clipboard.setStringAsync(roomCode);
-      } else if (Clipboard?.setString) {
-        Clipboard.setString(roomCode);
-      }
-      setCopiedFeedback(true);
-      setTimeout(() => setCopiedFeedback(false), 2000);
-    } catch (_) {
-      Share.share({ message: `Join my Kameko Watch Room for ${animeTitle}! Code: ${roomCode}` });
-    }
+      await Share.share({
+        message: `Join my Kameko Watch Room for ${animeTitle}! Room Code: ${roomCode}`,
+      });
+    } catch (_) {}
   };
 
   const qrCodeImageUrl = roomCode
@@ -936,7 +908,6 @@ export default function Room({
       <View style={styles.container}>
         <StatusBar hidden={true} />
 
-        {/* Top Header */}
         <View style={styles.headerBar}>
           <TouchableOpacity
             style={styles.iconCircleBtn}
@@ -950,7 +921,6 @@ export default function Room({
           <View style={{ width: 38 }} />
         </View>
 
-        {/* Mode Switcher: Create Room vs Join Room */}
         <View style={styles.modeTabsRow}>
           <TouchableOpacity
             style={[styles.modeTabBtn, setupMode === 'create' && styles.modeTabBtnActive]}
@@ -972,7 +942,6 @@ export default function Room({
 
         {setupMode === 'create' ? (
           <View style={{ flex: 1, paddingHorizontal: 16 }}>
-            {/* Current Profile & Optional Password Card */}
             <View style={styles.setupCard}>
               <View style={styles.hostProfileRow}>
                 <Image
@@ -1002,7 +971,6 @@ export default function Room({
               />
             </View>
 
-            {/* Episode Selection Header + Select All */}
             <View style={styles.epSelectHeaderRow}>
               <Text style={styles.sectionTitle}>
                 Select Episodes ({selectedCount}/{allEpisodes.length})
@@ -1017,7 +985,6 @@ export default function Room({
               </TouchableOpacity>
             </View>
 
-            {/* 1–50 Rectangular Chunk Pills for Longer Series */}
             {episodeChunks.length > 1 && (
               <View style={{ marginBottom: 10 }}>
                 <FlatList
@@ -1044,7 +1011,6 @@ export default function Room({
               </View>
             )}
 
-            {/* Episode Grid */}
             {loadingEpisodes ? (
               <ActivityIndicator size="small" color={PURE_RED} style={{ marginTop: 30 }} />
             ) : (
@@ -1071,7 +1037,6 @@ export default function Room({
               </ScrollView>
             )}
 
-            {/* Create Button */}
             <TouchableOpacity
               style={[
                 styles.primaryActionBtn,
@@ -1090,7 +1055,6 @@ export default function Room({
             </TouchableOpacity>
           </View>
         ) : (
-          /* JOIN ROOM TAB */
           <View style={{ flex: 1, paddingHorizontal: 16 }}>
             <View style={styles.setupCard}>
               <Text style={styles.inputLabel}>Alphanumeric Room Code</Text>
@@ -1134,7 +1098,7 @@ export default function Room({
   }
 
   // ============================================================================
-  // RENDER 2: ACTIVE ROOM SCREEN (HEADER, MEMBERS SLIDER, CHOSEN EPISODES, PLAYER + CHAT)
+  // RENDER 2: ACTIVE ROOM SCREEN
   // ============================================================================
   const roomEpisodes = activeRoomData?.episodes || [];
 
@@ -1145,7 +1109,6 @@ export default function Room({
     >
       <StatusBar hidden={true} />
 
-      {/* 1. TOP BAR: Back Button + Anime Title + Mic Controls + Vertical "..." Settings Button */}
       <View style={styles.headerBar}>
         <TouchableOpacity style={styles.iconCircleBtn} onPress={handleLeaveOrCloseRoom}>
           <IconBack />
@@ -1161,7 +1124,6 @@ export default function Room({
         </View>
 
         <View style={styles.headerRightActions}>
-          {/* Mute / Unmute Self Mic Button */}
           <TouchableOpacity
             style={[
               styles.iconCircleBtn,
@@ -1173,7 +1135,6 @@ export default function Room({
             {isMicMuted ? <IconMicOff size={17} /> : <IconMicOn size={17} />}
           </TouchableOpacity>
 
-          {/* Mute Everyone For Me Button */}
           <TouchableOpacity
             style={styles.iconCircleBtn}
             onPress={() => setMuteEveryoneForMe(!muteEveryoneForMe)}
@@ -1181,7 +1142,6 @@ export default function Room({
             {muteEveryoneForMe ? <IconSpeakerMuted size={17} /> : <IconSpeakerOn size={17} />}
           </TouchableOpacity>
 
-          {/* Vertical "..." Settings Button */}
           <TouchableOpacity
             style={styles.iconCircleBtn}
             onPress={() => setSettingsMenuVisible(true)}
@@ -1191,7 +1151,6 @@ export default function Room({
         </View>
       </View>
 
-      {/* 2. SYNCED EPISODE VIDEO PLAYER + LIVE CHAT WHEN EPISODE IS PLAYING */}
       {playingEpisode && (
         <View style={styles.roomPlayerSection}>
           <View style={styles.videoBox}>
@@ -1215,7 +1174,6 @@ export default function Room({
                 useNativeControls={true}
                 resizeMode={ResizeMode.CONTAIN}
                 shouldPlay={true}
-                isMuted={muteEveryoneForMe ? false : false}
                 onPlaybackStatusUpdate={(st) => {
                   setVideoStatus(st);
                   if (
@@ -1224,7 +1182,6 @@ export default function Room({
                     !isSyncingVideoRef.current &&
                     roomCode
                   ) {
-                    // Admin broadcasts play/pause state periodically
                     if (st.didJustFinish) {
                       const currIdx = roomEpisodes.findIndex(
                         (e) => Number(e.num) === Number(playingEpisode.num)
@@ -1242,7 +1199,6 @@ export default function Room({
               </View>
             )}
 
-            {/* Floating Player Bar with Live Chat Toggle & Sync Button */}
             <View style={styles.playerOverlayStrip}>
               <Text style={styles.nowPlayingStripText} numberOfLines={1}>
                 Now Playing: Ep {playingEpisode.num} • {playingEpisode.title}
@@ -1259,7 +1215,6 @@ export default function Room({
             </View>
           </View>
 
-          {/* LIVE CHAT SYSTEM WHILE EPISODE IS PLAYING */}
           {chatVisible && (
             <View style={styles.liveChatPanel}>
               <FlatList
@@ -1316,7 +1271,6 @@ export default function Room({
         </View>
       )}
 
-      {/* 3. JOINED MEMBERS HORIZONTAL SLIDER */}
       <View style={styles.membersSliderSection}>
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>
@@ -1353,14 +1307,12 @@ export default function Room({
                     style={styles.memberAvatarImg}
                   />
 
-                  {/* ADMIN TAG ON ADMIN */}
                   {item.isAdmin && (
                     <View style={styles.memberAdminRibbon}>
                       <Text style={styles.memberAdminRibbonText}>ADMIN</Text>
                     </View>
                   )}
 
-                  {/* Mic Status Badge on Avatar */}
                   <View
                     style={[
                       styles.memberMicBadge,
@@ -1374,7 +1326,6 @@ export default function Room({
                     )}
                   </View>
 
-                  {/* Admin Delete / Kick User Button */}
                   {isCurrentUserAdmin && !isMe && (
                     <TouchableOpacity
                       style={styles.kickMemberBtn}
@@ -1394,7 +1345,6 @@ export default function Room({
         />
       </View>
 
-      {/* 4. CHOSEN EPISODES LIST BELOW MEMBERS SLIDER */}
       <View style={styles.roomEpisodesSection}>
         <Text style={[styles.sectionTitle, { paddingHorizontal: 16, marginBottom: 10 }]}>
           Room Episodes ({roomEpisodes.length})
@@ -1433,9 +1383,6 @@ export default function Room({
         />
       </View>
 
-      {/* ============================================================================ */}
-      {/* VERTICAL "..." SETTINGS MODAL (Invite, Mic Controls, Leave / Close Room) */}
-      {/* ============================================================================ */}
       <Modal
         visible={settingsMenuVisible}
         transparent={true}
@@ -1460,7 +1407,6 @@ export default function Room({
               </TouchableOpacity>
             </View>
 
-            {/* Invite Option -> Opens QR & Alphanumeric Code Modal */}
             <TouchableOpacity
               style={styles.settingsItemRow}
               onPress={() => {
@@ -1472,7 +1418,6 @@ export default function Room({
               <Text style={styles.settingsItemText}>Invite (QR & Room Code)</Text>
             </TouchableOpacity>
 
-            {/* Mute / Unmute Myself */}
             <TouchableOpacity
               style={styles.settingsItemRow}
               onPress={() => {
@@ -1486,7 +1431,6 @@ export default function Room({
               </Text>
             </TouchableOpacity>
 
-            {/* Mute Everyone For Me */}
             <TouchableOpacity
               style={styles.settingsItemRow}
               onPress={() => {
@@ -1504,7 +1448,6 @@ export default function Room({
               </Text>
             </TouchableOpacity>
 
-            {/* Leave Room (Viewers) OR Close Room (Admin) */}
             <TouchableOpacity
               style={[styles.settingsItemRow, { borderBottomWidth: 0 }]}
               onPress={handleLeaveOrCloseRoom}
@@ -1518,9 +1461,6 @@ export default function Room({
         </View>
       </Modal>
 
-      {/* ============================================================================ */}
-      {/* INVITE MODAL (QR CODE + ALPHANUMERIC CODE + COPY + "×" SVG CLOSE BUTTON) */}
-      {/* ============================================================================ */}
       <Modal
         visible={inviteModalVisible}
         transparent={true}
@@ -1529,7 +1469,6 @@ export default function Room({
       >
         <View style={styles.modalBackdrop}>
           <View style={styles.inviteCard}>
-            {/* Top Header with "×" SVG Close Button */}
             <View style={styles.inviteHeaderRow}>
               <Text style={styles.inviteTitle}>Invite to Watch Room</Text>
               <TouchableOpacity
@@ -1544,7 +1483,6 @@ export default function Room({
               Scan this QR code or enter the alphanumeric code to join {animeTitle}
             </Text>
 
-            {/* QR Code Box */}
             <View style={styles.qrFrameBox}>
               {qrCodeImageUrl ? (
                 <Image
@@ -1555,7 +1493,6 @@ export default function Room({
               ) : null}
             </View>
 
-            {/* Alphanumeric Room Code + Copy Button */}
             <Text style={styles.codeLabel}>ALPHANUMERIC ROOM CODE</Text>
             <View style={styles.codeDisplayRow}>
               <Text style={styles.codeBigText}>{roomCode}</Text>
@@ -1566,7 +1503,7 @@ export default function Room({
               >
                 <IconCopy size={16} color={WHITE} />
                 <Text style={styles.copyCodeBtnText}>
-                  {copiedFeedback ? 'Copied!' : 'Copy'}
+                  {copiedFeedback ? 'Shared!' : 'Share / Copy'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1588,8 +1525,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: BLACK,
   },
-
-  // Top Header Bar
   headerBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1640,8 +1575,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-
-  // Setup Mode Tabs
   modeTabsRow: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -1671,8 +1604,6 @@ const styles = StyleSheet.create({
     color: WHITE,
     fontWeight: '900',
   },
-
-  // Setup Form Card
   setupCard: {
     backgroundColor: CARD_BG,
     borderRadius: 12,
@@ -1736,8 +1667,6 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     textAlign: 'center',
   },
-
-  // Episode Selector in Setup
   epSelectHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1827,8 +1756,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '900',
   },
-
-  // In-Room Video Player + Live Chat
   roomPlayerSection: {
     width: '100%',
     backgroundColor: CARD_BG,
@@ -1885,8 +1812,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '800',
   },
-
-  // Live Chat Panel
   liveChatPanel: {
     height: 175,
     backgroundColor: '#0A0A0E',
@@ -1974,8 +1899,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-
-  // Joined Members Horizontal Slider
   membersSliderSection: {
     paddingVertical: 12,
     borderBottomWidth: 1,
@@ -2065,8 +1988,6 @@ const styles = StyleSheet.create({
     marginTop: 7,
     textAlign: 'center',
   },
-
-  // Chosen Room Episodes List
   roomEpisodesSection: {
     flex: 1,
     paddingTop: 12,
@@ -2110,8 +2031,6 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     marginTop: 2,
   },
-
-  // Modals (Settings & Invite)
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.82)',
@@ -2160,8 +2079,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-
-  // Invite Modal (QR + Alphanumeric Code)
   inviteCard: {
     width: '100%',
     maxWidth: 380,
