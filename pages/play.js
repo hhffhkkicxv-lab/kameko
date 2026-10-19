@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, Dimensions, 
-  TouchableOpacity, Share, StatusBar, 
-  ActivityIndicator, FlatList, Modal, ScrollView, Alert 
+  TouchableOpacity, StatusBar, 
+  ActivityIndicator, FlatList, Modal, ScrollView 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -12,8 +12,8 @@ import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
 import Player from './play/player';
-import ShareModalComponent from '../components/share';
-import RoomModalComponent from '../components/room';
+import ShareSheetComponent from '../components/ShareSheet';
+import RoomComponent from '../components/room';
 
 const { width, height } = Dimensions.get('window');
 const BRAND_RED = '#E50914';
@@ -276,7 +276,7 @@ export default function Play({
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
 
-  // --- DOWNLOAD SHEET STATES (Supports Single Episode Direct OR Multi-Episode Selector) ---
+  // --- DOWNLOAD SHEET STATES ---
   const [downloadModalVisible, setDownloadModalVisible] = useState(false);
   const [isSingleEpisodeDownload, setIsSingleEpisodeDownload] = useState(false);
   const [downloadTargetEp, setDownloadTargetEp] = useState(null);
@@ -292,7 +292,6 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
-  // Show phone's bottom navigation bar while keeping top notification bar hidden when Download Menu is open
   useEffect(() => {
     const syncSystemBars = async () => {
       try {
@@ -305,7 +304,6 @@ export default function Play({
     syncSystemBars();
   }, [downloadModalVisible]);
 
-  // --- LOAD & SAVE PREFERENCES IN LOCAL STORAGE ---
   const updateLocalPreferences = useCallback(async (patch) => {
     const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const merged = {
@@ -363,7 +361,7 @@ export default function Play({
     });
   }, [animeDocId, resolvedTitle, updateLocalPreferences]);
 
-  // 1. Firebase Watch History & Watchlist Listener
+  // Firebase Watch History & Watchlist Listener
   useEffect(() => {
     if (!resolvedUid) return;
 
@@ -471,7 +469,7 @@ export default function Play({
     }
   };
 
-  // --- UNIFIED DOWNLOAD OPTIONS RESOLVER (Subtitles Available in Both SUB & DUB) ---
+  // --- UNIFIED DOWNLOAD OPTIONS RESOLVER ---
   const fetchUnifiedDownloadOptions = useCallback(async (epItem, audioType) => {
     if (!epItem) return;
     setIsFetchingDownloadData(true);
@@ -624,7 +622,7 @@ export default function Play({
     }
   }, [vercelAnimeId, animeDocId]);
 
-  // A. Single Episode Download (From Episode List Icon -> Skips Choose Episodes Module!)
+  // A. Single Episode Download (From Episode List Icon -> Skips Step 1 completely)
   const handleOpenSingleEpisodeDownload = async (episodeItem) => {
     if (!episodeItem) return;
     const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
@@ -634,7 +632,7 @@ export default function Play({
     setDownloadTargetEp(episodeItem);
     setSelectedEpNumsMap({ [episodeItem.num]: true });
     setSelectedDownloadType(initialAudio);
-    setDownloadStep(2);
+    setDownloadStep(2); // Directly opens step 2 (Audio, Subtitles, Quality)
     setDownloadModalVisible(true);
     fetchUnifiedDownloadOptions(episodeItem, initialAudio);
   };
@@ -650,34 +648,8 @@ export default function Play({
     setSelectedEpNumsMap({ [initialEp.num]: true });
     setDownloadChunkIndex(currentChunkIndex);
     setSelectedDownloadType(initialAudio);
-    setDownloadStep(1);
+    setDownloadStep(1); // Shows Episode Selector (Step 1)
     setDownloadModalVisible(true);
-  };
-
-  const handleProceedFromMultiEpStep = () => {
-    const selectedNums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
-    if (selectedNums.length === 0) return;
-
-    const firstEpObj =
-      episodes.find((e) => String(e.num) === String(selectedNums[0])) ||
-      downloadTargetEp ||
-      episodes[0];
-
-    setDownloadTargetEp(firstEpObj);
-    setDownloadStep(2);
-    fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType);
-  };
-
-  const handleSwitchDownloadAudioType = (type) => {
-    setSelectedDownloadType(type);
-    updateLocalPreferences({ preferredDownloadType: type });
-    const refEp =
-      downloadTargetEp ||
-      episodes.find((e) => selectedEpNumsMap[e.num]) ||
-      episodes[0];
-    if (refEp) {
-      fetchUnifiedDownloadOptions(refEp, type);
-    }
   };
 
   const handleConfirmDownloadFinal = async () => {
@@ -1410,7 +1382,7 @@ export default function Play({
                   )}
                 </TouchableOpacity>
 
-                {/* Single Episode Download Button -> Skips Choose Episodes Module! */}
+                {/* Single Episode Download Button -> Skips Step 1 completely! */}
                 <TouchableOpacity
                   style={styles.downloadIconBtn}
                   activeOpacity={0.7}
@@ -1422,7 +1394,7 @@ export default function Play({
             );
           }
 
-          // GRID CARD FOR "MORE LIKE THIS" STYLED LIKE RecentSlider.js
+          // GRID CARD FOR "MORE LIKE THIS"
           const isAdded = librarySet.has(String(item.id));
           return (
             <TouchableOpacity
@@ -1465,7 +1437,7 @@ export default function Play({
         showsVerticalScrollIndicator={false}
       />
 
-      {/* --- TOP VERTICAL "..." MENU MODAL (Add to List, Download, Share, Room) --- */}
+      {/* --- TOP VERTICAL "..." MENU MODAL --- */}
       <Modal
         visible={topMenuVisible}
         transparent={true}
@@ -1524,7 +1496,7 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* SHARE.JS COMPONENT MODAL */}
+      {/* SHARE MODAL */}
       <Modal
         visible={shareModalVisible}
         animationType="slide"
@@ -1544,7 +1516,7 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* ROOM.JS COMPONENT MODAL */}
+      {/* ROOM MODAL */}
       <Modal
         visible={roomModalVisible}
         animationType="slide"
@@ -1609,7 +1581,7 @@ export default function Play({
               </TouchableOpacity>
             </View>
 
-            {/* STEP 1: MULTI-EPISODE SELECTOR (ONLY FOR MULTI-DOWNLOAD) */}
+            {/* STEP 1: MULTI-EPISODE SELECTOR (ONLY SHOWN FOR MULTI-DOWNLOAD) */}
             {!isSingleEpisodeDownload && downloadStep === 1 && (
               <View style={{ flex: 1 }}>
                 <View style={styles.multiEpSelectTopBar}>
@@ -1715,7 +1687,7 @@ export default function Play({
               </View>
             )}
 
-            {/* STEP 2: AUDIO, SUBTITLES & QUALITY */}
+            {/* STEP 2: AUDIO, SUBTITLES & QUALITY (SKIPS STEP 1 FOR SINGLE EPISODE DOWNLOADS) */}
             {(isSingleEpisodeDownload || downloadStep === 2) && (
               <View style={{ flex: 1 }}>
                 <ScrollView
