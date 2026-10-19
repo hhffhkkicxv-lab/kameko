@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, Dimensions, 
-  TouchableOpacity, StatusBar, 
+  TouchableOpacity, Share, StatusBar, 
   ActivityIndicator, FlatList, Modal, ScrollView 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
@@ -12,8 +12,8 @@ import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
 import Player from './play/player';
-import ShareSheetComponent from '../components/ShareSheet';
-import RoomComponent from '../components/room';
+import * as ShareSheetModule from '../components/ShareSheet';
+import * as RoomModule from '../components/room';
 
 const { width, height } = Dimensions.get('window');
 const BRAND_RED = '#E50914';
@@ -35,6 +35,19 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
+// Safely extract a valid React component from a module import (prevents "Element type is invalid" crash)
+const resolveValidComponent = (mod) => {
+  if (!mod) return null;
+  if (typeof mod === 'function') return mod;
+  if (typeof mod.default === 'function') return mod.default;
+  if (typeof mod.ShareSheet === 'function') return mod.ShareSheet;
+  if (typeof mod.Room === 'function') return mod.Room;
+  return null;
+};
+
+const ResolvedShareComp = resolveValidComponent(ShareSheetModule);
+const ResolvedRoomComp = resolveValidComponent(RoomModule);
+
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -53,7 +66,7 @@ const readLocalJson = async (fileUri, fallback = {}) => {
   try {
     if (fileUri) {
       const info = await FileSystem.getInfoAsync(fileUri);
-      if (info.exists) {
+      if (info?.exists) {
         const raw = await FileSystem.readAsStringAsync(fileUri);
         if (raw) return JSON.parse(raw);
       }
@@ -146,9 +159,9 @@ export default function Play({
   const [currentAnime, setCurrentAnime] = useState(initialAnime);
 
   useEffect(() => {
-    if (propAnime?.id || propAnime?.animeId) {
+    if (propAnime && (propAnime.id || propAnime.animeId)) {
       setCurrentAnime(propAnime);
-    } else if (routeParams.anime?.id) {
+    } else if (routeParams.anime && (routeParams.anime.id || routeParams.anime.animeId)) {
       setCurrentAnime(routeParams.anime);
     }
   }, [propAnime, routeParams.anime]);
@@ -236,14 +249,17 @@ export default function Play({
     return () => { isMounted = false; };
   }, [resolvedUid, resolvedProfileId]);
 
-  const animeDocId = String(currentAnime.animeId || currentAnime.id);
-  const resolvedTitle = currentAnime.animeTitle || currentAnime.title || 'Unknown';
-  const resolvedBackdrop =
-    currentAnime.backdropUrl ||
-    currentAnime.animeBackdrop ||
-    currentAnime.backdrop ||
-    currentAnime.coverImage ||
-    '';
+  // Crash-safe string resolutions
+  const animeDocId = String(currentAnime?.animeId || currentAnime?.id || 'solo-leveling');
+  const resolvedTitle = String(currentAnime?.animeTitle || currentAnime?.title || 'Anime');
+  const resolvedBackdrop = String(
+    currentAnime?.backdropUrl ||
+    currentAnime?.animeBackdrop ||
+    currentAnime?.backdrop ||
+    currentAnime?.coverImage ||
+    currentAnime?.image ||
+    ''
+  );
 
   const [activeTab, setActiveTab] = useState('episodes'); 
   const [descExpanded, setDescExpanded] = useState(false);
@@ -257,8 +273,12 @@ export default function Play({
 
   // TMDB Metadata
   const [titleLogo, setTitleLogo] = useState(null);
-  const [tmdbSynopsis, setTmdbSynopsis] = useState(currentAnime.description);
-  const [isUpcoming, setIsUpcoming] = useState(currentAnime.status?.toUpperCase() === 'UPCOMING');
+  const [tmdbSynopsis, setTmdbSynopsis] = useState(
+    String(currentAnime?.description || 'Watch all episodes in HD.')
+  );
+  const [isUpcoming, setIsUpcoming] = useState(
+    String(currentAnime?.status || '').toUpperCase() === 'UPCOMING'
+  );
 
   // Episodes List & Pagination
   const [vercelAnimeId, setVercelAnimeId] = useState(animeDocId);
@@ -282,7 +302,7 @@ export default function Play({
   const [downloadTargetEp, setDownloadTargetEp] = useState(null);
   const [selectedEpNumsMap, setSelectedEpNumsMap] = useState({});
   const [downloadChunkIndex, setDownloadChunkIndex] = useState(0);
-  const [downloadStep, setDownloadStep] = useState(1); // 1: Select Episodes, 2: Audio + Sub + Quality
+  const [downloadStep, setDownloadStep] = useState(1);
   const [selectedDownloadType, setSelectedDownloadType] = useState('sub');
   const [downloadSubTracks, setDownloadSubTracks] = useState([]);
   const [selectedSubTrack, setSelectedSubTrack] = useState(null);
@@ -292,11 +312,25 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
+  // Safe Share handler (uses ShareSheet component if valid, otherwise native Share)
+  const handleTriggerShare = async () => {
+    if (ResolvedShareComp) {
+      setShareModalVisible(true);
+      return;
+    }
+    try {
+      await Share.share({
+        message: `Watch ${resolvedTitle} on Kameko!`,
+      });
+    } catch (_) {}
+  };
+
+  // Show phone's bottom navigation bar while keeping top notification bar hidden when Download Menu is open
   useEffect(() => {
     const syncSystemBars = async () => {
       try {
         StatusBar.setHidden(true, 'none');
-        if (downloadModalVisible) {
+        if (downloadModalVisible && NavigationBar?.setVisibilityAsync) {
           await NavigationBar.setVisibilityAsync('visible');
         }
       } catch (_) {}
@@ -304,14 +338,15 @@ export default function Play({
     syncSystemBars();
   }, [downloadModalVisible]);
 
+  // --- LOAD & SAVE PREFERENCES IN LOCAL STORAGE ---
   const updateLocalPreferences = useCallback(async (patch) => {
     const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const merged = {
       ...existing,
       ...patch,
       selectedChunksByAnime: {
-        ...(existing.selectedChunksByAnime || {}),
-        ...(patch.selectedChunksByAnime || {}),
+        ...(existing?.selectedChunksByAnime || {}),
+        ...(patch?.selectedChunksByAnime || {}),
       },
       updatedAt: Date.now(),
     };
@@ -361,7 +396,7 @@ export default function Play({
     });
   }, [animeDocId, resolvedTitle, updateLocalPreferences]);
 
-  // Firebase Watch History & Watchlist Listener
+  // 1. Firebase Watch History & Watchlist Listener
   useEffect(() => {
     if (!resolvedUid) return;
 
@@ -394,6 +429,7 @@ export default function Play({
         let latest = null;
         snapshot.forEach((doc) => {
           const data = doc.data();
+          if (!data) return;
           const epKey = String(data.slug || data.episodeNum || data.lastWatchedEp || '');
           if (epKey) pMap[epKey] = data;
           if (data.episodeNum) pMap[`ep_${data.episodeNum}`] = data;
@@ -437,10 +473,10 @@ export default function Play({
         id: animeDocId,
         animeId: animeDocId,
         title: resolvedTitle,
-        img: currentAnime.coverImage || resolvedBackdrop,
+        img: currentAnime?.coverImage || resolvedBackdrop,
         backdrop: resolvedBackdrop,
         profileId: resolvedProfileId,
-        addedAt: firestore.FieldValue.serverTimestamp()
+        addedAt: Date.now(),
       }).catch(() => {});
     }
   };
@@ -460,11 +496,11 @@ export default function Play({
       await ref.set({
         id: targetId,
         animeId: targetId,
-        title: cardItem.title,
-        img: cardItem.coverImage || cardItem.image || cardItem.backdrop,
-        backdrop: cardItem.backdrop || cardItem.coverImage || cardItem.image,
+        title: String(cardItem.title || 'Anime'),
+        img: String(cardItem.coverImage || cardItem.image || cardItem.backdrop || ''),
+        backdrop: String(cardItem.backdrop || cardItem.coverImage || cardItem.image || ''),
         profileId: resolvedProfileId,
-        addedAt: firestore.FieldValue.serverTimestamp(),
+        addedAt: Date.now(),
       }).catch(() => {});
     }
   };
@@ -476,7 +512,7 @@ export default function Play({
 
     try {
       const safeId = encodeURIComponent(vercelAnimeId || animeDocId);
-      const safeEp = encodeURIComponent(String(epItem.slug || epItem.num));
+      const safeEp = encodeURIComponent(String(epItem.slug || epItem.num || 1));
       const servers = ['hd-1', 'hd-2', 'vidstream-2'];
 
       let targetMasterUrl = null;
@@ -622,7 +658,7 @@ export default function Play({
     }
   }, [vercelAnimeId, animeDocId]);
 
-  // A. Single Episode Download (From Episode List Icon -> Skips Step 1 completely)
+  // A. Single Episode Download (Skips Choose Episodes Module)
   const handleOpenSingleEpisodeDownload = async (episodeItem) => {
     if (!episodeItem) return;
     const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
@@ -632,7 +668,7 @@ export default function Play({
     setDownloadTargetEp(episodeItem);
     setSelectedEpNumsMap({ [episodeItem.num]: true });
     setSelectedDownloadType(initialAudio);
-    setDownloadStep(2); // Directly opens step 2 (Audio, Subtitles, Quality)
+    setDownloadStep(2);
     setDownloadModalVisible(true);
     fetchUnifiedDownloadOptions(episodeItem, initialAudio);
   };
@@ -648,8 +684,20 @@ export default function Play({
     setSelectedEpNumsMap({ [initialEp.num]: true });
     setDownloadChunkIndex(currentChunkIndex);
     setSelectedDownloadType(initialAudio);
-    setDownloadStep(1); // Shows Episode Selector (Step 1)
+    setDownloadStep(1);
     setDownloadModalVisible(true);
+  };
+
+  const handleSwitchDownloadAudioType = (type) => {
+    setSelectedDownloadType(type);
+    updateLocalPreferences({ preferredDownloadType: type });
+    const refEp =
+      downloadTargetEp ||
+      episodes.find((e) => selectedEpNumsMap[e.num]) ||
+      episodes[0];
+    if (refEp) {
+      fetchUnifiedDownloadOptions(refEp, type);
+    }
   };
 
   const handleConfirmDownloadFinal = async () => {
@@ -684,18 +732,18 @@ export default function Play({
         animeId: animeDocId,
         animeTitle: resolvedTitle,
         backdrop: resolvedBackdrop,
-        coverImage: currentAnime.coverImage || resolvedBackdrop,
-        synopsis: tmdbSynopsis || currentAnime.description || '',
-        genres: Array.isArray(currentAnime.genres) ? currentAnime.genres : ['Action', 'Adventure'],
+        coverImage: String(currentAnime?.coverImage || resolvedBackdrop || ''),
+        synopsis: String(tmdbSynopsis || currentAnime?.description || ''),
+        genres: Array.isArray(currentAnime?.genres) ? currentAnime.genres : ['Action', 'Adventure'],
         totalEpisodes: episodes.length || 12,
         episodeNum: epNum,
-        episodeTitle: epObj.title || `Episode ${epNum}`,
+        episodeTitle: String(epObj.title || `Episode ${epNum}`),
         slug: String(epObj.slug || epNum),
         audioType: selectedDownloadType,
         subtitle: {
-          label: selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off',
+          label: String(selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off'),
           file: isSameAsFetchedTarget ? selectedSubTrack?.file || null : null,
-          lang: selectedSubTrack?.lang || 'none',
+          lang: String(selectedSubTrack?.lang || 'none'),
         },
         quality: finalQuality.label,
         streamUri: isSameAsFetchedTarget ? finalQuality.uri || null : null,
@@ -740,8 +788,9 @@ export default function Play({
     let isMounted = true;
     const loadTMDB = async () => {
       try {
-        const cleanTitle = resolvedTitle.replace(/\(Dub\)|\(Sub\)/gi, '').trim();
-        const searchType = currentAnime.format === 'MOVIE' ? 'movie' : 'tv';
+        const cleanTitle = String(resolvedTitle || '').replace(/\(Dub\)|\(Sub\)/gi, '').trim();
+        if (!cleanTitle) return;
+        const searchType = currentAnime?.format === 'MOVIE' ? 'movie' : 'tv';
         const tmdbRes = await fetchWithTimeout(
           `https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`
         );
@@ -764,6 +813,7 @@ export default function Play({
 
     const loadRelationsAndMoreLikeThis = async () => {
       try {
+        if (!resolvedTitle) return;
         const aniQuery = `
           query ($search: String) {
             Media (search: $search, type: ANIME) {
@@ -845,9 +895,9 @@ export default function Play({
               score: node.averageScore || 85,
               year: node.seasonYear || '',
               status: node.status || 'FINISHED',
-              relationType: relType.replace(/_/g, ' '),
+              relationType: String(relType).replace(/_/g, ' '),
               priority: relationPriority[relType] || 99,
-              description: node.description ? node.description.replace(/<[^>]*>/g, '') : '',
+              description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
             };
           })
           .sort((a, b) => a.priority - b.priority);
@@ -871,7 +921,7 @@ export default function Play({
             year: node.seasonYear || '',
             status: node.status || 'FINISHED',
             relationType: node.format || 'TV',
-            description: node.description ? node.description.replace(/<[^>]*>/g, '') : '',
+            description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
           })),
           ...formattedRelations,
         ];
@@ -898,7 +948,7 @@ export default function Play({
     loadTMDB();
     loadRelationsAndMoreLikeThis();
     return () => { isMounted = false; };
-  }, [resolvedTitle, currentAnime.format]);
+  }, [resolvedTitle, currentAnime?.format]);
 
   // 3. Fetch Flat Episodes
   useEffect(() => {
@@ -917,8 +967,8 @@ export default function Play({
         const searchJson = await searchRes.json();
         const matches = searchJson?.data || [];
         if (matches.length > 0) {
-          const exact = matches.find((m) => (m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
-          targetId = exact.id;
+          const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
+          if (exact?.id) targetId = exact.id;
         }
         if (isMounted) setVercelAnimeId(targetId);
 
@@ -929,10 +979,10 @@ export default function Play({
         if (isMounted && Array.isArray(list)) {
           const formatted = list.map((ep, idx) => ({
             id: String(ep.id || idx + 1),
-            slug: String(ep.slug || ep.id || ep.num),
-            num: ep.num || (idx + 1),
+            slug: String(ep.slug || ep.id || ep.num || idx + 1),
+            num: Number(ep.num || idx + 1),
             title: ep.title || `Episode ${ep.num || idx + 1}`,
-            isFiller: ep.isFiller || false,
+            isFiller: Boolean(ep.isFiller),
             isSub: ep.isSub ?? true,
             isDub: ep.isDub ?? false,
           }));
@@ -1001,7 +1051,7 @@ export default function Play({
         animeBackdrop: resolvedBackdrop,
         backdropUrl: resolvedBackdrop,
         backdrop: resolvedBackdrop,
-        coverImage: currentAnime.coverImage || resolvedBackdrop,
+        coverImage: currentAnime?.coverImage || resolvedBackdrop,
         episodeNum: Number(episodeItem.num),
         episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`,
         epTitle: episodeItem.title || `Episode ${episodeItem.num}`,
@@ -1017,7 +1067,7 @@ export default function Play({
         profileId: resolvedProfileId,
         activeProfile: resolvedProfile,
         currentProfile: resolvedProfile,
-        targetType: currentAnime.targetType || 'sub',
+        targetType: currentAnime?.targetType || 'sub',
       };
 
       await updateLocalPreferences({
@@ -1108,7 +1158,7 @@ export default function Play({
     <View style={styles.heroSection}>
       <View style={styles.backdropBox}>
         <ProxyImage
-          source={{ uri: resolvedBackdrop || currentAnime.coverImage }}
+          source={{ uri: resolvedBackdrop || currentAnime?.coverImage }}
           style={styles.backdropImg}
           resizeMode="cover"
         />
@@ -1135,8 +1185,8 @@ export default function Play({
 
         <View style={styles.badgesRow}>
           <View style={styles.newBadge}><Text style={styles.newBadgeText}>New Episode</Text></View>
-          <View style={styles.ratingBadge}><Text style={styles.ratingBadgeText}>{currentAnime.rating || 'U/A 13+'}</Text></View>
-          <Text style={styles.scoreText}>★ {currentAnime.score || 85}%</Text>
+          <View style={styles.ratingBadge}><Text style={styles.ratingBadgeText}>{currentAnime?.rating || 'U/A 13+'}</Text></View>
+          <Text style={styles.scoreText}>★ {currentAnime?.score || 85}%</Text>
         </View>
 
         <TouchableOpacity
@@ -1173,7 +1223,7 @@ export default function Play({
             <IconDownload />
             <Text style={styles.actionTabText}>Download</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.actionTab} onPress={() => setShareModalVisible(true)} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.actionTab} onPress={handleTriggerShare} activeOpacity={0.7}>
             <IconShare />
             <Text style={styles.actionTabText}>Share</Text>
           </TouchableOpacity>
@@ -1306,9 +1356,6 @@ export default function Play({
   const selectedDownloadCount = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]).length;
   const isAllEpisodesSelected = episodes.length > 0 && selectedDownloadCount === episodes.length;
 
-  const ResolvedShareComp = ShareModalComponent?.default || ShareModalComponent;
-  const ResolvedRoomComp = RoomModalComponent?.default || RoomModalComponent;
-
   return (
     <View style={styles.screenContainer}>
       <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1382,7 +1429,7 @@ export default function Play({
                   )}
                 </TouchableOpacity>
 
-                {/* Single Episode Download Button -> Skips Step 1 completely! */}
+                {/* Single Episode Download Button -> Skips Choose Episodes Module! */}
                 <TouchableOpacity
                   style={styles.downloadIconBtn}
                   activeOpacity={0.7}
@@ -1437,7 +1484,7 @@ export default function Play({
         showsVerticalScrollIndicator={false}
       />
 
-      {/* --- TOP VERTICAL "..." MENU MODAL --- */}
+      {/* --- TOP VERTICAL "..." MENU MODAL (Add to List, Download, Share, Room) --- */}
       <Modal
         visible={topMenuVisible}
         transparent={true}
@@ -1477,7 +1524,7 @@ export default function Play({
               style={styles.topMenuItem} 
               onPress={() => {
                 setTopMenuVisible(false);
-                setShareModalVisible(true);
+                handleTriggerShare();
               }}
             >
               <Text style={styles.topMenuItemText}>Share</Text>
@@ -1496,35 +1543,36 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* SHARE MODAL */}
-      <Modal
-        visible={shareModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShareModalVisible(false)}
-      >
-        <View style={styles.fullscreenModalOverlay}>
-          {typeof ResolvedShareComp === 'function' ? (
+      {/* SHARE COMPONENT MODAL (Only renders if ShareSheet exports a valid React component) */}
+      {ResolvedShareComp ? (
+        <Modal
+          visible={shareModalVisible}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setShareModalVisible(false)}
+        >
+          <View style={styles.fullscreenModalOverlay}>
             <ResolvedShareComp
+              visible={shareModalVisible}
               anime={currentAnime}
               user={resolvedUser}
               activeProfile={resolvedProfile}
               onClose={() => setShareModalVisible(false)}
               onBack={() => setShareModalVisible(false)}
             />
-          ) : null}
-        </View>
-      </Modal>
+          </View>
+        </Modal>
+      ) : null}
 
-      {/* ROOM MODAL */}
-      <Modal
-        visible={roomModalVisible}
-        animationType="slide"
-        transparent={false}
-        onRequestClose={() => setRoomModalVisible(false)}
-      >
-        <View style={styles.fullscreenModalOverlay}>
-          {typeof ResolvedRoomComp === 'function' ? (
+      {/* ROOM COMPONENT MODAL */}
+      {ResolvedRoomComp ? (
+        <Modal
+          visible={roomModalVisible}
+          animationType="slide"
+          transparent={false}
+          onRequestClose={() => setRoomModalVisible(false)}
+        >
+          <View style={styles.fullscreenModalOverlay}>
             <ResolvedRoomComp
               anime={currentAnime}
               user={resolvedUser}
@@ -1532,9 +1580,9 @@ export default function Play({
               activeProfileId={resolvedProfileId}
               onBack={() => setRoomModalVisible(false)}
             />
-          ) : null}
-        </View>
-      </Modal>
+          </View>
+        </Modal>
+      ) : null}
 
       {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET --- */}
       <Modal
@@ -1545,7 +1593,9 @@ export default function Play({
         onShow={async () => {
           try {
             StatusBar.setHidden(true, 'none');
-            await NavigationBar.setVisibilityAsync('visible');
+            if (NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('visible');
+            }
           } catch (_) {}
         }}
         onRequestClose={() => setDownloadModalVisible(false)}
@@ -1581,7 +1631,7 @@ export default function Play({
               </TouchableOpacity>
             </View>
 
-            {/* STEP 1: MULTI-EPISODE SELECTOR (ONLY SHOWN FOR MULTI-DOWNLOAD) */}
+            {/* STEP 1: MULTI-EPISODE SELECTOR (ONLY FOR MULTI-DOWNLOAD) */}
             {!isSingleEpisodeDownload && downloadStep === 1 && (
               <View style={{ flex: 1 }}>
                 <View style={styles.multiEpSelectTopBar}>
@@ -1687,7 +1737,7 @@ export default function Play({
               </View>
             )}
 
-            {/* STEP 2: AUDIO, SUBTITLES & QUALITY (SKIPS STEP 1 FOR SINGLE EPISODE DOWNLOADS) */}
+            {/* STEP 2: AUDIO, SUBTITLES & QUALITY */}
             {(isSingleEpisodeDownload || downloadStep === 2) && (
               <View style={{ flex: 1 }}>
                 <ScrollView
