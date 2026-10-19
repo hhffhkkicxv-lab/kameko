@@ -1,22 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   SafeAreaView, StatusBar, StyleSheet, ActivityIndicator, 
-  View, Animated, Easing, Platform, Alert 
+  View, Animated, Easing, Platform 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import messaging from '@react-native-firebase/messaging';
 import * as Notifications from 'expo-notifications';
-import * as NavigationBar from 'expo-navigation-bar'; // <-- Added for Immersive Mode
+import * as NavigationBar from 'expo-navigation-bar';
 
 import Login from './pages/login';
 import Profiles from './pages/profile'; 
 import Home from './pages/home';
 
-// --- NEW NATIVE NOTIFEE ENGINE ---
+// --- NOTIFEE BACKGROUND NOTIFICATION ENGINE ---
 import { registerNotificationListener } from './components/NotificationEngine';
 
-// 1. Configure foreground notification behavior (Expo FCM)
+// 1. Configure foreground notification behavior
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -36,10 +36,10 @@ registerNotificationListener();
 export default function App() {
   const [initializing, setInitializing] = useState(true);
   const [user, setUser] = useState(null);
-  
+
   const [activeProfile, setActiveProfile] = useState(null);
   const [previousProfile, setPreviousProfile] = useState(null);
-  
+
   const [isAnimating, setIsAnimating] = useState(false);
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const opacityAnim = useRef(new Animated.Value(1)).current;
@@ -92,7 +92,6 @@ export default function App() {
         if (enabled) {
           const fcmToken = await messaging().getToken();
           if (fcmToken) {
-            // Save FCM token under the user document for targeted pushes
             await firestore().collection('users').doc(user.uid).set(
               {
                 fcmToken,
@@ -109,7 +108,6 @@ export default function App() {
 
     setupNotifications();
 
-    // Foreground notification listener
     const unsubscribeForeground = messaging().onMessage(async remoteMessage => {
       const { notification } = remoteMessage;
       if (notification) {
@@ -119,12 +117,11 @@ export default function App() {
             body: notification.body || '',
             data: remoteMessage.data || {},
           },
-          trigger: null, // show immediately
+          trigger: null,
         });
       }
     });
 
-    // Refresh token listener
     const unsubscribeTokenRefresh = messaging().onTokenRefresh(async (newToken) => {
       if (user) {
         await firestore().collection('users').doc(user.uid).set(
@@ -171,7 +168,7 @@ export default function App() {
   return (
     <SafeAreaView style={styles.trueBlackRoot}>
       <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-      
+
       {!user ? (
         <Login setLoggedInUser={setUser} />
       ) : (
