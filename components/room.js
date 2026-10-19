@@ -17,10 +17,13 @@ import {
   Platform,
   Dimensions,
 } from 'react-native';
-import { Video, Audio, ResizeMode } from 'expo-av';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path, Rect, Circle, Line, Polyline } from 'react-native-svg';
+import { createAgoraRtcEngine, ClientRoleType, CHANNEL_PROFILE_TYPE } from 'react-native-agora';
+
+// Load player from components/room/room_player.js
+import RoomPlayer from '../components/room/room_player';
 
 const { width } = Dimensions.get('window');
 
@@ -36,6 +39,9 @@ const EMERALD = '#10B981';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const EPISODE_CHUNK_SIZE = 50;
 
+// Replace with your Agora App ID from the Agora Console
+const AGORA_APP_ID = 'YOUR_AGORA_APP_ID_HERE';
+
 const AVATARS = {
   'pfp1.jpg': require('../assets/pfp1.jpg'),
   'pfp2.jpg': require('../assets/pfp2.jpg'),
@@ -45,7 +51,6 @@ const AVATARS = {
   'pfp6.jpg': require('../assets/pfp6.jpg'),
 };
 
-// Generate 6-character Alphanumeric Room Code
 const generateRoomCode = () => {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let result = '';
@@ -133,19 +138,6 @@ const IconPlay = ({ size = 16, color = WHITE }) => (
   </Svg>
 );
 
-const IconSend = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <Line x1="22" y1="2" x2="11" y2="13" />
-    <Path d="M22 2l-7 20-4-9-9-4 20-7z" />
-  </Svg>
-);
-
-const IconChat = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-  </Svg>
-);
-
 const IconQr = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <Rect x="3" y="3" width="7" height="7" />
@@ -188,7 +180,6 @@ export default function Room({
     () => propActiveProfileId || incomingProfile?.id || routeParams.activeProfileId || 'default'
   );
 
-  // Auto-resolve current profile from Firestore if not passed directly
   useEffect(() => {
     if (currentProfile?.id || !resolvedUid || resolvedUid === 'guest_uid') return;
     let isMounted = true;
@@ -230,52 +221,139 @@ export default function Room({
   const animeTitle = currentAnime.animeTitle || currentAnime.title || 'Anime Room';
   const animeCover = currentAnime.coverImage || currentAnime.backdrop || '';
 
-  // --- ROOM SETUP & NAVIGATION STATE ---
-  const [setupMode, setSetupMode] = useState('create'); // 'create' | 'join'
+  const [setupMode, setSetupMode] = useState('create');
   const [roomCode, setRoomCode] = useState(routeParams.roomCode || '');
   const [activeRoomData, setActiveRoomData] = useState(null);
   const [isInsideRoom, setIsInsideRoom] = useState(false);
   const [isCreatingOrJoining, setIsCreatingOrJoining] = useState(false);
 
-  // Setup Form States
   const [roomPasswordInput, setRoomPasswordInput] = useState('');
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [joinPasswordInput, setJoinPasswordInput] = useState('');
 
-  // Episodes Fetch & Multi-Select State (for Room Creation)
   const [allEpisodes, setAllEpisodes] = useState([]);
   const [loadingEpisodes, setLoadingEpisodes] = useState(true);
   const [providerAnimeId, setProviderAnimeId] = useState(animeDocId);
   const [selectedChunkIndex, setSelectedChunkIndex] = useState(0);
   const [selectedEpMap, setSelectedEpMap] = useState({});
 
-  // Modals in Active Room
   const [settingsMenuVisible, setSettingsMenuVisible] = useState(false);
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
 
-  // Voice / Mic & Mute Everyone States
+  // --- AGORA VOICE CHAT STATES ---
   const [isMicMuted, setIsMicMuted] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [muteEveryoneForMe, setMuteEveryoneForMe] = useState(false);
-  const recordingRef = useRef(null);
-  const lastSpeakingSyncRef = useRef(false);
+  const agoraEngineRef = useRef(null);
 
   // Active Episode Video Player + Live Chat State
   const [playingEpisode, setPlayingEpisode] = useState(null);
   const [streamUrl, setStreamUrl] = useState(null);
   const [streamReferer, setStreamReferer] = useState('https://vidwish.live/');
   const [loadingStream, setLoadingStream] = useState(false);
-  const [videoStatus, setVideoStatus] = useState({});
-  const [chatVisible, setChatVisible] = useState(true);
   const [chatMessages, setChatMessages] = useState([]);
-  const [chatInput, setChatInput] = useState('');
 
-  const videoRef = useRef(null);
-  const chatFlatListRef = useRef(null);
-  const isSyncingVideoRef = useRef(false);
+  // --- INITIALIZE AGORA RTC ENGINE ---
+  useEffect(() => {
+    let engine = null;
+    const initAgora = async () => {
+      try {
+        engine = createAgoraRtcEngine();
+        engine.initialize({ appId: AGORA_APP_ID });
+        engine.setChannelProfile(CHANNEL_PROFILE_TYPE.channelProfileLiveBroadcasting);
+        engine.enableAudio();
+        engine.enableAudioVolumeIndication(200, 3, true);
 
-  // 1. Fetch Series Episodes for Room Creation
+        engine.registerEventHandler({
+          onActiveSpeaker: (_, uid) => {
+            if (uid === 0) setIsSpeaking(true);
+          },
+          onAudioVolumeIndication: (_, speakers) => {
+            const speakingNow = speakers.some((s) => (s.volume || 0) > 10);
+            setIsSpeaking(speakingNow);
+          },
+        });
+
+        agoraEngineRef.current = engine;
+      } catch (e) {
+        console.warn('Agora Init Error:', e);
+      }
+    };
+
+    initAgora();
+
+    return () => {
+      try {
+        engine?.leaveChannel();
+        engine?.release();
+      } catch (_) {}
+    };
+  }, []);
+
+  // Join Agora Channel when inside room
+  useEffect(() => {
+    if (!isInsideRoom || !roomCode || !agoraEngineRef.current) return;
+    try {
+      const numericUid = Math.abs(
+        Array.from(memberKey).reduce((acc, char) => 0 | (31 * acc + char.charCodeAt(0)), 0)
+      ) % 100000;
+
+      agoraEngineRef.current.joinChannel('', String(roomCode), numericUid, {
+        clientRoleType: ClientRoleType.ClientRoleBroadcaster,
+      });
+      agoraEngineRef.current.muteLocalAudioStream(true);
+      setIsMicMuted(true);
+    } catch (e) {
+      console.warn('Agora Join Error:', e);
+    }
+
+    return () => {
+      try {
+        agoraEngineRef.current?.leaveChannel();
+      } catch (_) {}
+    };
+  }, [isInsideRoom, roomCode, memberKey]);
+
+  // Handle Mute / Unmute Mic with Agora
+  const handleToggleMic = async () => {
+    const nextMuted = !isMicMuted;
+    setIsMicMuted(nextMuted);
+
+    try {
+      if (agoraEngineRef.current) {
+        agoraEngineRef.current.muteLocalAudioStream(nextMuted);
+      }
+    } catch (_) {}
+
+    if (roomCode) {
+      firestore()
+        .collection('rooms')
+        .doc(roomCode)
+        .set(
+          {
+            membersMap: {
+              [memberKey]: {
+                isMuted: nextMuted,
+                isSpeaking: !nextMuted && isSpeaking,
+              },
+            },
+          },
+          { merge: true }
+        )
+        .catch(() => {});
+    }
+  };
+
+  // Handle Mute Everyone For Me
+  useEffect(() => {
+    if (!agoraEngineRef.current) return;
+    try {
+      agoraEngineRef.current.adjustPlaybackSignalVolume(muteEveryoneForMe ? 0 : 100);
+    } catch (_) {}
+  }, [muteEveryoneForMe]);
+
+  // Fetch Series Episodes for Room Creation
   useEffect(() => {
     let isMounted = true;
     const fetchSeriesEpisodes = async () => {
@@ -366,7 +444,7 @@ export default function Room({
     });
   };
 
-  // 2. Create Room in Firestore
+  // Create Room in Firestore
   const handleCreateRoom = async () => {
     const chosenList = Object.values(selectedEpMap).sort((a, b) => a.num - b.num);
     if (chosenList.length === 0) {
@@ -449,7 +527,7 @@ export default function Room({
     }
   };
 
-  // 3. Join Existing Room by Alphanumeric Code
+  // Join Existing Room
   const handleJoinRoom = async () => {
     const cleanCode = joinCodeInput.trim().toUpperCase();
     if (!cleanCode) {
@@ -502,24 +580,6 @@ export default function Room({
         { merge: true }
       );
 
-      if (resolvedUid && resolvedUid !== 'guest_uid') {
-        await firestore()
-          .collection('users')
-          .doc(String(resolvedUid))
-          .collection('profiles')
-          .doc(String(currentProfileId))
-          .collection('rooms')
-          .doc(cleanCode)
-          .set({
-            code: cleanCode,
-            animeId: data.animeId,
-            animeTitle: data.animeTitle,
-            animeCover: data.animeCover || '',
-            role: data.adminKey === memberKey ? 'admin' : 'viewer',
-            joinedAt: Date.now(),
-          }, { merge: true });
-      }
-
       setRoomCode(cleanCode);
       setIsInsideRoom(true);
     } catch (err) {
@@ -529,7 +589,7 @@ export default function Room({
     }
   };
 
-  // 4. Real-Time Room Document & Live Chat Subscription
+  // Real-Time Room Document & Live Chat Subscription
   useEffect(() => {
     if (!isInsideRoom || !roomCode) return;
 
@@ -538,7 +598,6 @@ export default function Room({
     const unsubRoom = roomRef.onSnapshot(
       (doc) => {
         if (!doc.exists || doc.data()?.status === 'closed') {
-          stopMicCapture();
           setIsInsideRoom(false);
           setPlayingEpisode(null);
           setActiveRoomData(null);
@@ -547,12 +606,7 @@ export default function Room({
         }
 
         const data = doc.data();
-
-        if (
-          Array.isArray(data.kickedKeys) &&
-          data.kickedKeys.includes(memberKey)
-        ) {
-          stopMicCapture();
+        if (Array.isArray(data.kickedKeys) && data.kickedKeys.includes(memberKey)) {
           setIsInsideRoom(false);
           setPlayingEpisode(null);
           setActiveRoomData(null);
@@ -561,7 +615,6 @@ export default function Room({
         }
 
         setActiveRoomData(data);
-
         if (
           data.currentEpisode &&
           (!playingEpisode || String(playingEpisode.num) !== String(data.currentEpisode.num))
@@ -591,7 +644,7 @@ export default function Room({
     };
   }, [isInsideRoom, roomCode, memberKey]);
 
-  // 5. Resolve M3U8 Stream When an Episode is Selected in the Room
+  // Resolve Stream When Episode is Selected
   useEffect(() => {
     if (!isInsideRoom || !playingEpisode || !activeRoomData) return;
     let isMounted = true;
@@ -625,137 +678,6 @@ export default function Room({
     return () => { isMounted = false; };
   }, [isInsideRoom, playingEpisode?.num, activeRoomData?.providerAnimeId]);
 
-  // Sync viewer's video player with Admin's playback state
-  useEffect(() => {
-    if (!activeRoomData?.playbackState || !videoRef.current || !videoStatus?.isLoaded) return;
-    const isAdmin = activeRoomData.adminKey === memberKey;
-    if (isAdmin) return;
-
-    const remoteState = activeRoomData.playbackState;
-    const syncPlayer = async () => {
-      try {
-        isSyncingVideoRef.current = true;
-        const localPos = videoStatus.positionMillis || 0;
-        const remotePos = remoteState.positionMillis || 0;
-
-        if (Math.abs(localPos - remotePos) > 4000) {
-          await videoRef.current.setPositionAsync(remotePos);
-        }
-        if (remoteState.isPlaying && !videoStatus.isPlaying) {
-          await videoRef.current.playAsync();
-        } else if (!remoteState.isPlaying && videoStatus.isPlaying) {
-          await videoRef.current.pauseAsync();
-        }
-      } catch (_) {
-      } finally {
-        isSyncingVideoRef.current = false;
-      }
-    };
-
-    syncPlayer();
-  }, [
-    activeRoomData?.playbackState?.isPlaying,
-    activeRoomData?.playbackState?.positionMillis,
-    activeRoomData?.playbackState?.updatedAt,
-  ]);
-
-  // 6. Microphone Capture & Voice Activity Sync
-  const stopMicCapture = useCallback(async () => {
-    try {
-      if (recordingRef.current) {
-        await recordingRef.current.stopAndUnloadAsync();
-        recordingRef.current = null;
-      }
-    } catch (_) {}
-    setIsSpeaking(false);
-  }, []);
-
-  const handleToggleMic = async () => {
-    const nextMuted = !isMicMuted;
-    setIsMicMuted(nextMuted);
-
-    if (roomCode) {
-      firestore()
-        .collection('rooms')
-        .doc(roomCode)
-        .set(
-          {
-            membersMap: {
-              [memberKey]: {
-                isMuted: nextMuted,
-                isSpeaking: false,
-              },
-            },
-          },
-          { merge: true }
-        )
-        .catch(() => {});
-    }
-
-    if (nextMuted) {
-      await stopMicCapture();
-      return;
-    }
-
-    try {
-      const perm = await Audio.requestPermissionsAsync();
-      if (perm.status !== 'granted') {
-        Alert.alert('Microphone Permission', 'Please enable microphone access to talk in the room.');
-        setIsMicMuted(true);
-        return;
-      }
-
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
-        staysActiveInBackground: true,
-        shouldDuckAndroid: true,
-      });
-
-      const rec = new Audio.Recording();
-      await rec.prepareToRecordAsync({
-        ...Audio.RecordingOptionsPresets.LOW_QUALITY,
-        isMeteringEnabled: true,
-      });
-
-      rec.setOnRecordingStatusUpdate((st) => {
-        if (!st.isRecording) return;
-        const db = typeof st.metering === 'number' ? st.metering : -160;
-        const speakingNow = db > -38;
-        setIsSpeaking(speakingNow);
-
-        if (speakingNow !== lastSpeakingSyncRef.current && roomCode) {
-          lastSpeakingSyncRef.current = speakingNow;
-          firestore()
-            .collection('rooms')
-            .doc(roomCode)
-            .set(
-              {
-                membersMap: {
-                  [memberKey]: {
-                    isSpeaking: speakingNow,
-                    isMuted: false,
-                  },
-                },
-              },
-              { merge: true }
-            )
-            .catch(() => {});
-        }
-      });
-
-      await rec.startAsync();
-      recordingRef.current = rec;
-    } catch (_) {}
-  };
-
-  useEffect(() => {
-    return () => {
-      stopMicCapture();
-    };
-  }, [stopMicCapture]);
-
-  // 7. Admin & Viewer Room Actions
   const isCurrentUserAdmin = activeRoomData?.adminKey === memberKey;
 
   const joinedMembersList = useMemo(() => {
@@ -784,7 +706,6 @@ export default function Room({
               const roomRef = firestore().collection('rooms').doc(roomCode);
               const nextMap = { ...(activeRoomData.membersMap || {}) };
               delete nextMap[targetMember.key];
-
               await roomRef.update({
                 membersMap: nextMap,
                 kickedKeys: firestore.FieldValue.arrayUnion(targetMember.key),
@@ -798,7 +719,9 @@ export default function Room({
 
   const handleLeaveOrCloseRoom = async () => {
     setSettingsMenuVisible(false);
-    await stopMicCapture();
+    try {
+      agoraEngineRef.current?.leaveChannel();
+    } catch (_) {}
 
     if (!roomCode) {
       if (onBack) onBack();
@@ -859,28 +782,6 @@ export default function Room({
     }
   };
 
-  const handleSendChatMessage = async () => {
-    const text = chatInput.trim();
-    if (!text || !roomCode) return;
-    setChatInput('');
-
-    try {
-      await firestore()
-        .collection('rooms')
-        .doc(roomCode)
-        .collection('messages')
-        .add({
-          senderKey: memberKey,
-          senderName: memberName,
-          senderAvatar: memberAvatar,
-          isAdmin: isCurrentUserAdmin,
-          text,
-          episodeNum: playingEpisode?.num || 1,
-          createdAt: Date.now(),
-        });
-    } catch (_) {}
-  };
-
   const handleCopyRoomCode = async () => {
     if (!roomCode) return;
     setCopiedFeedback(true);
@@ -898,16 +799,13 @@ export default function Room({
       )}`
     : '';
 
-  // ============================================================================
-  // RENDER 1: CREATE OR JOIN ROOM SETUP SCREEN
-  // ============================================================================
+  // Setup View
   if (!isInsideRoom) {
     const selectedCount = Object.keys(selectedEpMap).length;
 
     return (
       <View style={styles.container}>
         <StatusBar hidden={true} />
-
         <View style={styles.headerBar}>
           <TouchableOpacity
             style={styles.iconCircleBtn}
@@ -1097,9 +995,7 @@ export default function Room({
     );
   }
 
-  // ============================================================================
-  // RENDER 2: ACTIVE ROOM SCREEN
-  // ============================================================================
+  // Active Room View
   const roomEpisodes = activeRoomData?.episodes || [];
 
   return (
@@ -1151,124 +1047,22 @@ export default function Room({
         </View>
       </View>
 
+      {/* Load Super Lightweight RoomPlayer Component */}
       {playingEpisode && (
-        <View style={styles.roomPlayerSection}>
-          <View style={styles.videoBox}>
-            {loadingStream ? (
-              <View style={styles.videoLoader}>
-                <ActivityIndicator size="large" color={PURE_RED} />
-                <Text style={styles.videoLoaderText}>
-                  Loading Episode {playingEpisode.num}...
-                </Text>
-              </View>
-            ) : streamUrl ? (
-              <Video
-                key={streamUrl}
-                ref={videoRef}
-                style={styles.videoElement}
-                source={{
-                  uri: streamUrl,
-                  overrideFileExtensionAndroid: 'm3u8',
-                  headers: { Referer: streamReferer },
-                }}
-                useNativeControls={true}
-                resizeMode={ResizeMode.CONTAIN}
-                shouldPlay={true}
-                onPlaybackStatusUpdate={(st) => {
-                  setVideoStatus(st);
-                  if (
-                    isCurrentUserAdmin &&
-                    st.isLoaded &&
-                    !isSyncingVideoRef.current &&
-                    roomCode
-                  ) {
-                    if (st.didJustFinish) {
-                      const currIdx = roomEpisodes.findIndex(
-                        (e) => Number(e.num) === Number(playingEpisode.num)
-                      );
-                      if (currIdx !== -1 && currIdx + 1 < roomEpisodes.length) {
-                        handleSelectRoomEpisode(roomEpisodes[currIdx + 1]);
-                      }
-                    }
-                  }
-                }}
-              />
-            ) : (
-              <View style={styles.videoLoader}>
-                <Text style={styles.videoLoaderText}>Select an episode below to start</Text>
-              </View>
-            )}
-
-            <View style={styles.playerOverlayStrip}>
-              <Text style={styles.nowPlayingStripText} numberOfLines={1}>
-                Now Playing: Ep {playingEpisode.num} • {playingEpisode.title}
-              </Text>
-              <TouchableOpacity
-                style={[styles.chatTogglePill, chatVisible && { backgroundColor: PURE_RED }]}
-                onPress={() => setChatVisible(!chatVisible)}
-              >
-                <IconChat size={13} color={WHITE} />
-                <Text style={styles.chatTogglePillText}>
-                  {chatVisible ? 'Hide Chat' : 'Live Chat'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {chatVisible && (
-            <View style={styles.liveChatPanel}>
-              <FlatList
-                ref={chatFlatListRef}
-                data={chatMessages}
-                keyExtractor={(item) => item.id}
-                style={styles.chatMessagesList}
-                contentContainerStyle={{ paddingVertical: 8, paddingHorizontal: 12 }}
-                onContentSizeChange={() =>
-                  chatFlatListRef.current?.scrollToEnd?.({ animated: true })
-                }
-                ListEmptyComponent={
-                  <Text style={styles.emptyChatText}>
-                    Say hi to everyone watching Episode {playingEpisode.num}!
-                  </Text>
-                }
-                renderItem={({ item }) => (
-                  <View style={styles.chatBubbleRow}>
-                    <Image
-                      source={AVATARS[item.senderAvatar] || AVATARS['pfp1.jpg']}
-                      style={styles.chatAvatar}
-                    />
-                    <View style={styles.chatBubbleContent}>
-                      <View style={styles.chatSenderHeader}>
-                        <Text style={styles.chatSenderName}>{item.senderName}</Text>
-                        {item.isAdmin && (
-                          <View style={styles.chatAdminBadge}>
-                            <Text style={styles.chatAdminBadgeText}>ADMIN</Text>
-                          </View>
-                        )}
-                      </View>
-                      <Text style={styles.chatMessageText}>{item.text}</Text>
-                    </View>
-                  </View>
-                )}
-              />
-
-              <View style={styles.chatInputBar}>
-                <TextInput
-                  style={styles.chatTextInput}
-                  placeholder="Send a message to the room..."
-                  placeholderTextColor={TEXT_GREY}
-                  value={chatInput}
-                  onChangeText={setChatInput}
-                  onSubmitEditing={handleSendChatMessage}
-                  returnKeyType="send"
-                />
-                <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendChatMessage}>
-                  <IconSend size={16} color={WHITE} />
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-        </View>
+        <RoomPlayer
+          roomCode={roomCode}
+          streamUrl={streamUrl}
+          streamReferer={streamReferer}
+          animeTitle={activeRoomData?.animeTitle || animeTitle}
+          episodeNum={playingEpisode.num}
+          episodeTitle={playingEpisode.title}
+          memberKey={memberKey}
+          memberName={memberName}
+          memberAvatar={memberAvatar}
+          isAdmin={isCurrentUserAdmin}
+          messages={chatMessages}
+          playbackState={activeRoomData?.playbackState}
+        />
       )}
 
       <View style={styles.membersSliderSection}>
@@ -1521,10 +1315,7 @@ export default function Room({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: BLACK,
-  },
+  container: { flex: 1, backgroundColor: BLACK },
   headerBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1546,35 +1337,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  micActiveCircle: {
-    backgroundColor: 'rgba(16,185,129,0.18)',
-    borderColor: EMERALD,
-  },
-  micSpeakingBorder: {
-    borderWidth: 2,
-    borderColor: EMERALD,
-  },
-  headerCenterCol: {
-    flex: 1,
-    paddingHorizontal: 12,
-  },
-  headerTitle: {
-    color: WHITE,
-    fontSize: 16,
-    fontWeight: '900',
-  },
-  headerRoomCodeSub: {
-    color: PURE_RED,
-    fontSize: 10,
-    fontWeight: '800',
-    marginTop: 2,
-    letterSpacing: 0.6,
-  },
-  headerRightActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
+  micActiveCircle: { backgroundColor: 'rgba(16,185,129,0.18)', borderColor: EMERALD },
+  micSpeakingBorder: { borderWidth: 2, borderColor: EMERALD },
+  headerCenterCol: { flex: 1, paddingHorizontal: 12 },
+  headerTitle: { color: WHITE, fontSize: 16, fontWeight: '900' },
+  headerRoomCodeSub: { color: PURE_RED, fontSize: 10, fontWeight: '800', marginTop: 2, letterSpacing: 0.6 },
+  headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   modeTabsRow: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -1586,24 +1354,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  modeTabBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    alignItems: 'center',
-    borderRadius: 6,
-  },
-  modeTabBtnActive: {
-    backgroundColor: PURE_RED,
-  },
-  modeTabText: {
-    color: TEXT_GREY,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  modeTabTextActive: {
-    color: WHITE,
-    fontWeight: '900',
-  },
+  modeTabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6 },
+  modeTabBtnActive: { backgroundColor: PURE_RED },
+  modeTabText: { color: TEXT_GREY, fontSize: 13, fontWeight: '800' },
+  modeTabTextActive: { color: WHITE, fontWeight: '900' },
   setupCard: {
     backgroundColor: CARD_BG,
     borderRadius: 12,
@@ -1612,45 +1366,13 @@ const styles = StyleSheet.create({
     borderColor: BORDER_GREY,
     marginBottom: 14,
   },
-  hostProfileRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
-  hostAvatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 8,
-  },
-  hostName: {
-    color: WHITE,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  hostSubtext: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  adminTagBadge: {
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  adminTagText: {
-    color: WHITE,
-    fontSize: 9,
-    fontWeight: '900',
-  },
-  inputLabel: {
-    color: TEXT_GREY,
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
+  hostProfileRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+  hostAvatar: { width: 46, height: 46, borderRadius: 8 },
+  hostName: { color: WHITE, fontSize: 15, fontWeight: '800' },
+  hostSubtext: { color: TEXT_GREY, fontSize: 12, marginTop: 2 },
+  adminTagBadge: { backgroundColor: PURE_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  adminTagText: { color: WHITE, fontSize: 9, fontWeight: '900' },
+  inputLabel: { color: TEXT_GREY, fontSize: 11, fontWeight: '800', textTransform: 'uppercase', marginBottom: 6 },
   textInput: {
     backgroundColor: DARK_GREY,
     color: WHITE,
@@ -1661,23 +1383,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  codeTextInput: {
-    fontSize: 18,
-    fontWeight: '900',
-    letterSpacing: 2,
-    textAlign: 'center',
-  },
-  epSelectHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  sectionTitle: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '900',
-  },
+  codeTextInput: { fontSize: 18, fontWeight: '900', letterSpacing: 2, textAlign: 'center' },
+  epSelectHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  sectionTitle: { color: WHITE, fontSize: 14, fontWeight: '900' },
   selectAllBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -1686,14 +1394,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: PURE_RED,
   },
-  selectAllBtnActive: {
-    backgroundColor: PURE_RED,
-  },
-  selectAllBtnText: {
-    color: PURE_RED,
-    fontSize: 11,
-    fontWeight: '900',
-  },
+  selectAllBtnActive: { backgroundColor: PURE_RED },
+  selectAllBtnText: { color: PURE_RED, fontSize: 11, fontWeight: '900' },
   chunkPill: {
     backgroundColor: DARK_GREY,
     paddingHorizontal: 14,
@@ -1702,25 +1404,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  chunkPillActive: {
-    backgroundColor: PURE_RED,
-    borderColor: PURE_RED,
-  },
-  chunkPillText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  chunkPillTextActive: {
-    color: WHITE,
-    fontWeight: '900',
-  },
-  epSelectGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingBottom: 16,
-  },
+  chunkPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
+  chunkPillText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
+  chunkPillTextActive: { color: WHITE, fontWeight: '900' },
+  epSelectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 16 },
   epSelectBox: {
     width: '23%',
     paddingVertical: 10,
@@ -1730,19 +1417,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  epSelectBoxActive: {
-    backgroundColor: PURE_RED,
-    borderColor: PURE_RED,
-  },
-  epSelectBoxText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  epSelectBoxTextActive: {
-    color: WHITE,
-    fontWeight: '900',
-  },
+  epSelectBoxActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
+  epSelectBoxText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
+  epSelectBoxTextActive: { color: WHITE, fontWeight: '900' },
   primaryActionBtn: {
     backgroundColor: PURE_RED,
     paddingVertical: 14,
@@ -1751,159 +1428,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginVertical: 12,
   },
-  primaryActionBtnText: {
-    color: WHITE,
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  roomPlayerSection: {
-    width: '100%',
-    backgroundColor: CARD_BG,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_GREY,
-  },
-  videoBox: {
-    width: '100%',
-    height: Math.floor(width * 0.54),
-    backgroundColor: BLACK,
-    position: 'relative',
-  },
-  videoElement: {
-    width: '100%',
-    height: '100%',
-  },
-  videoLoader: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 8,
-  },
-  videoLoaderText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  playerOverlayStrip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#0D0D12',
-  },
-  nowPlayingStripText: {
-    color: WHITE,
-    fontSize: 12,
-    fontWeight: '800',
-    flex: 1,
-    paddingRight: 8,
-  },
-  chatTogglePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: DARK_GREY,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-  },
-  chatTogglePillText: {
-    color: WHITE,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  liveChatPanel: {
-    height: 175,
-    backgroundColor: '#0A0A0E',
-    borderTopWidth: 1,
-    borderTopColor: BORDER_GREY,
-  },
-  chatMessagesList: {
-    flex: 1,
-  },
-  emptyChatText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    textAlign: 'center',
-    marginTop: 20,
-  },
-  chatBubbleRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-    gap: 8,
-  },
-  chatAvatar: {
-    width: 26,
-    height: 26,
-    borderRadius: 6,
-    marginTop: 2,
-  },
-  chatBubbleContent: {
-    flex: 1,
-    backgroundColor: DARK_GREY,
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
-  chatSenderHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 2,
-  },
-  chatSenderName: {
-    color: WHITE,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  chatAdminBadge: {
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 3,
-  },
-  chatAdminBadgeText: {
-    color: WHITE,
-    fontSize: 8,
-    fontWeight: '900',
-  },
-  chatMessageText: {
-    color: '#E5E5EA',
-    fontSize: 12,
-  },
-  chatInputBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    backgroundColor: CARD_BG,
-    borderTopWidth: 1,
-    borderTopColor: BORDER_GREY,
-    gap: 8,
-  },
-  chatTextInput: {
-    flex: 1,
-    backgroundColor: DARK_GREY,
-    color: WHITE,
-    borderRadius: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    fontSize: 12,
-  },
-  chatSendBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 6,
-    backgroundColor: PURE_RED,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  membersSliderSection: {
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_GREY,
-  },
+  primaryActionBtnText: { color: WHITE, fontSize: 15, fontWeight: '900' },
+  membersSliderSection: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: BORDER_GREY },
   sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1911,19 +1437,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 10,
   },
-  deafenedNoticeText: {
-    color: PURE_RED,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  membersSliderContent: {
-    paddingHorizontal: 16,
-    gap: 14,
-  },
-  memberCard: {
-    width: 74,
-    alignItems: 'center',
-  },
+  deafenedNoticeText: { color: PURE_RED, fontSize: 11, fontWeight: '800' },
+  membersSliderContent: { paddingHorizontal: 16, gap: 14 },
+  memberCard: { width: 74, alignItems: 'center' },
   memberAvatarWrap: {
     width: 64,
     height: 64,
@@ -1933,14 +1449,8 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: BORDER_GREY,
   },
-  memberAvatarSpeaking: {
-    borderColor: EMERALD,
-  },
-  memberAvatarImg: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 10,
-  },
+  memberAvatarSpeaking: { borderColor: EMERALD },
+  memberAvatarImg: { width: '100%', height: '100%', borderRadius: 10 },
   memberAdminRibbon: {
     position: 'absolute',
     top: -6,
@@ -1950,11 +1460,7 @@ const styles = StyleSheet.create({
     paddingVertical: 1.5,
     borderRadius: 3,
   },
-  memberAdminRibbonText: {
-    color: WHITE,
-    fontSize: 8,
-    fontWeight: '900',
-  },
+  memberAdminRibbonText: { color: WHITE, fontSize: 8, fontWeight: '900' },
   memberMicBadge: {
     position: 'absolute',
     bottom: -4,
@@ -1981,17 +1487,8 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: BLACK,
   },
-  memberNameText: {
-    color: WHITE,
-    fontSize: 11,
-    fontWeight: '700',
-    marginTop: 7,
-    textAlign: 'center',
-  },
-  roomEpisodesSection: {
-    flex: 1,
-    paddingTop: 12,
-  },
+  memberNameText: { color: WHITE, fontSize: 11, fontWeight: '700', marginTop: 7, textAlign: 'center' },
+  roomEpisodesSection: { flex: 1, paddingTop: 12 },
   roomEpRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2003,10 +1500,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  roomEpRowActive: {
-    borderColor: PURE_RED,
-    backgroundColor: '#170E10',
-  },
+  roomEpRowActive: { borderColor: PURE_RED, backgroundColor: '#170E10' },
   roomEpNumBox: {
     width: 32,
     height: 32,
@@ -2015,22 +1509,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  roomEpNumText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  roomEpTitle: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  roomEpPlayingSub: {
-    color: PURE_RED,
-    fontSize: 9,
-    fontWeight: '900',
-    marginTop: 2,
-  },
+  roomEpNumText: { color: WHITE, fontSize: 13, fontWeight: '900' },
+  roomEpTitle: { color: WHITE, fontSize: 13, fontWeight: '700' },
+  roomEpPlayingSub: { color: PURE_RED, fontSize: 9, fontWeight: '900', marginTop: 2 },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.82)',
@@ -2047,17 +1528,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  settingsSheetHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  settingsSheetTitle: {
-    color: WHITE,
-    fontSize: 17,
-    fontWeight: '900',
-  },
+  settingsSheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  settingsSheetTitle: { color: WHITE, fontSize: 17, fontWeight: '900' },
   closeIconBtn: {
     width: 32,
     height: 32,
@@ -2074,11 +1546,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER_GREY,
   },
-  settingsItemText: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '700',
-  },
+  settingsItemText: { color: WHITE, fontSize: 14, fontWeight: '700' },
   inviteCard: {
     width: '100%',
     maxWidth: 380,
@@ -2089,25 +1557,9 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: PURE_RED,
   },
-  inviteHeaderRow: {
-    width: '100%',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  inviteTitle: {
-    color: WHITE,
-    fontSize: 18,
-    fontWeight: '900',
-  },
-  inviteSubtitle: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    textAlign: 'center',
-    marginBottom: 16,
-    lineHeight: 17,
-  },
+  inviteHeaderRow: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  inviteTitle: { color: WHITE, fontSize: 18, fontWeight: '900' },
+  inviteSubtitle: { color: TEXT_GREY, fontSize: 12, textAlign: 'center', marginBottom: 16, lineHeight: 17 },
   qrFrameBox: {
     width: 200,
     height: 200,
@@ -2118,17 +1570,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 18,
   },
-  qrCodeImg: {
-    width: '100%',
-    height: '100%',
-  },
-  codeLabel: {
-    color: TEXT_GREY,
-    fontSize: 10,
-    fontWeight: '900',
-    letterSpacing: 1,
-    marginBottom: 6,
-  },
+  qrCodeImg: { width: '100%', height: '100%' },
+  codeLabel: { color: TEXT_GREY, fontSize: 10, fontWeight: '900', letterSpacing: 1, marginBottom: 6 },
   codeDisplayRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2142,12 +1585,7 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'space-between',
   },
-  codeBigText: {
-    color: WHITE,
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: 3,
-  },
+  codeBigText: { color: WHITE, fontSize: 22, fontWeight: '900', letterSpacing: 3 },
   copyCodeBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2157,15 +1595,6 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 6,
   },
-  copyCodeBtnText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  passwordHintText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 12,
-  },
+  copyCodeBtnText: { color: WHITE, fontSize: 13, fontWeight: '900' },
+  passwordHintText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700', marginTop: 12 },
 });
