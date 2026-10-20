@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, Animated, 
-  Dimensions, StatusBar, BackHandler
+  StatusBar, BackHandler, Platform 
 } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -21,16 +21,9 @@ import SpeedSheet from './speed';
 import SkipIntroOutro from './intro-outro';
 import PlayPauseSkip from './play-pause-skip';
 
-let AsyncStorage = null;
-try {
-  const mod = require('@react-native-async-storage/async-storage');
-  AsyncStorage = mod?.default || mod;
-} catch (_) {}
-
 const BRAND_RED = '#E50914';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const WATCH_HISTORY_COLLECTION = 'watch_history';
-const DOWNLOAD_QUEUE_STORAGE_KEY = '@kameko_downloads_queue_v1';
 const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_downloads_queue.json`
   : null;
@@ -73,24 +66,14 @@ const parseVttTextToCues = (rawText) => {
     }
   }
   if (currentCue) currentCue.text = currentCue.text.trim();
-  return cues.filter(c => c.text.length > 0);
+  return cues.filter((c) => c.text.length > 0);
 };
 
 const readLocalDownloadsQueue = async () => {
   try {
-    if (AsyncStorage?.getItem) {
-      const raw = await AsyncStorage.getItem(DOWNLOAD_QUEUE_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    }
-  } catch (_) {}
-
-  try {
     if (DOWNLOAD_QUEUE_FILE_URI) {
       const info = await FileSystem.getInfoAsync(DOWNLOAD_QUEUE_FILE_URI);
-      if (info.exists) {
+      if (info?.exists) {
         const raw = await FileSystem.readAsStringAsync(DOWNLOAD_QUEUE_FILE_URI);
         if (raw) {
           const parsed = JSON.parse(raw);
@@ -99,42 +82,65 @@ const readLocalDownloadsQueue = async () => {
       }
     }
   } catch (_) {}
-
   return [];
 };
 
-// Icons
-const IconBack = ({ size = 28 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
-    <Path d="M19 12H5M12 19l-7-7 7-7" />
-  </Svg>
-);
-const IconSubs = ({ size = 24, color = "#FFF" }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
-    <Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
-    <Path d="M7 15h3m4 0h3M7 9h10"/>
-  </Svg>
-);
-const IconAudio = ({ size = 24, color = "#FFF" }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
-    <Path d="M3 18v-6a9 9 0 0118 0v6"/>
-    <Path d="M21 19a2 2 0 01-2 2h-1v-6h3v4zM3 19a2 2 0 002 2h1v-6H3v4z"/>
-  </Svg>
-);
-const IconNextEp = ({ size = 22, color = "#FFF" }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-  </Svg>
-);
-
 const formatTime = (millis) => {
-  if (isNaN(millis) || millis < 0) return "00:00";
+  if (!millis || isNaN(millis) || millis < 0) return '00:00';
   const totalSecs = Math.floor(millis / 1000);
   const h = Math.floor(totalSecs / 3600);
   const m = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0');
   const s = Math.floor(totalSecs % 60).toString().padStart(2, '0');
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
+
+// --- MEMOIZED ICONS & CINEMATIC GRADIENTS (Zero Re-render Cost) ---
+const IconBack = React.memo(({ size = 28 }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
+    <Path d="M19 12H5M12 19l-7-7 7-7" />
+  </Svg>
+));
+const IconSubs = React.memo(({ size = 24, color = "#FFF" }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
+    <Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
+    <Path d="M7 15h3m4 0h3M7 9h10"/>
+  </Svg>
+));
+const IconAudio = React.memo(({ size = 24, color = "#FFF" }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
+    <Path d="M3 18v-6a9 9 0 0118 0v6"/>
+    <Path d="M21 19a2 2 0 01-2 2h-1v-6h3v4zM3 19a2 2 0 002 2h1v-6H3v4z"/>
+  </Svg>
+));
+const IconNextEp = React.memo(({ size = 22, color = "#FFF" }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+    <Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+  </Svg>
+));
+
+const TopGradientOverlay = React.memo(() => (
+  <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
+    <Defs>
+      <LinearGradient id="topCinematic" x1="0" y1="0" x2="0" y2="1">
+        <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
+        <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+      </LinearGradient>
+    </Defs>
+    <Rect width="100%" height="100%" fill="url(#topCinematic)" />
+  </Svg>
+));
+
+const BottomGradientOverlay = React.memo(() => (
+  <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
+    <Defs>
+      <LinearGradient id="botCinematic" x1="0" y1="1" x2="0" y2="0">
+        <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
+        <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+      </LinearGradient>
+    </Defs>
+    <Rect width="100%" height="100%" fill="url(#botCinematic)" />
+  </Svg>
+));
 
 export default function Player({
   route,
@@ -177,21 +183,14 @@ export default function Player({
     (paramStreamUrl && String(paramStreamUrl).startsWith('file://') ? paramStreamUrl : null) ||
     null;
 
-  const [isOfflineMode, setIsOfflineMode] = useState(
-    Boolean(paramIsOffline || initialOfflineUri)
-  );
+  const [isOfflineMode, setIsOfflineMode] = useState(Boolean(paramIsOffline || initialOfflineUri));
   const [offlineStreamUri, setOfflineStreamUri] = useState(initialOfflineUri);
   const [offlineMetaUri, setOfflineMetaUri] = useState(paramLocalMetaUri || null);
   const [offlineSubUri, setOfflineSubUri] = useState(paramLocalSubtitleUri || null);
 
   // 1. Resolve User UID & Current Profile ID
   const [resolvedUid, setResolvedUid] = useState(() =>
-    userUid ||
-    paramUid ||
-    paramUser?.uid ||
-    propUser?.uid ||
-    auth().currentUser?.uid ||
-    null
+    userUid || paramUid || paramUser?.uid || propUser?.uid || auth().currentUser?.uid || null
   );
 
   const [currentProfileId, setCurrentProfileId] = useState(() =>
@@ -211,84 +210,51 @@ export default function Player({
   );
 
   useEffect(() => {
-    const incomingUid =
-      userUid || paramUid || paramUser?.uid || propUser?.uid || auth().currentUser?.uid;
-    if (incomingUid && incomingUid !== resolvedUid) {
-      setResolvedUid(String(incomingUid));
-    }
-
-    const incomingProfId =
-      activeProfileId ||
-      paramProfileId ||
-      paramCurrentProfileId ||
-      propActiveProfileId ||
-      paramActiveProfile?.id ||
-      paramCurrentProfile?.id ||
-      propActiveProfile?.id ||
-      propCurrentProfile?.id;
-    if (incomingProfId && String(incomingProfId) !== String(currentProfileId)) {
-      setCurrentProfileId(String(incomingProfId));
-    }
-  }, [
-    userUid,
-    paramUid,
-    paramUser?.uid,
-    propUser?.uid,
-    activeProfileId,
-    paramProfileId,
-    paramCurrentProfileId,
-    propActiveProfileId,
-    paramActiveProfile?.id,
-    paramCurrentProfile?.id,
-    propActiveProfile?.id,
-    propCurrentProfile?.id,
-  ]);
-
-  // Fallback: Fetch activeProfileId from users/{uid} if not passed
-  useEffect(() => {
     let isMounted = true;
     const ensureProfileId = async () => {
       const uid = resolvedUid || auth().currentUser?.uid;
       if (!uid || currentProfileId) return;
-
       try {
         const userDoc = await firestore().collection('users').doc(String(uid)).get();
         if (userDoc.exists) {
-          const uData = userDoc.data();
-          const savedProfId = uData?.activeProfileId || uData?.activeProfile?.id;
+          const savedProfId = userDoc.data()?.activeProfileId || userDoc.data()?.activeProfile?.id;
           if (savedProfId && isMounted) {
             setCurrentProfileId(String(savedProfId));
             return;
           }
         }
-
         const profSnap = await firestore()
           .collection('users')
           .doc(String(uid))
           .collection('profiles')
           .limit(1)
           .get();
-
         if (!profSnap.empty && isMounted) {
           setCurrentProfileId(String(profSnap.docs[0].id));
         }
       } catch (_) {}
     };
-
     ensureProfileId();
     return () => { isMounted = false; };
   }, [resolvedUid, currentProfileId]);
 
   // SEAMLESS BINGE STATE
-  const [currentEpNum, setCurrentEpNum] = useState(params.episodeNum || 1);
+  const [currentEpNum, setCurrentEpNum] = useState(Number(params.episodeNum || 1));
   const [currentSlug, setCurrentSlug] = useState(params.slug || null);
   const [currentEpTitle, setCurrentEpTitle] = useState(params.episodeTitle || params.epTitle || '');
 
   const videoRef = useRef(null);
   const uiOpacity = useRef(new Animated.Value(1)).current;
   const nextEpOpacity = useRef(new Animated.Value(0.25)).current;
-  
-  const [status, setStatus] = useState({});
+
+  // Lightweight playback state (updates strictly 1x per second instead of 60fps)
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(true);
+  const [posMillis, setPosMillis] = useState(params.progress ? Number(params.progress) * 1000 : 0);
+  const [durMillis, setDurMillis] = useState(params.duration ? Number(params.duration) * 1000 : 0);
+  const [isSeeking, setIsSeeking] = useState(false);
+  const [seekPreviewMillis, setSeekPreviewMillis] = useState(0);
+
   const [showUI, setShowUI] = useState(true);
   const [isLocked, setIsLocked] = useState(false);
   const [resizeMode, setResizeMode] = useState(ResizeMode.CONTAIN);
@@ -296,13 +262,18 @@ export default function Player({
   const [selectedAudioType, setSelectedAudioType] = useState(targetType || 'sub');
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [is2xActive, setIs2xActive] = useState(false);
-  
+
+  // Episode session guard prevents old episode's progress from bleeding into Next Episode
+  const episodeSessionIdRef = useRef(1);
+  const isInitialMountRef = useRef(true);
   const previousSpeedRef = useRef(1.0);
   const lastPositionRef = useRef(params.progress ? Number(params.progress) * 1000 : 0);
   const lastDurationRef = useRef(params.duration ? Number(params.duration) * 1000 : 0);
-  const lastSavedTimeRef = useRef(0); 
+  const lastSavedSecRef = useRef(0);
+  const lastRenderedSecRef = useRef(-1);
 
   const [providerId, setProviderId] = useState(params.providerId || null);
+  const [cachedEpisodesList, setCachedEpisodesList] = useState([]);
   const [hasNextEpisode, setHasNextEpisode] = useState(false);
   const [nextEpisodeData, setNextEpisodeData] = useState(null);
 
@@ -329,9 +300,18 @@ export default function Player({
   const activeMenuRef = useRef(activeMenu);
   const isLockedRef = useRef(isLocked);
   const showUIRef = useRef(showUI);
+  const isPlayingRef = useRef(isPlaying);
+  const subtitlesEnabledRef = useRef(subtitlesEnabled);
+  const parsedSubsRef = useRef(parsedSubs);
+  const currentSubTextRef = useRef(currentSubText);
+
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
   useEffect(() => { showUIRef.current = showUI; }, [showUI]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
+  useEffect(() => { subtitlesEnabledRef.current = subtitlesEnabled; }, [subtitlesEnabled]);
+  useEffect(() => { parsedSubsRef.current = parsedSubs; }, [parsedSubs]);
+  useEffect(() => { currentSubTextRef.current = currentSubText; }, [currentSubText]);
 
   const effectiveAnimeId = String(animeId || paramId || providerId || 'unknown');
 
@@ -360,9 +340,9 @@ export default function Player({
     selectedAudioType,
   ]);
 
-  // --- SAVE EVERY EPISODE'S PROGRESS (INCLUDING WATCHED EPISODES) FOR THE CURRENT PROFILE ---
-  const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false) => {
-    const meta = latestMetaRef.current;
+  // --- LIGHTWEIGHT NON-BLOCKING FIRESTORE PROGRESS SAVE ---
+  const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false, customMeta = null) => {
+    const meta = customMeta || latestMetaRef.current;
     if (!meta.uid || !meta.profileId || !meta.animeId || meta.animeId === 'unknown') return;
 
     const posMs = Math.max(0, Number(positionMillis || 0));
@@ -399,10 +379,8 @@ export default function Player({
       watched: true,
       audioType: meta.audioType,
       timestamp: now,
-      updatedAt: firestore.FieldValue.serverTimestamp(),
     };
 
-    // Series-level document keeps the latest watched state + an `episodes` map of every episode's progress
     const seriesPayload = {
       ...episodePayload,
       episodes: {
@@ -429,7 +407,6 @@ export default function Player({
       .collection('profiles')
       .doc(String(meta.profileId));
 
-    // 1. Save individual episode document so every episode's progress (even watched ones) is permanently stored
     currentProfileRef
       .collection(WATCH_HISTORY_COLLECTION)
       .doc(epDocId)
@@ -437,20 +414,7 @@ export default function Player({
       .catch(() => {});
 
     currentProfileRef
-      .collection('progress')
-      .doc(epDocId)
-      .set(episodePayload, { merge: true })
-      .catch(() => {});
-
-    // 2. Save series-level summary + episodes map for ContinueWatching & Play.js
-    currentProfileRef
       .collection(WATCH_HISTORY_COLLECTION)
-      .doc(String(meta.animeId))
-      .set(seriesPayload, { merge: true })
-      .catch(() => {});
-
-    currentProfileRef
-      .collection('progress')
       .doc(String(meta.animeId))
       .set(seriesPayload, { merge: true })
       .catch(() => {});
@@ -461,14 +425,18 @@ export default function Player({
   useEffect(() => { navigationRef.current = navigation; }, [navigation]);
   useEffect(() => { saveHistoryRef.current = saveWatchHistory; }, [saveWatchHistory]);
 
-  // 1. Full Screen Lock & Hardware Back Handler (Runs strictly ONCE on mount)
+  // 1. Full Screen Immersive Lock & Hardware Back Handler (Runs ONCE on mount)
   useEffect(() => {
-    const lockLandscape = async () => {
+    const enterImmersiveLandscape = async () => {
       try {
+        StatusBar.setHidden(true, 'none');
+        if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+          await NavigationBar.setVisibilityAsync('hidden');
+        }
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
       } catch (_) {}
     };
-    lockLandscape();
+    enterImmersiveLandscape();
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
       if (activeMenuRef.current) { 
@@ -478,7 +446,7 @@ export default function Player({
       if (isLockedRef.current) { 
         setIsLocked(false); 
         setShowUI(true);
-        Animated.timing(uiOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+        Animated.timing(uiOpacity, { toValue: 1, duration: 220, useNativeDriver: true }).start();
         return true; 
       }
       if (saveHistoryRef.current) {
@@ -500,55 +468,20 @@ export default function Player({
     };
   }, []);
 
-  // 2. Identify Next Episode (Supports both Offline Downloaded Queue & Online API)
+  // 2. Fetch Series Episodes List ONCE (Caches list so Next Episode is instant)
   useEffect(() => {
     let isMounted = true;
+    if (isOfflineMode || !animeTitle) return;
 
-    const resolveNextEpisode = async () => {
+    const fetchSeriesEpisodesOnce = async () => {
       try {
-        const localDownloads = await readLocalDownloadsQueue();
-        const nextOfflineEp = localDownloads.find(
-          d =>
-            d.status === 'completed' &&
-            d.localUri &&
-            (String(d.animeId) === String(effectiveAnimeId) ||
-              (d.animeTitle || '').toLowerCase() === (animeTitle || '').toLowerCase()) &&
-            Number(d.episodeNum) === Number(currentEpNum) + 1
-        );
-
-        if (nextOfflineEp && isMounted) {
-          setNextEpisodeData({
-            num: nextOfflineEp.episodeNum,
-            title: nextOfflineEp.episodeTitle || `Episode ${nextOfflineEp.episodeNum}`,
-            slug: nextOfflineEp.slug || nextOfflineEp.episodeNum,
-            isOffline: true,
-            localUri: nextOfflineEp.localUri,
-            localMetaUri: nextOfflineEp.localMetaUri || null,
-            localSubtitleUri: nextOfflineEp.localSubtitleUri || null,
-            quality: nextOfflineEp.quality || '1080p',
-          });
-          setHasNextEpisode(true);
-          Animated.timing(nextEpOpacity, { toValue: 1, duration: 300, useNativeDriver: true }).start();
-          if (isOfflineMode) return;
-        }
-      } catch (_) {}
-
-      if (isOfflineMode) {
-        if (isMounted) {
-          setHasNextEpisode(false);
-          Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
-        }
-        return;
-      }
-
-      try {
-        let targetId = animeId || paramId;
+        let targetId = providerId || animeId || paramId;
         const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
         const searchJson = await searchRes.json();
         const matches = searchJson?.data || [];
         if (matches.length > 0) {
-          const exact = matches.find(m => (m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
-          targetId = exact.id;
+          const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
+          if (exact?.id) targetId = exact.id;
           if (!resolvedBackdrop && (exact.poster || exact.image) && isMounted) {
             setResolvedBackdrop(exact.poster || exact.image);
           }
@@ -560,120 +493,165 @@ export default function Player({
         const epRes = await fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
         const epJson = await epRes.json();
         const list = epJson?.data || [];
-
         if (isMounted && Array.isArray(list)) {
-          const currentEpIndex = list.findIndex(ep => 
-            (currentSlug && String(ep.slug) === String(currentSlug)) || 
-            (ep.id && String(ep.id) === String(currentSlug)) || 
-            String(ep.num) === String(currentEpNum)
-          );
-
-          if (currentEpIndex !== -1) {
-            const currentEpObj = list[currentEpIndex];
-            if (currentEpObj?.title && !currentEpTitle) {
-              setCurrentEpTitle(currentEpObj.title);
-            }
-          }
-
-          if (currentEpIndex !== -1 && currentEpIndex + 1 < list.length) {
-            const nextEp = list[currentEpIndex + 1];
-            setNextEpisodeData({
-              num: nextEp.num,
-              title: nextEp.title || `Episode ${nextEp.num}`,
-              slug: nextEp.slug || nextEp.id || nextEp.num,
-              isOffline: false,
-            });
-            setHasNextEpisode(true);
-            Animated.timing(nextEpOpacity, { toValue: 1, duration: 300, useNativeDriver: true }).start();
-          } else {
-            setHasNextEpisode(false);
-            Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
-          }
-        }
-      } catch (_) {
-        if (isMounted) {
-          setHasNextEpisode(false);
-          Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 300, useNativeDriver: true }).start();
-        }
-      }
-    };
-
-    if (animeTitle) resolveNextEpisode();
-    return () => { isMounted = false; };
-  }, [animeTitle, animeId, paramId, currentEpNum, currentSlug, isOfflineMode, effectiveAnimeId]);
-
-  // 2.5 Fetch Previous Playback Progress for THIS Specific Episode (Even if Marked Watched)
-  useEffect(() => {
-    if (!resolvedUid || !currentProfileId || !effectiveAnimeId || effectiveAnimeId === 'unknown') return;
-
-    const fetchEpisodeProgress = async () => {
-      try {
-        const profileRef = firestore()
-          .collection('users')
-          .doc(String(resolvedUid))
-          .collection('profiles')
-          .doc(String(currentProfileId));
-
-        const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
-
-        // 1. Check dedicated per-episode progress document first
-        let epDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get();
-        if (!epDoc.exists) {
-          epDoc = await profileRef.collection('progress').doc(epDocId).get();
-        }
-
-        let epData = epDoc.exists ? epDoc.data() : null;
-
-        // 2. Fallback to series-level document (either nested episodes[epNum] or top-level match)
-        if (!epData) {
-          let seriesDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(String(effectiveAnimeId)).get();
-          if (!seriesDoc.exists) {
-            seriesDoc = await profileRef.collection('progress').doc(String(effectiveAnimeId)).get();
-          }
-          if (seriesDoc.exists) {
-            const sData = seriesDoc.data();
-            if (sData?.episodes?.[String(currentEpNum)]) {
-              epData = sData.episodes[String(currentEpNum)];
-            } else {
-              const targetSlug = currentSlug ? String(currentSlug) : String(currentEpNum);
-              const matchesTop =
-                String(sData?.slug) === targetSlug ||
-                String(sData?.episodeNum) === String(currentEpNum) ||
-                String(sData?.lastWatchedEp) === String(currentEpNum);
-              if (matchesTop) epData = sData;
-            }
-          }
-        }
-
-        if (epData && Number(epData.progress) > 0) {
-          const progSec = Number(epData.progress);
-          const durSec = Number(epData.duration || 0);
-          // Resume from saved timestamp (even on watched episodes) unless it was at the very end (>= 98%)
-          const isAtVeryEnd = durSec > 0 && progSec >= durSec * 0.98;
-          const savedMs = isAtVeryEnd ? 0 : progSec * 1000;
-
-          lastPositionRef.current = savedMs;
-          if (durSec > 0) lastDurationRef.current = durSec * 1000;
-
-          if (videoRef.current && savedMs > 0) {
-            await videoRef.current.setPositionAsync(savedMs).catch(() => {});
-          }
+          setCachedEpisodesList(list);
         }
       } catch (_) {}
     };
 
-    fetchEpisodeProgress();
-  }, [resolvedUid, currentProfileId, effectiveAnimeId, currentSlug, currentEpNum]);
+    fetchSeriesEpisodesOnce();
+    return () => { isMounted = false; };
+  }, [animeTitle, isOfflineMode]);
 
-  // 3. Resolve Stream (Offline Local Vault Bundle OR Online M3U8 Stream)
+  // 2.2 Resolve Next Episode from Cached List or Offline Queue
   useEffect(() => {
     let isMounted = true;
 
-    const resolveStream = async () => {
+    const updateNextEpisodePointer = async () => {
+      try {
+        const localDownloads = await readLocalDownloadsQueue();
+        const nextOfflineEp = localDownloads.find(
+          (d) =>
+            d.status === 'completed' &&
+            d.localUri &&
+            (String(d.animeId) === String(effectiveAnimeId) ||
+              String(d.animeTitle || '').toLowerCase() === String(animeTitle || '').toLowerCase()) &&
+            Number(d.episodeNum) === Number(currentEpNum) + 1
+        );
+
+        if (nextOfflineEp && isMounted) {
+          setNextEpisodeData({
+            num: Number(nextOfflineEp.episodeNum),
+            title: nextOfflineEp.episodeTitle || `Episode ${nextOfflineEp.episodeNum}`,
+            slug: String(nextOfflineEp.slug || nextOfflineEp.episodeNum),
+            isOffline: true,
+            localUri: nextOfflineEp.localUri,
+            localMetaUri: nextOfflineEp.localMetaUri || null,
+            localSubtitleUri: nextOfflineEp.localSubtitleUri || null,
+            quality: nextOfflineEp.quality || '1080p',
+          });
+          setHasNextEpisode(true);
+          Animated.timing(nextEpOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+          if (isOfflineMode) return;
+        }
+      } catch (_) {}
+
+      if (isOfflineMode) {
+        if (isMounted) {
+          setHasNextEpisode(false);
+          Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 250, useNativeDriver: true }).start();
+        }
+        return;
+      }
+
+      if (cachedEpisodesList.length > 0 && isMounted) {
+        const currentEpIndex = cachedEpisodesList.findIndex(
+          (ep) =>
+            (currentSlug && String(ep.slug) === String(currentSlug)) ||
+            (ep.id && String(ep.id) === String(currentSlug)) ||
+            Number(ep.num) === Number(currentEpNum)
+        );
+
+        if (currentEpIndex !== -1) {
+          const currentEpObj = cachedEpisodesList[currentEpIndex];
+          if (currentEpObj?.title && (!currentEpTitle || currentEpTitle === `Episode ${currentEpNum}`)) {
+            setCurrentEpTitle(currentEpObj.title);
+          }
+        }
+
+        if (currentEpIndex !== -1 && currentEpIndex + 1 < cachedEpisodesList.length) {
+          const nextEp = cachedEpisodesList[currentEpIndex + 1];
+          setNextEpisodeData({
+            num: Number(nextEp.num),
+            title: nextEp.title || `Episode ${nextEp.num}`,
+            slug: String(nextEp.slug || nextEp.id || nextEp.num),
+            isOffline: false,
+          });
+          setHasNextEpisode(true);
+          Animated.timing(nextEpOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
+        } else {
+          setHasNextEpisode(false);
+          Animated.timing(nextEpOpacity, { toValue: 0.25, duration: 250, useNativeDriver: true }).start();
+        }
+      }
+    };
+
+    updateNextEpisodePointer();
+    return () => { isMounted = false; };
+  }, [currentEpNum, currentSlug, cachedEpisodesList, isOfflineMode, effectiveAnimeId, animeTitle]);
+
+  // 3. UNIFIED EPISODE PROGRESS + STREAM RESOLVER (Guarantees New Episode Loads Its Own Progress!)
+  useEffect(() => {
+    let isMounted = true;
+    const currentSessionId = ++episodeSessionIdRef.current;
+
+    const loadEpisodeProgressAndStream = async () => {
       setLoadingStream(true);
       setActiveUrl(null);
+      setIsLoaded(false);
 
-      // --- A. CHECK FOR OFFLINE DOWNLOADED BUNDLE FIRST ---
+      // Step A: Resolve THIS specific episode's saved progress (Never re-use previous episode's progress!)
+      let targetResumeMs = 0;
+      let targetDurationMs = 0;
+
+      if (isInitialMountRef.current && Number(params.progress) > 0) {
+        targetResumeMs = Number(params.progress) * 1000;
+        targetDurationMs = Number(params.duration || 0) * 1000;
+      }
+      isInitialMountRef.current = false;
+
+      if (resolvedUid && currentProfileId && effectiveAnimeId && effectiveAnimeId !== 'unknown') {
+        try {
+          const profileRef = firestore()
+            .collection('users')
+            .doc(String(resolvedUid))
+            .collection('profiles')
+            .doc(String(currentProfileId));
+
+          const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
+          let epDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get();
+          let epData = epDoc.exists ? epDoc.data() : null;
+
+          if (!epData) {
+            const seriesDoc = await profileRef
+              .collection(WATCH_HISTORY_COLLECTION)
+              .doc(String(effectiveAnimeId))
+              .get();
+            if (seriesDoc.exists) {
+              const sData = seriesDoc.data();
+              if (sData?.episodes?.[String(currentEpNum)]) {
+                epData = sData.episodes[String(currentEpNum)];
+              } else if (Number(sData?.episodeNum) === Number(currentEpNum)) {
+                epData = sData;
+              }
+            }
+          }
+
+          if (epData && Number(epData.progress) > 0) {
+            const progSec = Number(epData.progress);
+            const durSec = Number(epData.duration || 0);
+            const isAtVeryEnd = durSec > 0 && progSec >= durSec * 0.98;
+            targetResumeMs = isAtVeryEnd ? 0 : progSec * 1000;
+            if (durSec > 0) targetDurationMs = durSec * 1000;
+          } else {
+            // Strictly 0 if this episode has no saved watch history
+            targetResumeMs = 0;
+            targetDurationMs = 0;
+          }
+        } catch (_) {}
+      }
+
+      if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
+
+      // Lock in the exact starting timestamp for THIS episode before the Video mounts
+      lastPositionRef.current = targetResumeMs;
+      lastDurationRef.current = targetDurationMs;
+      lastSavedSecRef.current = Math.floor(targetResumeMs / 1000);
+      lastRenderedSecRef.current = -1;
+      setPosMillis(targetResumeMs);
+      setDurMillis(targetDurationMs);
+
+      // Step B: Check Offline Downloaded Bundle First
       let targetLocalM3u8 = offlineStreamUri;
       let targetLocalMeta = offlineMetaUri;
       let targetLocalSub = offlineSubUri;
@@ -683,18 +661,18 @@ export default function Player({
         try {
           const queue = await readLocalDownloadsQueue();
           const matchedDownload = queue.find(
-            item =>
+            (item) =>
               item.status === 'completed' &&
               item.localUri &&
               (String(item.animeId) === String(effectiveAnimeId) ||
-                (item.animeTitle || '').toLowerCase() === (animeTitle || '').toLowerCase()) &&
+                String(item.animeTitle || '').toLowerCase() === String(animeTitle || '').toLowerCase()) &&
               Number(item.episodeNum) === Number(currentEpNum) &&
               String(item.audioType || 'sub').toLowerCase() === String(selectedAudioType || 'sub').toLowerCase()
           );
 
           if (matchedDownload) {
             const fileCheck = await FileSystem.getInfoAsync(matchedDownload.localUri);
-            if (fileCheck.exists) {
+            if (fileCheck?.exists) {
               targetLocalM3u8 = matchedDownload.localUri;
               targetLocalMeta = matchedDownload.localMetaUri || null;
               targetLocalSub = matchedDownload.localSubtitleUri || null;
@@ -707,29 +685,23 @@ export default function Player({
       if (targetLocalM3u8) {
         try {
           const m3u8Info = await FileSystem.getInfoAsync(targetLocalM3u8);
-          if (m3u8Info.exists) {
-            let metaJson = null;
-
+          if (m3u8Info?.exists) {
             const inferredFolder = targetLocalM3u8.substring(0, targetLocalM3u8.lastIndexOf('/') + 1);
-            const metaCandidate = targetLocalMeta || `${inferredFolder}metadata.json`;
+            let metaJson = null;
             try {
+              const metaCandidate = targetLocalMeta || `${inferredFolder}metadata.json`;
               const metaInfo = await FileSystem.getInfoAsync(metaCandidate);
-              if (metaInfo.exists) {
-                const rawMeta = await FileSystem.readAsStringAsync(metaCandidate);
-                metaJson = JSON.parse(rawMeta);
+              if (metaInfo?.exists) {
+                metaJson = JSON.parse(await FileSystem.readAsStringAsync(metaCandidate));
               }
             } catch (_) {}
 
-            const subCandidate =
-              targetLocalSub ||
-              metaJson?.subtitle?.localUri ||
-              `${inferredFolder}subtitle.vtt`;
             try {
+              const subCandidate = targetLocalSub || metaJson?.subtitle?.localUri || `${inferredFolder}subtitle.vtt`;
               const subInfo = await FileSystem.getInfoAsync(subCandidate);
-              if (subInfo.exists) {
-                const rawVtt = await FileSystem.readAsStringAsync(subCandidate);
-                const cues = parseVttTextToCues(rawVtt);
-                if (cues.length > 0 && isMounted) {
+              if (subInfo?.exists) {
+                const cues = parseVttTextToCues(await FileSystem.readAsStringAsync(subCandidate));
+                if (cues.length > 0 && isMounted && currentSessionId === episodeSessionIdRef.current) {
                   setParsedSubs(cues);
                   setSubtitlesEnabled(true);
                 }
@@ -737,7 +709,7 @@ export default function Player({
             } catch (_) {}
 
             const resolvedOfflineQual = metaJson?.quality || offlineQualityLabel || 'Offline HD';
-            if (isMounted) {
+            if (isMounted && currentSessionId === episodeSessionIdRef.current) {
               setIsOfflineMode(true);
               setCurrentAutoRes(resolvedOfflineQual);
               setSelectedQuality(resolvedOfflineQual);
@@ -753,56 +725,59 @@ export default function Player({
             }
             return;
           }
-        } catch (err) {
-          console.warn('Offline file check error, falling back to online:', err);
-        }
+        } catch (_) {}
       }
 
-      // --- B. ONLINE STREAM RESOLUTION ---
+      // Step C: Online Stream Resolution
       const effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
       if (!effectiveId || !effectiveSlug) {
-        if (isMounted) setLoadingStream(false);
+        if (isMounted && currentSessionId === episodeSessionIdRef.current) {
+          setLoadingStream(false);
+        }
         return;
       }
 
-      let typeServers = ['hd-1', 'hd-2', 'vidstream-2'];
-      
-      try {
-        const srvRes = await fetch(`${VERCEL_API_BASE}/api/servers?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}`);
-        const srvJson = await srvRes.json();
-        if (srvJson?.success && srvJson?.data) {
-          const filtered = srvJson.data.filter(s => s.type === selectedAudioType).map(s => s.serverName);
-          if (filtered.length > 0) typeServers = filtered;
-        }
-      } catch (_) {}
-
+      const servers = ['hd-1', 'hd-2', 'vidstream-2'];
       let finalStreamData = null;
-      for (const srv of typeServers) {
+
+      for (const srv of servers) {
         try {
           const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`;
           const res = await fetch(url);
           const json = await res.json();
-          let manifest = json?.success && json?.data?.m3u8
-            ? json.data
-            : (json?.success && json?.results?.streamingLink
-                ? json.results
-                : (json?.data?.streamingLink ? json.data : null));
-          if (manifest) { finalStreamData = manifest; break; }
+          const manifest =
+            json?.success && json?.data?.m3u8
+              ? json.data
+              : json?.success && json?.results?.streamingLink
+              ? json.results
+              : json?.data?.streamingLink
+              ? json.data
+              : null;
+          if (manifest) {
+            finalStreamData = manifest;
+            break;
+          }
         } catch (_) {}
       }
 
-      if (!isMounted) return;
-      if (!finalStreamData) { setLoadingStream(false); return; }
+      if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
+      if (!finalStreamData) {
+        setLoadingStream(false);
+        return;
+      }
 
       const masterUrl = finalStreamData.m3u8 || finalStreamData.streamingLink;
-      
+
       try {
-        const m3Res = await fetch(masterUrl, { headers: { "Referer": finalStreamData.referer || "https://vidwish.live/" }});
+        const m3Res = await fetch(masterUrl, {
+          headers: { Referer: finalStreamData.referer || 'https://vidwish.live/' },
+        });
         const m3Text = await m3Res.text();
         const lines = m3Text.split('\n');
-        let qualities = [{ label: 'Auto', uri: masterUrl }];
+        const qualities = [{ label: 'Auto', uri: masterUrl }];
+
         for (let i = 0; i < lines.length; i++) {
           if (lines[i].includes('RESOLUTION=')) {
             const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
@@ -828,7 +803,7 @@ export default function Player({
         setQualityList([{ label: 'Auto', uri: masterUrl }]);
       }
 
-      if (isMounted) {
+      if (isMounted && currentSessionId === episodeSessionIdRef.current) {
         setIsOfflineMode(false);
         setStreamData(finalStreamData);
         setActiveUrl(masterUrl);
@@ -836,7 +811,7 @@ export default function Player({
       }
     };
 
-    resolveStream();
+    loadEpisodeProgressAndStream();
     return () => { isMounted = false; };
   }, [
     animeId,
@@ -850,73 +825,101 @@ export default function Player({
     offlineSubUri,
     effectiveAnimeId,
     animeTitle,
+    resolvedUid,
+    currentProfileId,
   ]);
 
-  // 4. Playback Sync & Watch History Save inside Current Profile
-  useEffect(() => {
-    if (!status.isLoaded) return;
-    const currentMs = status.positionMillis || 0;
-    const durationMs = status.durationMillis || lastDurationRef.current || 0;
-    const currentTimeSec = currentMs / 1000; 
+  // 4. ULTRA-LIGHTWEIGHT PLAYBACK CALLBACK (Ignores Stale Ticks During Episode Transitions)
+  const handlePlaybackStatusUpdate = useCallback(
+    (st, sessionToken) => {
+      if (!st?.isLoaded || sessionToken !== episodeSessionIdRef.current) return;
 
-    if (currentMs > 0) lastPositionRef.current = currentMs;
-    if (durationMs > 0) lastDurationRef.current = durationMs;
-    if (status.naturalSize?.height) setCurrentAutoRes(`${status.naturalSize.height}p`);
+      const currentMs = st.positionMillis || 0;
+      const durationMs = st.durationMillis || lastDurationRef.current || 0;
+      const currentTimeSec = currentMs / 1000;
+      const wholeSec = Math.floor(currentTimeSec);
 
-    if (subtitlesEnabled && parsedSubs.length > 0) {
-      const activeCue = parsedSubs.find(c => currentTimeSec >= c.start && currentTimeSec <= c.end);
-      if (activeCue && activeCue.text !== currentSubText) setCurrentSubText(activeCue.text);
-      else if (!activeCue && currentSubText !== '') setCurrentSubText('');
-    } else if (currentSubText !== '') { 
-      setCurrentSubText(''); 
-    }
+      if (currentMs > 0) lastPositionRef.current = currentMs;
+      if (durationMs > 0) lastDurationRef.current = durationMs;
 
-    const currentSecs = Math.floor(currentTimeSec);
-    
-    // Save every 3 seconds while playing (saves progress even for already-watched episodes)
-    if (status.isPlaying && currentSecs > 0) {
-      if (Math.abs(currentSecs - lastSavedTimeRef.current) >= 3) {
-        lastSavedTimeRef.current = currentSecs;
+      if (st.naturalSize?.height) {
+        const resLabel = `${st.naturalSize.height}p`;
+        setCurrentAutoRes((prev) => (prev === resLabel ? prev : resLabel));
+      }
+
+      // 1. Update Subtitle Cue Text ONLY when the cue actually changes
+      if (subtitlesEnabledRef.current && parsedSubsRef.current.length > 0) {
+        const activeCue = parsedSubsRef.current.find(
+          (c) => currentTimeSec >= c.start && currentTimeSec <= c.end
+        );
+        const nextText = activeCue ? activeCue.text : '';
+        if (nextText !== currentSubTextRef.current) {
+          currentSubTextRef.current = nextText;
+          setCurrentSubText(nextText);
+        }
+      } else if (currentSubTextRef.current !== '') {
+        currentSubTextRef.current = '';
+        setCurrentSubText('');
+      }
+
+      // 2. Only update React state once per whole second or when play/pause toggles
+      if (wholeSec !== lastRenderedSecRef.current || Boolean(st.isPlaying) !== isPlayingRef.current) {
+        lastRenderedSecRef.current = wholeSec;
+        setIsLoaded(true);
+        setIsPlaying(Boolean(st.isPlaying));
+        if (!isSeeking) {
+          setPosMillis(currentMs);
+        }
+        if (durationMs > 0) {
+          setDurMillis(durationMs);
+        }
+      }
+
+      // 3. Throttled background Firestore save every 5 seconds
+      if (st.isPlaying && wholeSec > 0 && Math.abs(wholeSec - lastSavedSecRef.current) >= 5) {
+        lastSavedSecRef.current = wholeSec;
         saveWatchHistory(currentMs, durationMs);
       }
-    }
 
-    // If episode finishes playing to the end, force-save 100% completion
-    if (status.didJustFinish && durationMs > 0) {
-      saveWatchHistory(durationMs, durationMs, true);
-    }
-  }, [
-    status.isLoaded,
-    status.positionMillis,
-    status.durationMillis,
-    status.isPlaying,
-    status.didJustFinish,
-    status.naturalSize,
-    subtitlesEnabled,
-    parsedSubs,
-    currentSubText,
-    saveWatchHistory
-  ]);
+      if (st.didJustFinish && durationMs > 0) {
+        saveWatchHistory(durationMs, durationMs, true);
+      }
+    },
+    [isSeeking, saveWatchHistory]
+  );
 
-  useEffect(() => {
-    if (resolvedUid && currentProfileId && status.isLoaded && lastPositionRef.current > 0) {
-      saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
-    }
-  }, [resolvedUid, currentProfileId, currentEpTitle, resolvedBackdrop, saveWatchHistory]);
-
-  // 5. Seamless Next Episode Logic
-  const handleNextEpisode = () => {
+  // 5. SEAMLESS NEXT EPISODE HANDLER (Saves Old Ep & Starts New Ep With Its Own Progress)
+  const handleNextEpisode = useCallback(async () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
 
-    saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
-    
+    // Snapshot the current episode's metadata & save its progress one final time
+    const departingMeta = { ...latestMetaRef.current };
+    const departingPos = lastPositionRef.current;
+    const departingDur = lastDurationRef.current;
+
+    // Immediately advance the session token so the old video cannot overwrite the new episode's refs
+    episodeSessionIdRef.current += 1;
+
+    try {
+      await videoRef.current?.stopAsync?.();
+    } catch (_) {}
+
+    saveWatchHistory(departingPos, departingDur, false, departingMeta);
+
+    // Reset all playback refs & states cleanly before switching episodes
+    lastPositionRef.current = 0;
+    lastDurationRef.current = 0;
+    lastSavedSecRef.current = 0;
+    lastRenderedSecRef.current = -1;
+    currentSubTextRef.current = '';
+
     setLoadingStream(true);
     setActiveUrl(null);
+    setIsLoaded(false);
+    setPosMillis(0);
+    setDurMillis(0);
     setCurrentSubText('');
     setParsedSubs([]);
-    lastPositionRef.current = 0; 
-    lastDurationRef.current = 0;
-    lastSavedTimeRef.current = 0;
 
     if (nextEpisodeData.isOffline && nextEpisodeData.localUri) {
       setIsOfflineMode(true);
@@ -929,18 +932,18 @@ export default function Player({
       setOfflineMetaUri(null);
       setOfflineSubUri(null);
     }
-    
-    setCurrentEpNum(nextEpisodeData.num);
-    setCurrentEpTitle(nextEpisodeData.title);
-    setCurrentSlug(nextEpisodeData.slug);
-  };
+
+    setCurrentEpNum(Number(nextEpisodeData.num));
+    setCurrentEpTitle(nextEpisodeData.title || `Episode ${nextEpisodeData.num}`);
+    setCurrentSlug(String(nextEpisodeData.slug));
+  }, [hasNextEpisode, nextEpisodeData, saveWatchHistory]);
 
   // --- UI VISIBILITY: SHOW ON TAP & HIDE ON TAP + AUTO-HIDE TIMER ---
   const hideUINow = useCallback(() => {
     if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
     Animated.timing(uiOpacity, {
       toValue: 0,
-      duration: 220,
+      duration: 200,
       useNativeDriver: true,
     }).start(() => {
       setShowUI(false);
@@ -954,19 +957,18 @@ export default function Player({
     showUIRef.current = true;
     Animated.timing(uiOpacity, {
       toValue: 1,
-      duration: 200,
+      duration: 180,
       useNativeDriver: true,
     }).start();
 
     if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
     hideUITimeout.current = setTimeout(() => {
-      if (status.isPlaying && !activeMenuRef.current) {
+      if (isPlayingRef.current && !activeMenuRef.current) {
         hideUINow();
       }
     }, 3500);
-  }, [status.isPlaying, uiOpacity, hideUINow]);
+  }, [uiOpacity, hideUINow]);
 
-  // Toggle UI on single screen tap (if visible -> hide immediately; if hidden -> show & start timer)
   const toggleUIOnTap = useCallback(() => {
     if (activeMenuRef.current) {
       setActiveMenu(null);
@@ -990,7 +992,7 @@ export default function Player({
 
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = setTimeout(() => {
-      if (status.isPlaying && videoRef.current) {
+      if (isPlayingRef.current && videoRef.current) {
         didTriggerLongPressRef.current = true;
         previousSpeedRef.current = playbackSpeed;
         videoRef.current.setRateAsync(2.0, true);
@@ -1014,7 +1016,6 @@ export default function Player({
       return;
     }
 
-    // If it was a quick tap (not a drag or long press), toggle UI visibility
     const elapsed = Date.now() - touchStartTimeRef.current;
     const pageX = evt?.nativeEvent?.pageX || touchStartPosRef.current.x;
     const pageY = evt?.nativeEvent?.pageY || touchStartPosRef.current.y;
@@ -1029,20 +1030,34 @@ export default function Player({
   };
 
   useEffect(() => {
-    if (status.isPlaying) {
+    if (isPlaying) {
       if (showUIRef.current) resetHideTimer();
     } else {
       if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
       if (!isLocked) {
         setShowUI(true);
         showUIRef.current = true;
-        Animated.timing(uiOpacity, { toValue: 1, duration: 200, useNativeDriver: true }).start();
+        Animated.timing(uiOpacity, { toValue: 1, duration: 180, useNativeDriver: true }).start();
       }
-      if (status.isLoaded && lastPositionRef.current > 0) {
+      if (isLoaded && lastPositionRef.current > 0) {
         saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
       }
     }
-  }, [status.isPlaying, activeMenu, isLocked, resetHideTimer, uiOpacity, saveWatchHistory]);
+  }, [isPlaying, activeMenu, isLocked, isLoaded, resetHideTimer, uiOpacity, saveWatchHistory]);
+
+  const displayPosMillis = isSeeking ? seekPreviewMillis : posMillis;
+  const displayDurMillis = durMillis || lastDurationRef.current || 100;
+
+  // Lightweight status object for child components
+  const lightStatus = useMemo(
+    () => ({
+      isLoaded,
+      isPlaying,
+      positionMillis: displayPosMillis,
+      durationMillis: displayDurMillis,
+    }),
+    [isLoaded, isPlaying, displayPosMillis, displayDurMillis]
+  );
 
   if (loadingStream) return <View style={styles.loaderContainerFull} />;
 
@@ -1058,39 +1073,46 @@ export default function Player({
         headers: streamData?.referer ? { Referer: streamData.referer } : {},
       };
 
+  const activeSessionToken = episodeSessionIdRef.current;
+
   return (
     <View style={styles.container}>
+      <StatusBar hidden={true} />
+
       {!loadingStream && activeUrl ? (
         <Video
-          key={activeUrl}
+          key={`${currentEpNum}_${activeUrl}`}
           ref={videoRef}
           style={styles.videoPlayer}
           source={videoSource}
           useNativeControls={false}
           resizeMode={resizeMode}
-          progressUpdateIntervalMillis={1000}
-          onPlaybackStatusUpdate={setStatus}
+          progressUpdateIntervalMillis={950}
+          onPlaybackStatusUpdate={(st) => handlePlaybackStatusUpdate(st, activeSessionToken)}
           onLoad={async (loadStatus) => {
-            if (loadStatus?.durationMillis) {
-              lastDurationRef.current = loadStatus.durationMillis;
+            if (activeSessionToken !== episodeSessionIdRef.current) return;
+            const loadedDur = loadStatus?.durationMillis || lastDurationRef.current || 0;
+            if (loadedDur > 0) {
+              lastDurationRef.current = loadedDur;
+              setDurMillis(loadedDur);
             }
+            const startMs = lastPositionRef.current > 0 ? lastPositionRef.current : 0;
             if (videoRef.current) {
-              if (lastPositionRef.current > 0) {
-                await videoRef.current.setPositionAsync(lastPositionRef.current).catch(() => {});
+              if (startMs > 0) {
+                await videoRef.current.setPositionAsync(startMs).catch(() => {});
+              }
+              if (playbackSpeed !== 1.0) {
+                await videoRef.current.setRateAsync(playbackSpeed, true).catch(() => {});
               }
               await videoRef.current.playAsync().catch(() => {});
             }
-            saveWatchHistory(
-              lastPositionRef.current || 1000,
-              loadStatus?.durationMillis || lastDurationRef.current || 0,
-              true
-            );
+            saveWatchHistory(startMs || 1000, loadedDur, true);
           }}
           shouldPlay
         />
       ) : null}
 
-      {/* Fullscreen Tap Catcher so tapping empty video area always toggles UI on/off */}
+      {/* Fullscreen Tap Catcher */}
       <TouchableOpacity
         style={styles.tapSurface}
         activeOpacity={1}
@@ -1123,7 +1145,7 @@ export default function Player({
       )}
 
       <PlayPauseSkip
-        status={status}
+        status={lightStatus}
         videoRef={videoRef}
         resetHideTimer={resetHideTimer}
         toggleUI={toggleUIOnTap}
@@ -1145,7 +1167,7 @@ export default function Player({
       />
 
       <SkipIntroOutro
-        status={status}
+        status={lightStatus}
         videoRef={videoRef}
         introData={streamData?.intro}
         isLocked={isLocked}
@@ -1155,20 +1177,12 @@ export default function Player({
       <Animated.View style={[styles.uiLayer, { opacity: uiOpacity }]} pointerEvents={showUI ? 'box-none' : 'none'}>
         {!isLocked && (
           <View style={styles.topBarWrapper} pointerEvents="box-none">
-            <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
-              <Defs>
-                <LinearGradient id="topCinematic" x1="0" y1="0" x2="0" y2="1">
-                  <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
-                  <Stop offset="1" stopColor="#000000" stopOpacity="0" />
-                </LinearGradient>
-              </Defs>
-              <Rect width="100%" height="100%" fill="url(#topCinematic)" />
-            </Svg>
+            <TopGradientOverlay />
             <View style={styles.topBarContent} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
                 <TouchableOpacity
                   onPress={() => {
-                    saveWatchHistory(lastPositionRef.current, status.durationMillis || lastDurationRef.current || 0);
+                    saveWatchHistory(lastPositionRef.current, lastDurationRef.current);
                     navigation.goBack();
                   }}
                   style={styles.iconBtn}
@@ -1185,7 +1199,7 @@ export default function Player({
                       </View>
                     )}
                   </View>
-                  <Text style={styles.subTitle}>
+                  <Text style={styles.subTitle} numberOfLines={1}>
                     Episode {currentEpNum} {currentEpTitle ? `• ${currentEpTitle}` : ''}
                   </Text>
                 </View>
@@ -1208,15 +1222,7 @@ export default function Player({
         )}
 
         <View style={styles.bottomBarWrapper} pointerEvents="box-none">
-          <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
-            <Defs>
-              <LinearGradient id="botCinematic" x1="0" y1="1" x2="0" y2="0">
-                <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
-                <Stop offset="1" stopColor="#000000" stopOpacity="0" />
-              </LinearGradient>
-            </Defs>
-            <Rect width="100%" height="100%" fill="url(#botCinematic)" />
-          </Svg>
+          <BottomGradientOverlay />
           <View style={styles.bottomContent} pointerEvents="box-none">
             <View style={styles.bottomToolsRow} pointerEvents="box-none">
               <View style={styles.toolsLeft}>
@@ -1251,29 +1257,33 @@ export default function Player({
 
             {!isLocked && (
               <View style={styles.progressRow}>
-                <Text style={styles.timeText}>{formatTime(status.positionMillis || 0)}</Text>
+                <Text style={styles.timeText}>{formatTime(displayPosMillis)}</Text>
                 <Slider
                   style={styles.slider}
                   minimumValue={0}
-                  maximumValue={status.durationMillis || lastDurationRef.current || 100}
-                  value={status.positionMillis || 0}
+                  maximumValue={displayDurMillis}
+                  value={displayPosMillis}
                   minimumTrackTintColor={BRAND_RED}
                   maximumTrackTintColor="rgba(255,255,255,0.2)"
                   thumbTintColor="#FFF"
+                  onSlidingStart={() => {
+                    setIsSeeking(true);
+                    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
+                  }}
+                  onValueChange={(val) => setSeekPreviewMillis(val)}
                   onSlidingComplete={async (val) => {
+                    setIsSeeking(false);
+                    setPosMillis(val);
+                    lastPositionRef.current = val;
                     if (videoRef.current) {
                       await videoRef.current.setPositionAsync(val).catch(() => {});
-                      lastPositionRef.current = val;
-                      saveWatchHistory(val, status.durationMillis || lastDurationRef.current || 0, true);
+                      saveWatchHistory(val, displayDurMillis, true);
                       resetHideTimer();
                     }
                   }}
-                  onSlidingStart={() => {
-                    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
-                  }}
                 />
                 <Text style={styles.timeText}>
-                  -{formatTime((status.durationMillis || 0) - (status.positionMillis || 0))}
+                  -{formatTime(Math.max(0, displayDurMillis - displayPosMillis))}
                 </Text>
               </View>
             )}
@@ -1281,15 +1291,18 @@ export default function Player({
         </View>
       </Animated.View>
 
-      <VideoQualitySheet
-        activeMenu={activeMenu}
-        setActiveMenu={setActiveMenu}
-        qualityList={qualityList}
-        selectedQuality={selectedQuality}
-        setSelectedQuality={setSelectedQuality}
-        setActiveUrl={setActiveUrl}
-        currentAutoRes={currentAutoRes}
-      />
+      {activeMenu === 'quality' && (
+        <VideoQualitySheet
+          activeMenu={activeMenu}
+          setActiveMenu={setActiveMenu}
+          qualityList={qualityList}
+          selectedQuality={selectedQuality}
+          setSelectedQuality={setSelectedQuality}
+          setActiveUrl={setActiveUrl}
+          currentAutoRes={currentAutoRes}
+        />
+      )}
+
       <SubtitleSheet
         activeMenu={activeMenu}
         setActiveMenu={setActiveMenu}
@@ -1297,31 +1310,45 @@ export default function Player({
         setSubtitlesEnabled={setSubtitlesEnabled}
         subSettings={subSettings}
         setSubSettings={setSubSettings}
-        animeId={isOfflineMode ? null : effectiveAnimeId}
-        episodeNum={isOfflineMode ? null : currentEpNum}
+        animeId={effectiveAnimeId}
+        animeTitle={animeTitle}
+        episodeNum={currentEpNum}
+        slug={currentSlug || currentEpNum}
+        isOffline={isOfflineMode}
+        localSubtitleUri={offlineSubUri}
+        localMetaUri={offlineMetaUri}
+        localVideoUri={offlineStreamUri}
         onSelectSubtitleTrack={(track) => {
-          if (track && track.cues) {
+          if (track && Array.isArray(track.cues)) {
             setParsedSubs(track.cues);
-          } else if (!isOfflineMode) {
+          } else {
             setParsedSubs([]);
+            setCurrentSubText('');
           }
         }}
       />
-      <AudioSheet
-        activeMenu={activeMenu}
-        setActiveMenu={setActiveMenu}
-        animeId={effectiveAnimeId}
-        episodeNum={currentEpNum}
-        currentTargetType={selectedAudioType}
-        onSelectAudioType={setSelectedAudioType}
-      />
-      <SpeedSheet
-        activeMenu={activeMenu}
-        setActiveMenu={setActiveMenu}
-        playbackSpeed={playbackSpeed}
-        setPlaybackSpeed={setPlaybackSpeed}
-        videoRef={videoRef}
-      />
+
+      {activeMenu === 'audio' && (
+        <AudioSheet
+          activeMenu={activeMenu}
+          setActiveMenu={setActiveMenu}
+          animeId={effectiveAnimeId}
+          episodeNum={currentEpNum}
+          slug={currentSlug || currentEpNum}
+          currentTargetType={selectedAudioType}
+          onSelectAudioType={setSelectedAudioType}
+        />
+      )}
+
+      {activeMenu === 'speed' && (
+        <SpeedSheet
+          activeMenu={activeMenu}
+          setActiveMenu={setActiveMenu}
+          playbackSpeed={playbackSpeed}
+          setPlaybackSpeed={setPlaybackSpeed}
+          videoRef={videoRef}
+        />
+      )}
     </View>
   );
 }
