@@ -5,25 +5,19 @@ import {
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 import * as FileSystem from 'expo-file-system';
-
-let DocumentPicker = null;
-try {
-  DocumentPicker = require('expo-document-picker');
-} catch (_) {}
-
-let AsyncStorage = null;
-try {
-  const mod = require('@react-native-async-storage/async-storage');
-  AsyncStorage = mod?.default || mod;
-} catch (_) {}
+import * as DocumentPicker from 'expo-document-picker';
+import firestore from '@react-native-firebase/firestore';
 
 const BRAND_RED = '#E50914';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
 
-const SUB_SETTINGS_STORAGE_KEY = '@kameko_subtitle_settings_v1';
 const SUB_SETTINGS_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_subtitle_settings.json`
+  : null;
+
+const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
+  ? `${FileSystem.documentDirectory}kameko_downloads_queue.json`
   : null;
 
 const DEFAULT_SUB_SETTINGS = {
@@ -64,60 +58,31 @@ const IconClose = ({ size = 18, color = "rgba(255,255,255,0.75)" }) => (
   </Svg>
 );
 
-// --- LOCAL STORAGE HELPERS (FileSystem + AsyncStorage + Web localStorage) ---
+// --- BUILD-SAFE LOCAL STORAGE HELPERS (expo-file-system) ---
 const loadSavedSubSettings = async () => {
-  try {
-    if (AsyncStorage?.getItem) {
-      const raw = await AsyncStorage.getItem(SUB_SETTINGS_STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    }
-  } catch (_) {}
-
   try {
     if (SUB_SETTINGS_FILE_URI) {
       const info = await FileSystem.getInfoAsync(SUB_SETTINGS_FILE_URI);
-      if (info.exists) {
+      if (info?.exists) {
         const raw = await FileSystem.readAsStringAsync(SUB_SETTINGS_FILE_URI);
         if (raw) return JSON.parse(raw);
       }
     }
   } catch (_) {}
-
-  try {
-    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
-      const raw = globalThis.localStorage.getItem(SUB_SETTINGS_STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    }
-  } catch (_) {}
-
   return null;
 };
 
 const persistSubSettings = async (settingsObj) => {
-  const serialized = JSON.stringify(settingsObj);
-
-  try {
-    if (AsyncStorage?.setItem) {
-      await AsyncStorage.setItem(SUB_SETTINGS_STORAGE_KEY, serialized);
-    }
-  } catch (_) {}
-
   try {
     if (SUB_SETTINGS_FILE_URI) {
-      await FileSystem.writeAsStringAsync(SUB_SETTINGS_FILE_URI, serialized);
-    }
-  } catch (_) {}
-
-  try {
-    if (typeof globalThis !== 'undefined' && globalThis.localStorage) {
-      globalThis.localStorage.setItem(SUB_SETTINGS_STORAGE_KEY, serialized);
+      await FileSystem.writeAsStringAsync(SUB_SETTINGS_FILE_URI, JSON.stringify(settingsObj));
     }
   } catch (_) {}
 };
 
-// --- ROBUST LINE-BY-LINE PARSER ---
+// --- ROBUST LINE-BY-LINE VTT / SRT PARSER ---
 const parseTimeToSeconds = (timeStr) => {
-  const cleanTimeStr = timeStr.trim().split(/\s+/)[0].replace(',', '.');
+  const cleanTimeStr = (timeStr || '').trim().split(/\s+/)[0].replace(',', '.');
   const parts = cleanTimeStr.split(':');
   let seconds = NaN;
 
@@ -130,25 +95,41 @@ const parseTimeToSeconds = (timeStr) => {
   return Number.isFinite(seconds) ? seconds : NaN;
 };
 
-const fetchAndParseSubtitle = async (uri, referer) => {
+export const fetchAndParseSubtitle = async (uri, referer = 'https://vidwish.live/') => {
+  if (!uri) return [];
   try {
     let text = '';
 
-    if (uri.startsWith('file://')) {
+    if (String(uri).startsWith('file://')) {
+      const info = await FileSystem.getInfoAsync(uri);
+      if (!info?.exists) return [];
       text = await FileSystem.readAsStringAsync(uri);
     } else {
-      const proxyUri = `${PROXY_URL}${encodeURIComponent(uri)}&referer=${encodeURIComponent(referer)}`;
-      const response = await fetch(proxyUri);
+      try {
+        const proxyUri = `${PROXY_URL}${encodeURIComponent(uri)}&referer=${encodeURIComponent(referer)}`;
+        const response = await fetch(proxyUri);
+        if (response.ok) {
+          text = await response.text();
+        }
+      } catch (_) {}
 
-      if (!response.ok) throw new Error('Proxy fetch failed');
-      text = await response.text();
+      // Direct fetch fallback if proxy fails
+      if (!text) {
+        const directRes = await fetch(uri, {
+          headers: referer ? { Referer: referer } : {},
+        });
+        if (directRes.ok) {
+          text = await directRes.text();
+        }
+      }
     }
 
     if (
+      !text ||
       text.trim().toLowerCase().startsWith('<!doctype html>') ||
       text.trim().toLowerCase().startsWith('<html')
     ) {
-      throw new Error('Received HTML blocked page instead of VTT.');
+      return [];
     }
 
     const cues = [];
@@ -177,10 +158,10 @@ const fetchAndParseSubtitle = async (uri, referer) => {
     }
 
     if (currentCue) currentCue.text = currentCue.text.trim();
-    return cues.filter(c => c.text.length > 0);
+    return cues.filter((c) => c.text.length > 0);
   } catch (err) {
-    console.error("Subtitle parsing error:", err);
-    return []; 
+    console.warn('Subtitle parsing warning:', err);
+    return [];
   }
 };
 
@@ -192,13 +173,21 @@ export default function SubtitleSheet({
   subSettings,
   setSubSettings,
   animeId,
+  animeTitle,
   episodeNum,
-  onSelectSubtitleTrack
+  slug,
+  isOffline = false,
+  localSubtitleUri = null,
+  localMetaUri = null,
+  localVideoUri = null,
+  roomCode = null,
+  memberKey = 'guest',
+  memberName = 'User',
+  remoteSubtitleState = null,
+  onSelectSubtitleTrack,
 }) {
-  // Live window dimensions so landscape rotation never overflows the screen
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
 
-  // Constrain popup height to fit comfortably inside the current screen
   const effectiveScreenHeight = Math.max(240, windowHeight);
   const sheetMaxHeight = Math.floor(effectiveScreenHeight * 0.86);
   const scrollAreaMaxHeight = Math.max(140, sheetMaxHeight - 78);
@@ -207,20 +196,22 @@ export default function SubtitleSheet({
   const [availableTracks, setAvailableTracks] = useState([]);
   const [selectedTrackIndex, setSelectedTrackIndex] = useState(-1);
   const [isFetchingList, setIsFetchingList] = useState(false);
-  const [parsingIndex, setParsingIndex] = useState(null); 
+  const [parsingIndex, setParsingIndex] = useState(null);
   const [activeTab, setActiveTab] = useState('tracks');
 
   const customFileUrisRef = useRef([]);
   const requestIdRef = useRef(0);
   const refererRef = useRef('https://vidwish.live/');
+  const lastRoomSyncTimestampRef = useRef(0);
+  const isApplyingRemoteSubRef = useRef(false);
 
-  // 0. LOAD SAVED SUBTITLE SETTINGS FROM LOCAL STORAGE ON MOUNT
+  // 0. Load Saved Subtitle Appearance Settings on Mount
   useEffect(() => {
     let isMounted = true;
     const restoreSettings = async () => {
       const saved = await loadSavedSubSettings();
       if (saved && isMounted && typeof setSubSettings === 'function') {
-        setSubSettings(prev => ({
+        setSubSettings((prev) => ({
           ...DEFAULT_SUB_SETTINGS,
           ...(prev || {}),
           ...saved,
@@ -231,9 +222,8 @@ export default function SubtitleSheet({
     return () => { isMounted = false; };
   }, [setSubSettings]);
 
-  // Helper to update state AND immediately persist to local storage
   const updateAndSaveSubSettings = useCallback((patch) => {
-    setSubSettings(prev => {
+    setSubSettings((prev) => {
       const current = { ...DEFAULT_SUB_SETTINGS, ...(prev || {}) };
       const nextPatch = typeof patch === 'function' ? patch(current) : patch;
       const updated = { ...current, ...nextPatch };
@@ -242,102 +232,345 @@ export default function SubtitleSheet({
     });
   }, [setSubSettings]);
 
-  // 1. BACKGROUND FETCH & AUTO-LOAD
-  useEffect(() => {
-    if (!animeId || !episodeNum) return;
-    const currentRequestId = ++requestIdRef.current;
-
-    const fetchSubtitles = async () => {
+  // Helper: Broadcast Subtitle Track Selection to Room Members in Firestore
+  const broadcastSubtitleToRoom = useCallback(
+    async (payload) => {
+      if (!roomCode || isApplyingRemoteSubRef.current) return;
+      const now = Date.now();
+      lastRoomSyncTimestampRef.current = now;
       try {
-        setIsFetchingList(true);
-        const servers = ['hd-1', 'hd-2'];
-        let subTracks = [];
+        await firestore()
+          .collection('rooms')
+          .doc(String(roomCode))
+          .update({
+            subtitleState: {
+              ...payload,
+              episodeNum: Number(episodeNum || 1),
+              updatedBy: String(memberKey),
+              updatedByName: String(memberName),
+              updatedAt: now,
+            },
+          });
+      } catch (_) {}
+    },
+    [roomCode, episodeNum, memberKey, memberName]
+  );
+
+  // Core Track Loader
+  const handleTrackSelect = useCallback(
+    async (track, idx, parentRequestId = null, shouldBroadcastToRoom = false) => {
+      if (!track?.file) return;
+      const reqId = parentRequestId || ++requestIdRef.current;
+
+      setParsingIndex(idx);
+      const trackReferer = track.referer || refererRef.current;
+      const parsedCues = await fetchAndParseSubtitle(track.file, trackReferer);
+
+      if (reqId !== requestIdRef.current) return;
+      setParsingIndex(null);
+
+      if (parsedCues.length > 0) {
+        setSelectedTrackIndex(idx);
+        setSubtitlesEnabled(true);
+        if (onSelectSubtitleTrack) {
+          onSelectSubtitleTrack({ ...track, cues: parsedCues });
+        }
+
+        // If user selected this track inside a Watch Room, sync it for everyone!
+        if (shouldBroadcastToRoom && roomCode && !String(track.file).startsWith('file://')) {
+          broadcastSubtitleToRoom({
+            enabled: true,
+            label: track.label || track.lang || `Track ${idx + 1}`,
+            file: track.file,
+            referer: trackReferer,
+          });
+        }
+      } else if (!parentRequestId) {
+        Alert.alert('Subtitle Error', 'Could not load text from this subtitle track.');
+      }
+    },
+    [roomCode, broadcastSubtitleToRoom, onSelectSubtitleTrack, setSubtitlesEnabled]
+  );
+
+  const handleTurnOff = useCallback(
+    (shouldBroadcastToRoom = false) => {
+      requestIdRef.current++;
+      setParsingIndex(null);
+      setSelectedTrackIndex(-1);
+      setSubtitlesEnabled(false);
+      if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
+
+      if (shouldBroadcastToRoom && roomCode) {
+        broadcastSubtitleToRoom({
+          enabled: false,
+          label: 'Off',
+          file: null,
+        });
+      }
+    },
+    [roomCode, broadcastSubtitleToRoom, onSelectSubtitleTrack, setSubtitlesEnabled]
+  );
+
+  // 1. RESOLVE SUBTITLES (OFFLINE DOWNLOADED VTT + ONLINE API TRACKS)
+  useEffect(() => {
+    const currentRequestId = ++requestIdRef.current;
+    let isMounted = true;
+
+    const loadSubtitlesOfflineAndOnline = async () => {
+      setIsFetchingList(true);
+      const discoveredOfflineTracks = [];
+
+      // A. Check Offline Downloaded Subtitle Files First
+      try {
+        let candidateSubUri = localSubtitleUri;
+        let candidateMetaUri = localMetaUri;
+        let candidateLabel = 'Downloaded Subtitle';
+
+        if (!candidateSubUri && localVideoUri && String(localVideoUri).startsWith('file://')) {
+          const folder = localVideoUri.substring(0, localVideoUri.lastIndexOf('/') + 1);
+          candidateSubUri = `${folder}subtitle.vtt`;
+          candidateMetaUri = candidateMetaUri || `${folder}metadata.json`;
+        }
+
+        // Also scan local downloads queue if not passed directly
+        if (!candidateSubUri && DOWNLOAD_QUEUE_FILE_URI) {
+          const qInfo = await FileSystem.getInfoAsync(DOWNLOAD_QUEUE_FILE_URI);
+          if (qInfo?.exists) {
+            const rawQueue = await FileSystem.readAsStringAsync(DOWNLOAD_QUEUE_FILE_URI);
+            const queueList = JSON.parse(rawQueue || '[]');
+            if (Array.isArray(queueList)) {
+              const matchedItem = queueList.find(
+                (d) =>
+                  d.status === 'completed' &&
+                  Number(d.episodeNum) === Number(episodeNum || 1) &&
+                  ((animeId && String(d.animeId) === String(animeId)) ||
+                    (animeTitle &&
+                      String(d.animeTitle || '').toLowerCase() === String(animeTitle).toLowerCase()))
+              );
+              if (matchedItem) {
+                if (matchedItem.localSubtitleUri) {
+                  candidateSubUri = matchedItem.localSubtitleUri;
+                } else if (matchedItem.localUri) {
+                  const folder = matchedItem.localUri.substring(
+                    0,
+                    matchedItem.localUri.lastIndexOf('/') + 1
+                  );
+                  candidateSubUri = `${folder}subtitle.vtt`;
+                  candidateMetaUri = matchedItem.localMetaUri || `${folder}metadata.json`;
+                }
+                if (matchedItem.subtitle?.label && matchedItem.subtitle?.lang !== 'none') {
+                  candidateLabel = `${matchedItem.subtitle.label} (Offline)`;
+                }
+              }
+            }
+          }
+        }
+
+        // Read metadata.json if present for accurate subtitle language label
+        if (candidateMetaUri) {
+          try {
+            const metaInfo = await FileSystem.getInfoAsync(candidateMetaUri);
+            if (metaInfo?.exists) {
+              const metaJson = JSON.parse(await FileSystem.readAsStringAsync(candidateMetaUri));
+              if (metaJson?.subtitle?.localUri) {
+                candidateSubUri = metaJson.subtitle.localUri;
+              }
+              if (metaJson?.subtitle?.label && metaJson?.subtitle?.lang !== 'none') {
+                candidateLabel = `${metaJson.subtitle.label} (Offline)`;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (candidateSubUri) {
+          const subFileInfo = await FileSystem.getInfoAsync(candidateSubUri);
+          if (subFileInfo?.exists) {
+            discoveredOfflineTracks.push({
+              file: candidateSubUri,
+              label: candidateLabel,
+              lang: 'offline',
+              default: true,
+              isOfflineTrack: true,
+            });
+          }
+        }
+      } catch (_) {}
+
+      // If strictly in Offline Mode, or if no animeId is provided for online fetch
+      if (isOffline || !animeId || !episodeNum) {
+        if (!isMounted || currentRequestId !== requestIdRef.current) return;
+        setAvailableTracks(discoveredOfflineTracks);
+        setIsFetchingList(false);
+
+        if (discoveredOfflineTracks.length > 0) {
+          handleTrackSelect(discoveredOfflineTracks[0], 0, currentRequestId, false);
+        }
+        return;
+      }
+
+      // B. Fetch Online Subtitle Tracks from Stream API
+      try {
+        const targetEpParam = slug || episodeNum;
+        const servers = ['hd-1', 'hd-2', 'vidstream-2'];
+        let onlineSubTracks = [];
         let resolvedReferer = 'https://vidwish.live/';
 
         for (const srv of servers) {
           try {
-            const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(animeId)}&ep=${encodeURIComponent(episodeNum)}&server=${srv}&type=sub`;
+            const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(animeId)}&ep=${encodeURIComponent(targetEpParam)}&server=${srv}&type=sub`;
             const res = await fetch(url);
             const json = await res.json();
             const payload = json?.data || json?.results;
 
             if (payload?.referer) resolvedReferer = payload.referer;
             if (Array.isArray(payload?.subtitles) && payload.subtitles.length > 0) {
-              subTracks = payload.subtitles;
-              break;
+              onlineSubTracks = payload.subtitles.filter(
+                (s) => s.kind !== 'thumbnails' && !String(s.label || '').toLowerCase().includes('thumbnail')
+              );
+              if (onlineSubTracks.length > 0) break;
             }
           } catch (_) {}
         }
 
-        if (currentRequestId !== requestIdRef.current) return;
-
+        if (!isMounted || currentRequestId !== requestIdRef.current) return;
         refererRef.current = resolvedReferer;
 
-        if (subTracks.length > 0) {
-          setAvailableTracks(subTracks);
+        const combinedTracks = [...discoveredOfflineTracks, ...onlineSubTracks];
+        setAvailableTracks(combinedTracks);
 
-          const defaultIdx = subTracks.findIndex(s => s.default) !== -1 
-            ? subTracks.findIndex(s => s.default) 
-            : 0;
+        if (combinedTracks.length > 0) {
+          // Check if the room already has an active synced subtitle state
+          if (roomCode && remoteSubtitleState) {
+            if (remoteSubtitleState.enabled === false) {
+              handleTurnOff(false);
+              return;
+            }
+            if (remoteSubtitleState.file || remoteSubtitleState.label) {
+              const matchedIdx = combinedTracks.findIndex(
+                (t) =>
+                  t.file === remoteSubtitleState.file ||
+                  (t.label || t.lang) === remoteSubtitleState.label
+              );
+              if (matchedIdx !== -1) {
+                handleTrackSelect(combinedTracks[matchedIdx], matchedIdx, currentRequestId, false);
+                return;
+              }
+            }
+          }
 
-          handleTrackSelect(subTracks[defaultIdx], defaultIdx, currentRequestId);
+          const defaultIdx =
+            combinedTracks.findIndex((s) =>
+              String(s.label || s.lang || '').toLowerCase().includes('english')
+            ) !== -1
+              ? combinedTracks.findIndex((s) =>
+                  String(s.label || s.lang || '').toLowerCase().includes('english')
+                )
+              : combinedTracks.findIndex((s) => s.default) !== -1
+              ? combinedTracks.findIndex((s) => s.default)
+              : 0;
+
+          handleTrackSelect(combinedTracks[defaultIdx], defaultIdx, currentRequestId, false);
         }
       } catch (_) {
+        if (isMounted && discoveredOfflineTracks.length > 0) {
+          setAvailableTracks(discoveredOfflineTracks);
+          handleTrackSelect(discoveredOfflineTracks[0], 0, currentRequestId, false);
+        }
       } finally {
-        if (currentRequestId === requestIdRef.current) setIsFetchingList(false);
+        if (isMounted && currentRequestId === requestIdRef.current) {
+          setIsFetchingList(false);
+        }
       }
     };
 
-    fetchSubtitles();
+    loadSubtitlesOfflineAndOnline();
 
     return () => {
-      requestIdRef.current++; 
-      setAvailableTracks([]);
-      if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
-
-      customFileUrisRef.current.forEach(uri => {
+      isMounted = false;
+      requestIdRef.current++;
+      customFileUrisRef.current.forEach((uri) => {
         FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
       });
       customFileUrisRef.current = [];
     };
-  }, [animeId, episodeNum]);
+  }, [
+    animeId,
+    animeTitle,
+    episodeNum,
+    slug,
+    isOffline,
+    localSubtitleUri,
+    localMetaUri,
+    localVideoUri,
+  ]);
 
-  // Core Track Loader
-  const handleTrackSelect = async (track, idx, parentRequestId = null) => {
-    const reqId = parentRequestId || ++requestIdRef.current;
+  // 2. LISTEN FOR ROOM SUBTITLE SYNC CHANGES FROM OTHER USERS
+  useEffect(() => {
+    if (!roomCode || !remoteSubtitleState) return;
 
-    setParsingIndex(idx); 
-    const parsedCues = await fetchAndParseSubtitle(track.file, refererRef.current);
-
-    if (reqId !== requestIdRef.current) return;
-    setParsingIndex(null);
-
-    if (parsedCues.length > 0) {
-      setSelectedTrackIndex(idx);
-      setSubtitlesEnabled(true);
-      if (onSelectSubtitleTrack) {
-        onSelectSubtitleTrack({ ...track, cues: parsedCues });
-      }
-    } else if (!parentRequestId) {
-      Alert.alert('Subtitle Error', 'Could not load text from this subtitle track.');
-      handleTurnOff();
-    }
-  };
-
-  const handleTurnOff = () => {
-    requestIdRef.current++; 
-    setParsingIndex(null);
-    setSelectedTrackIndex(-1);
-    setSubtitlesEnabled(false);
-    if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
-  };
-
-  const handlePickCustomSubtitle = async () => {
-    if (!DocumentPicker) {
-      Alert.alert('Feature Notice', 'Please install expo-document-picker.');
+    // Ignore our own broadcast echo
+    if (
+      remoteSubtitleState.updatedBy === memberKey &&
+      Math.abs((remoteSubtitleState.updatedAt || 0) - lastRoomSyncTimestampRef.current) < 1800
+    ) {
       return;
     }
 
+    const syncIncomingRoomSubtitle = async () => {
+      try {
+        isApplyingRemoteSubRef.current = true;
+
+        // If another member turned subtitles Off, turn off for everyone
+        if (remoteSubtitleState.enabled === false) {
+          requestIdRef.current++;
+          setParsingIndex(null);
+          setSelectedTrackIndex(-1);
+          setSubtitlesEnabled(false);
+          if (onSelectSubtitleTrack) onSelectSubtitleTrack(null);
+          return;
+        }
+
+        // If another member selected a subtitle track, switch to it immediately
+        if (remoteSubtitleState.file) {
+          const existingIdx = availableTracks.findIndex(
+            (t) =>
+              t.file === remoteSubtitleState.file ||
+              (remoteSubtitleState.label && (t.label || t.lang) === remoteSubtitleState.label)
+          );
+
+          if (existingIdx !== -1) {
+            await handleTrackSelect(availableTracks[existingIdx], existingIdx, null, false);
+          } else {
+            const syncedTrack = {
+              file: remoteSubtitleState.file,
+              label: remoteSubtitleState.label || 'Synced Room Subtitle',
+              referer: remoteSubtitleState.referer || refererRef.current,
+            };
+            const nextList = [...availableTracks, syncedTrack];
+            setAvailableTracks(nextList);
+            await handleTrackSelect(syncedTrack, nextList.length - 1, null, false);
+          }
+        }
+      } catch (_) {
+      } finally {
+        setTimeout(() => {
+          isApplyingRemoteSubRef.current = false;
+        }, 250);
+      }
+    };
+
+    syncIncomingRoomSubtitle();
+  }, [
+    roomCode,
+    remoteSubtitleState?.enabled,
+    remoteSubtitleState?.file,
+    remoteSubtitleState?.label,
+    remoteSubtitleState?.updatedAt,
+    remoteSubtitleState?.updatedBy,
+    memberKey,
+  ]);
+
+  const handlePickCustomSubtitle = async () => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: ['text/vtt', 'application/x-subrip', 'text/plain', '*/*'],
@@ -350,17 +583,17 @@ export default function SubtitleSheet({
           file: file.uri,
           label: file.name || 'Custom Local Subtitle',
           kind: 'captions',
-          isCustom: true
+          isCustom: true,
         };
 
         customFileUrisRef.current.push(file.uri);
 
         const newIndex = availableTracks.length;
-        setAvailableTracks(prev => [...prev, newTrack]);
-        handleTrackSelect(newTrack, newIndex);
+        setAvailableTracks((prev) => [...prev, newTrack]);
+        handleTrackSelect(newTrack, newIndex, null, false);
         setActiveMenu(null);
       }
-    } catch (err) {
+    } catch (_) {
       Alert.alert('File Error', 'Could not load custom subtitle file.');
     }
   };
@@ -390,7 +623,6 @@ export default function SubtitleSheet({
           }
         ]}
       >
-        {/* Fixed Header Row (Never Scrolls Off-Screen) */}
         <View style={styles.headerRow}>
           <View style={styles.tabHeader}>
             <TouchableOpacity 
@@ -399,7 +631,7 @@ export default function SubtitleSheet({
               activeOpacity={0.8}
             >
               <Text style={[styles.tabText, activeTab === 'tracks' && styles.tabTextActive]}>
-                Tracks ({availableTracks.length})
+                {roomCode ? `Room Subtitles (${availableTracks.length})` : `Tracks (${availableTracks.length})`}
               </Text>
             </TouchableOpacity>
             <TouchableOpacity 
@@ -423,7 +655,6 @@ export default function SubtitleSheet({
           </TouchableOpacity>
         </View>
 
-        {/* Explicitly Bounded Scrollable Content Area */}
         <ScrollView 
           style={[styles.scrollArea, { maxHeight: scrollAreaMaxHeight }]}
           contentContainerStyle={styles.scrollContentContainer}
@@ -436,6 +667,12 @@ export default function SubtitleSheet({
         >
           {activeTab === 'tracks' && (
             <View style={styles.listContainer}>
+              {roomCode && (
+                <Text style={styles.roomSyncHint}>
+                  Changing subtitles here syncs automatically for everyone in the room.
+                </Text>
+              )}
+
               {isFetchingList && (
                 <ActivityIndicator size="small" color={BRAND_RED} style={{ marginVertical: 8 }} />
               )}
@@ -446,7 +683,10 @@ export default function SubtitleSheet({
                   (!subtitlesEnabled || selectedTrackIndex === -1) ? styles.trackCardActive : styles.trackCardInactive
                 ]}
                 activeOpacity={0.8}
-                onPress={() => { handleTurnOff(); setActiveMenu(null); }}
+                onPress={() => {
+                  handleTurnOff(true);
+                  setActiveMenu(null);
+                }}
               >
                 <Text 
                   style={[
@@ -468,7 +708,7 @@ export default function SubtitleSheet({
                     style={[styles.trackCard, isSelected ? styles.trackCardActive : styles.trackCardInactive]}
                     activeOpacity={0.8}
                     onPress={() => {
-                      handleTrackSelect(track, idx);
+                      handleTrackSelect(track, idx, null, true);
                       if (!isDownloading) setActiveMenu(null);
                     }}
                     disabled={isDownloading}
@@ -495,7 +735,6 @@ export default function SubtitleSheet({
 
           {activeTab === 'styles' && (
             <View style={styles.stylesContainer}>
-              {/* Live Subtitle Preview Box */}
               <View style={styles.previewBox}>
                 <Text
                   style={[
@@ -610,7 +849,6 @@ export default function SubtitleSheet({
                 })}
               </View>
 
-              {/* Reset to Default Button */}
               <TouchableOpacity
                 style={styles.resetBtn}
                 activeOpacity={0.75}
@@ -700,6 +938,12 @@ const styles = StyleSheet.create({
   },
   listContainer: {
     gap: 8,
+  },
+  roomSyncHint: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 11,
+    fontWeight: '600',
+    marginBottom: 4,
   },
   trackCard: {
     width: '100%',
