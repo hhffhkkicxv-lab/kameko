@@ -1,11 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, Animated, Modal 
+  TouchableOpacity, Animated, Modal, StatusBar, Platform 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
+import * as NavigationBar from 'expo-navigation-bar';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
+
+// Safely resolve Player from pages/play/player.js regardless of folder depth
+let PlayerComponent = null;
+try {
+  const mod = require('../play/player');
+  PlayerComponent = mod?.default || mod;
+} catch (_) {
+  try {
+    const fallbackMod = require('../../pages/play/player');
+    PlayerComponent = fallbackMod?.default || fallbackMod;
+  } catch (__) {}
+}
 
 const BRAND_RED = '#E50914';
 const WATCH_HISTORY_COLLECTION = 'watch_history';
@@ -34,15 +48,14 @@ const IconTrash = ({ size = 18, color = "#FFF" }) => (
 );
 
 // --- Individual Animated Card Component ---
-const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
+const ContinueCard = ({ item, onPlayDirect, onDeleteAnime }) => {
   const [showConfirm, setShowConfirm] = useState(false);
-  
-  // Animation Values
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const confirmScale = useRef(new Animated.Value(0)).current;
 
-  // Resolved fields from watch_history document
   const animeId = String(item.animeId || item.id || '');
   const displayTitle = item.animeTitle || item.title || `Anime ${animeId}`;
   const epNum = item.episodeNum ?? item.lastWatchedEp ?? 1;
@@ -51,14 +64,12 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
   const displayEpLabel = hasDistinctEpTitle ? `Ep ${epNum} • ${rawEpTitle}` : `Episode ${epNum}`;
   const displayBackdrop = item.backdropUrl || item.backdrop || 'https://via.placeholder.com/640x360/1a1a1a/ffffff?text=Loading...';
 
-  // Timestamps & Progress Calculation
   const progressSecs = Number(item.progress || 0);
   const durationSecs = Number(item.duration || 0);
   const progressPct = durationSecs > 0 ? Math.min((progressSecs / durationSecs) * 100, 100) : 0;
   const currentTimeStr = item.formattedTimestamp || formatSeconds(progressSecs);
   const totalTimeStr = item.formattedDuration || formatSeconds(durationSecs);
 
-  // Show Confirmation Overlay
   const triggerConfirm = () => {
     setShowConfirm(true);
     Animated.spring(confirmScale, {
@@ -68,7 +79,6 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
     }).start();
   };
 
-  // Hide Confirmation Overlay
   const cancelConfirm = () => {
     Animated.timing(confirmScale, {
       toValue: 0,
@@ -77,24 +87,15 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
     }).start(() => setShowConfirm(false));
   };
 
-  // Execute Delete from Firebase watch_history with Shrink Animation
-  const executeDelete = () => {
+  const handleConfirmDelete = () => {
+    if (isDeleting) return;
+    setIsDeleting(true);
+
     Animated.parallel([
-      Animated.timing(scaleAnim, { toValue: 0.8, duration: 300, useNativeDriver: true }),
-      Animated.timing(fadeAnim, { toValue: 0, duration: 300, useNativeDriver: true })
-    ]).start(async () => {
-      try {
-        await firestore()
-          .collection('users')
-          .doc(String(user.uid))
-          .collection('profiles')
-          .doc(String(activeProfile.id))
-          .collection(WATCH_HISTORY_COLLECTION)
-          .doc(animeId)
-          .delete();
-      } catch (err) {
-        console.warn("Failed to delete watch history item:", err);
-      }
+      Animated.timing(scaleAnim, { toValue: 0.8, duration: 240, useNativeDriver: true }),
+      Animated.timing(fadeAnim, { toValue: 0, duration: 240, useNativeDriver: true }),
+    ]).start(() => {
+      onDeleteAnime(animeId, item._docIds || [animeId]);
     });
   };
 
@@ -103,17 +104,20 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
       <TouchableOpacity 
         style={styles.cardContent} 
         activeOpacity={0.85} 
-        onPress={() => onSelectAnime({ 
-          id: animeId,
+        onPress={() => onPlayDirect({
           animeId: animeId,
-          title: displayTitle,
+          id: animeId,
+          providerId: item.providerId || animeId,
           animeTitle: displayTitle,
-          backdrop: displayBackdrop,
+          title: displayTitle,
           animeBackdrop: displayBackdrop,
           backdropUrl: displayBackdrop,
-          episodeNum: epNum,
+          backdrop: displayBackdrop,
+          coverImage: displayBackdrop,
+          episodeNum: Number(epNum),
           episodeTitle: rawEpTitle || `Episode ${epNum}`,
-          slug: item.slug || String(epNum),
+          epTitle: rawEpTitle || `Episode ${epNum}`,
+          slug: String(item.slug || epNum),
           progress: progressSecs,
           duration: durationSecs,
           targetType: item.audioType || 'sub',
@@ -124,8 +128,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
           style={styles.backdropImage} 
           resizeMode="cover" 
         />
-        
-        {/* Dark Gradient Overlay for Text Legibility */}
+
         <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
           <Defs>
             <LinearGradient id="botGrad" x1="0" y1="1" x2="0" y2="0">
@@ -136,7 +139,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
           </Defs>
           <Rect width="100%" height="100%" fill="url(#botGrad)" />
         </Svg>
-        
+
         {/* Top Right "X" Button */}
         <TouchableOpacity style={styles.cutBtn} activeOpacity={0.7} onPress={triggerConfirm}>
           <IconClose />
@@ -145,7 +148,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
         {/* Bottom Details, Episode Title, Timestamps & Progress Bar */}
         <View style={styles.bottomData}>
           <Text style={styles.animeTitle} numberOfLines={1}>{displayTitle}</Text>
-          
+
           <View style={styles.metaRow}>
             <Text style={styles.epSubTitle} numberOfLines={1}>
               {displayEpLabel}
@@ -154,7 +157,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
               {currentTimeStr}{durationSecs > 0 ? ` / ${totalTimeStr}` : ''}
             </Text>
           </View>
-          
+
           <View style={styles.progressBarBg}>
             <View style={[styles.progressBarFill, { width: `${progressPct}%` }]} />
           </View>
@@ -169,7 +172,7 @@ const ContinueCard = ({ item, user, activeProfile, onSelectAnime }) => {
             <TouchableOpacity style={styles.cancelBtn} onPress={cancelConfirm}>
               <Text style={styles.cancelText}>Cancel</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.deleteBtn} onPress={executeDelete}>
+            <TouchableOpacity style={styles.deleteBtn} onPress={handleConfirmDelete}>
               <IconTrash size={14} />
               <Text style={styles.deleteText}>Delete</Text>
             </TouchableOpacity>
@@ -185,6 +188,14 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
   const [loading, setLoading] = useState(true);
   const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false);
 
+  // Direct Fullscreen Player State
+  const [directPlaybackParams, setDirectPlaybackParams] = useState(null);
+
+  // Track deleted animeIds locally so snapshot updates never flash or glitch deleted cards
+  const deletedIdsRef = useRef(new Set());
+  // Cache AniList backdrops so we don't re-fetch on every snapshot tick
+  const backdropCacheRef = useRef({});
+
   useEffect(() => {
     if (!user?.uid || !activeProfile?.id) {
       setHistoryList([]);
@@ -192,15 +203,16 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
       return;
     }
 
-    // Listen to Firebase Watch History Collection for the Active Profile
-    const unsubscribe = firestore()
+    const colRef = firestore()
       .collection('users')
       .doc(String(user.uid))
       .collection('profiles')
       .doc(String(activeProfile.id))
-      .collection(WATCH_HISTORY_COLLECTION)
+      .collection(WATCH_HISTORY_COLLECTION);
+
+    const unsubscribe = colRef
       .orderBy('timestamp', 'desc')
-      .limit(20)
+      .limit(35)
       .onSnapshot(async (snap) => {
         if (!snap || snap.empty) {
           setHistoryList([]);
@@ -208,56 +220,91 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
           return;
         }
 
-        // Deduplicate records by animeId using a Map (keeping the most recent entry)
+        // Group all docs (both `{animeId}` and `{animeId}_ep_{num}`) by animeId
         const historyMap = new Map();
-        snap.forEach(doc => {
+
+        snap.forEach((doc) => {
           const data = doc.data();
-          if (!data.finishedEp) {
-            const animeId = String(data.animeId || doc.id);
-            if (!historyMap.has(animeId) || (data.timestamp || 0) > (historyMap.get(animeId).timestamp || 0)) {
-              historyMap.set(animeId, {
-                ...data,
-                animeId,
-              });
-            }
+          if (!data) return;
+
+          // Extract base animeId even if doc.id is `{animeId}_ep_1`
+          const rawAnimeId = String(
+            data.animeId || String(doc.id).split('_ep_')[0] || doc.id
+          );
+
+          // Skip if user just deleted this anime
+          if (deletedIdsRef.current.has(rawAnimeId)) return;
+
+          const existing = historyMap.get(rawAnimeId);
+          const docIdsList = existing?._docIds
+            ? [...existing._docIds, doc.id]
+            : [doc.id];
+
+          if (!existing || (data.timestamp || 0) > (existing.timestamp || 0)) {
+            historyMap.set(rawAnimeId, {
+              ...data,
+              animeId: rawAnimeId,
+              _docIds: docIdsList,
+            });
+          } else {
+            existing._docIds = docIdsList;
           }
         });
 
-        const rawHistory = Array.from(historyMap.values());
+        // Filter out completed episodes unless they are still in progress
+        const activeItems = Array.from(historyMap.values()).filter(
+          (item) => !item.finishedEp
+        );
 
-        // Enrich with AniList metadata if backdrop or title is missing
-        const enriched = await Promise.all(rawHistory.map(async (item) => {
-          let backdropUrl = item.backdropUrl || item.backdrop;
-          let animeTitle = item.animeTitle || item.title;
-          
-          if (!backdropUrl) {
-            try {
-              const cleanSearch = String(item.animeId).replace(/-/g, ' ');
-              const query = `query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } bannerImage coverImage { extraLarge } } }`;
-              const aniRes = await fetch('https://graphql.anilist.co', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query, variables: { search: cleanSearch } })
-              });
-              const aniData = await aniRes.json();
-              
-              if (aniData?.data?.Media) {
-                backdropUrl = aniData.data.Media.bannerImage || aniData.data.Media.coverImage?.extraLarge;
-                animeTitle = animeTitle || aniData.data.Media.title?.english || aniData.data.Media.title?.romaji;
-              }
-            } catch (_) {}
-          }
+        const enriched = await Promise.all(
+          activeItems.map(async (item) => {
+            let backdropUrl =
+              item.backdropUrl ||
+              item.backdrop ||
+              backdropCacheRef.current[item.animeId]?.backdropUrl;
+            let animeTitle =
+              item.animeTitle ||
+              item.title ||
+              backdropCacheRef.current[item.animeId]?.animeTitle;
 
-          return { 
-            ...item, 
-            backdropUrl, 
-            backdrop: backdropUrl, 
-            animeTitle, 
-            title: animeTitle 
-          };
-        }));
+            if (!backdropUrl) {
+              try {
+                const cleanSearch = String(item.animeId).replace(/-/g, ' ');
+                const query = `query ($search: String) { Media (search: $search, type: ANIME) { title { romaji english } bannerImage coverImage { extraLarge } } }`;
+                const aniRes = await fetch('https://graphql.anilist.co', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ query, variables: { search: cleanSearch } }),
+                });
+                const aniData = await aniRes.json();
 
-        setHistoryList(enriched);
+                if (aniData?.data?.Media) {
+                  backdropUrl =
+                    aniData.data.Media.bannerImage ||
+                    aniData.data.Media.coverImage?.extraLarge;
+                  animeTitle =
+                    animeTitle ||
+                    aniData.data.Media.title?.english ||
+                    aniData.data.Media.title?.romaji;
+                  backdropCacheRef.current[item.animeId] = { backdropUrl, animeTitle };
+                }
+              } catch (_) {}
+            }
+
+            return {
+              ...item,
+              backdropUrl,
+              backdrop: backdropUrl,
+              animeTitle,
+              title: animeTitle,
+            };
+          })
+        );
+
+        // Final filter against any deletion that happened while awaiting AniList
+        setHistoryList(
+          enriched.filter((i) => !deletedIdsRef.current.has(String(i.animeId)))
+        );
         setLoading(false);
       }, (err) => {
         console.warn("Continue Watching listener error:", err);
@@ -265,10 +312,55 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
       });
 
     return () => unsubscribe();
-  }, [user, activeProfile]);
+  }, [user?.uid, activeProfile?.id]);
+
+  // Permanently delete BOTH the series summary doc (`{animeId}`) AND all episode docs (`{animeId}_ep_*`)
+  const handleDeleteSingleAnime = async (targetAnimeId, knownDocIds = []) => {
+    const cleanId = String(targetAnimeId);
+    deletedIdsRef.current.add(cleanId);
+
+    // Immediately remove from UI state so it never glitches
+    setHistoryList((prev) => prev.filter((item) => String(item.animeId) !== cleanId));
+
+    if (!user?.uid || !activeProfile?.id) return;
+
+    try {
+      const colRef = firestore()
+        .collection('users')
+        .doc(String(user.uid))
+        .collection('profiles')
+        .doc(String(activeProfile.id))
+        .collection(WATCH_HISTORY_COLLECTION);
+
+      const batch = firestore().batch();
+      const refsToDelete = new Set([cleanId, ...knownDocIds]);
+
+      // Also query any episode docs matching animeId == cleanId
+      const matchingSnap = await colRef.where('animeId', '==', cleanId).get().catch(() => null);
+      if (matchingSnap && !matchingSnap.empty) {
+        matchingSnap.forEach((d) => refsToDelete.add(d.id));
+      }
+
+      refsToDelete.forEach((docId) => {
+        if (docId) batch.delete(colRef.doc(String(docId)));
+      });
+
+      await batch.commit();
+    } catch (err) {
+      console.warn("Failed to delete watch history item:", err);
+    } finally {
+      // Release lock after Firestore settles
+      setTimeout(() => {
+        deletedIdsRef.current.delete(cleanId);
+      }, 4000);
+    }
+  };
 
   const executeDeleteAll = async () => {
     setDeleteAllModalVisible(false);
+    setHistoryList([]);
+
+    if (!user?.uid || !activeProfile?.id) return;
     try {
       const ref = firestore()
         .collection('users')
@@ -279,48 +371,95 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
 
       const snap = await ref.get();
       const batch = firestore().batch();
-      snap.forEach(doc => {
+      snap.forEach((doc) => {
+        deletedIdsRef.current.add(String(doc.data()?.animeId || doc.id));
         batch.delete(doc.ref);
       });
       await batch.commit();
-      setHistoryList([]);
     } catch (e) {
       console.warn("Failed to delete all watch history:", e);
+    } finally {
+      setTimeout(() => {
+        deletedIdsRef.current.clear();
+      }, 4000);
     }
   };
 
-  if (loading || historyList.length === 0) return null;
+  // Launch pages/play/player.js Directly in Fullscreen Immersive Mode
+  const handleLaunchDirectPlayer = async (episodePayload) => {
+    if (!PlayerComponent) {
+      // Fallback if PlayerComponent path couldn't be resolved
+      if (onSelectAnime) onSelectAnime(episodePayload);
+      return;
+    }
+
+    try {
+      StatusBar.setHidden(true, 'none');
+      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        await NavigationBar.setVisibilityAsync('hidden');
+        await NavigationBar.setBehaviorAsync('overlay-swipe');
+      }
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch (_) {}
+
+    setDirectPlaybackParams({
+      ...episodePayload,
+      userUid: user?.uid || null,
+      uid: user?.uid || null,
+      user: user || null,
+      activeProfileId: activeProfile?.id || null,
+      profileId: activeProfile?.id || null,
+      activeProfile: activeProfile || null,
+      currentProfile: activeProfile || null,
+    });
+  };
+
+  const handleCloseDirectPlayer = async () => {
+    setDirectPlaybackParams(null);
+    try {
+      StatusBar.setHidden(true, 'none');
+      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        await NavigationBar.setVisibilityAsync('hidden');
+      }
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    } catch (_) {}
+  };
+
+  if (loading || (historyList.length === 0 && !directPlaybackParams)) return null;
 
   return (
     <View style={styles.sectionContainer}>
-      <View style={styles.headerRow}>
-        <Text style={styles.sectionTitle}>Continue Watching</Text>
-        <TouchableOpacity 
-          style={styles.deleteAllBtn} 
-          activeOpacity={0.7} 
-          onPress={() => setDeleteAllModalVisible(true)}
-        >
-          <Text style={styles.deleteAllText}>Delete All</Text>
-        </TouchableOpacity>
-      </View>
+      {historyList.length > 0 && (
+        <>
+          <View style={styles.headerRow}>
+            <Text style={styles.sectionTitle}>Continue Watching</Text>
+            <TouchableOpacity 
+              style={styles.deleteAllBtn} 
+              activeOpacity={0.7} 
+              onPress={() => setDeleteAllModalVisible(true)}
+            >
+              <Text style={styles.deleteAllText}>Delete All</Text>
+            </TouchableOpacity>
+          </View>
 
-      <FlatList
-        data={historyList}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        keyExtractor={(item) => String(item.animeId)}
-        contentContainerStyle={styles.listPadding}
-        snapToInterval={280} 
-        decelerationRate="fast"
-        renderItem={({ item }) => (
-          <ContinueCard 
-            item={item} 
-            user={user} 
-            activeProfile={activeProfile} 
-            onSelectAnime={onSelectAnime} 
+          <FlatList
+            data={historyList}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(item) => String(item.animeId)}
+            contentContainerStyle={styles.listPadding}
+            snapToInterval={280} 
+            decelerationRate="fast"
+            renderItem={({ item }) => (
+              <ContinueCard 
+                item={item} 
+                onPlayDirect={handleLaunchDirectPlayer}
+                onDeleteAnime={handleDeleteSingleAnime}
+              />
+            )}
           />
-        )}
-      />
+        </>
+      )}
 
       {/* Delete All Confirmation Modal */}
       <Modal
@@ -352,12 +491,49 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
           </View>
         </View>
       </Modal>
+
+      {/* DIRECT FULLSCREEN PLAYER.JS MODAL (No Notification Bar & No Navigation Bar) */}
+      {PlayerComponent && directPlaybackParams && (
+        <Modal
+          visible={Boolean(directPlaybackParams)}
+          animationType="fade"
+          transparent={false}
+          hardwareAccelerated={true}
+          statusBarTranslucent={true}
+          onShow={async () => {
+            try {
+              StatusBar.setHidden(true, 'none');
+              if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+                await NavigationBar.setVisibilityAsync('hidden');
+              }
+            } catch (_) {}
+          }}
+          onRequestClose={handleCloseDirectPlayer}
+        >
+          <View style={styles.fullscreenPlayerRoot}>
+            <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+            <PlayerComponent
+              route={{ params: directPlaybackParams }}
+              navigation={{ goBack: handleCloseDirectPlayer }}
+              user={user}
+              activeProfile={activeProfile}
+              activeProfileId={activeProfile?.id}
+            />
+          </View>
+        </Modal>
+      )}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   sectionContainer: { marginTop: 5, marginBottom: 25 },
+  fullscreenPlayerRoot: {
+    flex: 1,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+  },
   headerRow: { 
     flexDirection: 'row', 
     alignItems: 'center', 
