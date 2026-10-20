@@ -16,31 +16,47 @@ import {
   KeyboardAvoidingView,
   Platform,
   Dimensions,
+  Animated,
+  PanResponder,
+  LayoutAnimation,
+  UIManager,
 } from 'react-native';
+import * as NavigationBar from 'expo-navigation-bar';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path, Rect, Circle, Line, Polyline } from 'react-native-svg';
-import { createAgoraRtcEngine, ClientRoleType, CHANNEL_PROFILE_TYPE } from 'react-native-agora';
 
-// Load player from components/room/room_player.js
-import RoomPlayer from '../components/room/room_player';
+// Enable smooth layout animations on Android for the Episodes Dropdown & Chat banners
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+// Safely resolve RoomPlayer from components/room/room_player.js
+let RoomPlayerComponent = null;
+try {
+  const mod = require('./room/room_player');
+  RoomPlayerComponent = mod?.default || mod;
+} catch (_) {
+  try {
+    const fallbackMod = require('../components/room/room_player');
+    RoomPlayerComponent = fallbackMod?.default || fallbackMod;
+  } catch (__) {}
+}
 
 const { width } = Dimensions.get('window');
 
 const BLACK = '#000000';
-const CARD_BG = '#111115';
-const DARK_GREY = '#18181E';
-const BORDER_GREY = '#282832';
+const CARD_BG = '#0D0D12';
+const DARK_GREY = '#16161E';
+const BORDER_GREY = '#262632';
 const TEXT_GREY = '#8E8E98';
 const WHITE = '#FFFFFF';
 const PURE_RED = '#FF0000';
+const BRAND_RED = '#E50914';
 const EMERALD = '#10B981';
 
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const EPISODE_CHUNK_SIZE = 50;
-
-// Replace with your Agora App ID from the Agora Console
-const AGORA_APP_ID = 'YOUR_AGORA_APP_ID_HERE';
 
 const AVATARS = {
   'pfp1.jpg': require('../assets/pfp1.jpg'),
@@ -60,6 +76,17 @@ const generateRoomCode = () => {
   return result;
 };
 
+const formatMessageTime = (timestamp) => {
+  if (!timestamp) return '';
+  const date = new Date(Number(timestamp));
+  if (isNaN(date.getTime())) return '';
+  let hours = date.getHours();
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return `${hours}:${minutes} ${ampm}`;
+};
+
 // ============================================================================
 // CUSTOM SVG ICONS
 // ============================================================================
@@ -69,7 +96,7 @@ const IconBack = ({ size = 22, color = WHITE }) => (
   </Svg>
 );
 
-const IconVerticalDots = ({ size = 22, color = WHITE }) => (
+const IconSettingsDots = ({ size = 22, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
     <Circle cx="12" cy="5" r="2" />
     <Circle cx="12" cy="12" r="2" />
@@ -77,44 +104,62 @@ const IconVerticalDots = ({ size = 22, color = WHITE }) => (
   </Svg>
 );
 
-const IconCloseX = ({ size = 20, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+const IconCloseX = ({ size = 18, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <Line x1="18" y1="6" x2="6" y2="18" />
     <Line x1="6" y1="6" x2="18" y2="18" />
   </Svg>
 );
 
-const IconMicOn = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-    <Path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-    <Line x1="12" y1="19" x2="12" y2="23" />
-    <Line x1="8" y1="23" x2="16" y2="23" />
+const IconChevronDown = ({ size = 20, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M6 9l6 6 6-6" />
   </Svg>
 );
 
-const IconMicOff = ({ size = 18, color = PURE_RED }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Line x1="1" y1="1" x2="23" y2="23" />
-    <Path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-    <Path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
-    <Line x1="12" y1="19" x2="12" y2="23" />
-    <Line x1="8" y1="23" x2="16" y2="23" />
+const IconChevronUp = ({ size = 20, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M18 15l-6-6-6 6" />
   </Svg>
 );
 
-const IconSpeakerOn = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M11 5L6 9H2v6h4l5 4V5z" />
-    <Path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+const IconPlay = ({ size = 18, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
+    <Path d="M8 5v14l11-7z" />
   </Svg>
 );
 
-const IconSpeakerMuted = ({ size = 18, color = PURE_RED }) => (
+const IconSend = ({ size = 18, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+    <Line x1="22" y1="2" x2="11" y2="13" />
+    <Path d="M22 2l-7 20-4-9-9-4 20-7z" />
+  </Svg>
+);
+
+const IconCheck = ({ size = 18, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M20 6L9 17l-5-5" />
+  </Svg>
+);
+
+const IconReply = ({ size = 16, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+    <Polyline points="9 17 4 12 9 7" />
+    <Path d="M20 18v-2a4 4 0 0 0-4-4H4" />
+  </Svg>
+);
+
+const IconEdit = ({ size = 16, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M11 5L6 9H2v6h4l5 4V5z" />
-    <Line x1="23" y1="9" x2="17" y2="15" />
-    <Line x1="17" y1="9" x2="23" y2="15" />
+    <Path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+    <Path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+  </Svg>
+);
+
+const IconTrash = ({ size = 16, color = PURE_RED }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
+    <Polyline points="3 6 5 6 21 6" />
+    <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
   </Svg>
 );
 
@@ -122,19 +167,6 @@ const IconCopy = ({ size = 16, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <Rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
     <Path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-  </Svg>
-);
-
-const IconTrash = ({ size = 14, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
-    <Polyline points="3 6 5 6 21 6" />
-    <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-  </Svg>
-);
-
-const IconPlay = ({ size = 16, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M8 5v14l11-7z" />
   </Svg>
 );
 
@@ -147,6 +179,219 @@ const IconQr = ({ size = 18, color = WHITE }) => (
   </Svg>
 );
 
+const IconUsers = ({ size = 18, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+    <Circle cx="9" cy="7" r="4" />
+    <Path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+    <Path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </Svg>
+);
+
+// ============================================================================
+// ANIMATED 3-DOT WAVE TYPING INDICATOR
+// ============================================================================
+const AnimatedTypingDots = () => {
+  const dot1 = useRef(new Animated.Value(0)).current;
+  const dot2 = useRef(new Animated.Value(0)).current;
+  const dot3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const createBounce = (anim, delay) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.timing(anim, {
+            toValue: -5,
+            duration: 240,
+            useNativeDriver: true,
+          }),
+          Animated.timing(anim, {
+            toValue: 0,
+            duration: 240,
+            useNativeDriver: true,
+          }),
+          Animated.delay(240),
+        ])
+      );
+
+    const a1 = createBounce(dot1, 0);
+    const a2 = createBounce(dot2, 120);
+    const a3 = createBounce(dot3, 240);
+
+    a1.start();
+    a2.start();
+    a3.start();
+
+    return () => {
+      a1.stop();
+      a2.stop();
+      a3.stop();
+    };
+  }, [dot1, dot2, dot3]);
+
+  return (
+    <View style={styles.typingDotsContainer}>
+      <Animated.View style={[styles.typingDot, { transform: [{ translateY: dot1 }] }]} />
+      <Animated.View style={[styles.typingDot, { transform: [{ translateY: dot2 }] }]} />
+      <Animated.View style={[styles.typingDot, { transform: [{ translateY: dot3 }] }]} />
+    </View>
+  );
+};
+
+// ============================================================================
+// SWIPE-TO-REPLY + ANIMATED CHAT MESSAGE ITEM
+// ============================================================================
+const SwipeableChatMessage = React.memo(({ item, isMe, onSwipeReply, onLongPressMessage }) => {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const entryScale = useRef(new Animated.Value(0.94)).current;
+  const triggeredRef = useRef(false);
+
+  useEffect(() => {
+    Animated.spring(entryScale, {
+      toValue: 1,
+      friction: 7,
+      tension: 90,
+      useNativeDriver: true,
+    }).start();
+  }, [entryScale]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return gestureState.dx > 12 && Math.abs(gestureState.dy) < 18;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const clampedDx = Math.max(0, Math.min(gestureState.dx, 72));
+        translateX.setValue(clampedDx);
+        if (clampedDx >= 48 && !triggeredRef.current) {
+          triggeredRef.current = true;
+        }
+      },
+      onPanResponderRelease: () => {
+        if (triggeredRef.current) {
+          onSwipeReply(item);
+        }
+        triggeredRef.current = false;
+        Animated.spring(translateX, {
+          toValue: 0,
+          friction: 6,
+          tension: 100,
+          useNativeDriver: true,
+        }).start();
+      },
+      onPanResponderTerminate: () => {
+        triggeredRef.current = false;
+        Animated.spring(translateX, {
+          toValue: 0,
+          friction: 6,
+          tension: 100,
+          useNativeDriver: true,
+        }).start();
+      },
+    })
+  ).current;
+
+  const replyIconOpacity = translateX.interpolate({
+    inputRange: [0, 25, 55],
+    outputRange: [0, 0.5, 1],
+    extrapolate: 'clamp',
+  });
+
+  const replyIconScale = translateX.interpolate({
+    inputRange: [0, 50],
+    outputRange: [0.6, 1.15],
+    extrapolate: 'clamp',
+  });
+
+  return (
+    <View style={styles.messageSwipeWrapper}>
+      {/* Background Swipe-to-Reply Indicator Icon */}
+      <Animated.View
+        style={[
+          styles.swipeReplyIconBadge,
+          {
+            opacity: replyIconOpacity,
+            transform: [{ scale: replyIconScale }],
+          },
+        ]}
+      >
+        <IconReply size={16} color={PURE_RED} />
+      </Animated.View>
+
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[
+          styles.messageRowContainer,
+          isMe ? styles.messageRowMe : styles.messageRowOther,
+          { transform: [{ translateX }, { scale: entryScale }] },
+        ]}
+      >
+        {!isMe && (
+          <Image
+            source={AVATARS[item.senderAvatar] || AVATARS['pfp1.jpg']}
+            style={styles.chatAvatar}
+          />
+        )}
+
+        <TouchableOpacity
+          activeOpacity={0.88}
+          delayLongPress={260}
+          onLongPress={() => onLongPressMessage(item)}
+          style={[
+            styles.messageBubble,
+            isMe ? styles.messageBubbleMe : styles.messageBubbleOther,
+          ]}
+        >
+          {/* Sender Header for Others */}
+          {!isMe && (
+            <View style={styles.senderHeaderRow}>
+              <Text style={styles.senderNameText} numberOfLines={1}>
+                {item.senderName || 'Member'}
+              </Text>
+              {item.isAdmin && (
+                <View style={styles.chatAdminTag}>
+                  <Text style={styles.chatAdminTagText}>ADMIN</Text>
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* Quoted Reply Block */}
+          {item.replyTo && (
+            <View style={[styles.quotedReplyBox, isMe && styles.quotedReplyBoxMe]}>
+              <Text style={styles.quotedReplySender} numberOfLines={1}>
+                @{item.replyTo.senderName || 'User'}
+              </Text>
+              <Text style={styles.quotedReplyText} numberOfLines={1}>
+                {item.replyTo.text}
+              </Text>
+            </View>
+          )}
+
+          {/* Message Body */}
+          <Text style={styles.messageBodyText}>{item.text}</Text>
+
+          {/* Timestamp & Edited Badge Footer */}
+          <View style={styles.messageMetaFooter}>
+            {item.isEdited && (
+              <Text style={[styles.editedBadgeText, isMe && styles.metaTextMe]}>
+                edited •
+              </Text>
+            )}
+            <Text style={[styles.timestampText, isMe && styles.metaTextMe]}>
+              {formatMessageTime(item.createdAt)}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      </Animated.View>
+    </View>
+  );
+});
+
+// ============================================================================
+// MAIN ROOM COMPONENT
+// ============================================================================
 export default function Room({
   anime: propAnime,
   user: propUser,
@@ -180,6 +425,20 @@ export default function Room({
     () => propActiveProfileId || incomingProfile?.id || routeParams.activeProfileId || 'default'
   );
 
+  // Enforce Hidden Top Notification Bar + Visible Default Phone Navigation Bar
+  useEffect(() => {
+    const configureSystemBars = async () => {
+      try {
+        StatusBar.setHidden(true, 'none');
+        if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+          await NavigationBar.setVisibilityAsync('visible');
+        }
+      } catch (_) {}
+    };
+    configureSystemBars();
+  }, []);
+
+  // Auto-resolve profile from Firestore if not provided
   useEffect(() => {
     if (currentProfile?.id || !resolvedUid || resolvedUid === 'guest_uid') return;
     let isMounted = true;
@@ -221,7 +480,8 @@ export default function Room({
   const animeTitle = currentAnime.animeTitle || currentAnime.title || 'Anime Room';
   const animeCover = currentAnime.coverImage || currentAnime.backdrop || '';
 
-  const [setupMode, setSetupMode] = useState('create');
+  // --- SETUP & ROOM STATE ---
+  const [setupMode, setSetupMode] = useState('create'); // 'create' | 'join'
   const [roomCode, setRoomCode] = useState(routeParams.roomCode || '');
   const [activeRoomData, setActiveRoomData] = useState(null);
   const [isInsideRoom, setIsInsideRoom] = useState(false);
@@ -231,129 +491,49 @@ export default function Room({
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [joinPasswordInput, setJoinPasswordInput] = useState('');
 
+  // Episodes Fetch & Multi-Select (Setup) + Dropdown (Active Room)
   const [allEpisodes, setAllEpisodes] = useState([]);
   const [loadingEpisodes, setLoadingEpisodes] = useState(true);
   const [providerAnimeId, setProviderAnimeId] = useState(animeDocId);
   const [selectedChunkIndex, setSelectedChunkIndex] = useState(0);
   const [selectedEpMap, setSelectedEpMap] = useState({});
 
+  // Collapsible Episodes Dropdown State (in Active Room)
+  const [episodesDropdownOpen, setEpisodesDropdownOpen] = useState(false);
+  const [roomEpChunkIndex, setRoomEpChunkIndex] = useState(0);
+
+  // Modals
   const [settingsMenuVisible, setSettingsMenuVisible] = useState(false);
   const [inviteModalVisible, setInviteModalVisible] = useState(false);
+  const [membersModalVisible, setMembersModalVisible] = useState(false);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
 
-  // --- AGORA VOICE CHAT STATES ---
-  const [isMicMuted, setIsMicMuted] = useState(true);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [muteEveryoneForMe, setMuteEveryoneForMe] = useState(false);
-  const agoraEngineRef = useRef(null);
-
-  // Active Episode Video Player + Live Chat State
+  // Player Stream State
   const [playingEpisode, setPlayingEpisode] = useState(null);
   const [streamUrl, setStreamUrl] = useState(null);
   const [streamReferer, setStreamReferer] = useState('https://vidwish.live/');
-  const [loadingStream, setLoadingStream] = useState(false);
+
+  // --- 100,000x CHAT STATES ---
   const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [replyingToMsg, setReplyingToMsg] = useState(null);
+  const [editingMsg, setEditingMsg] = useState(null);
+  const [selectedActionMsg, setSelectedActionMsg] = useState(null);
+  const [nowTick, setNowTick] = useState(Date.now());
 
-  // --- INITIALIZE AGORA RTC ENGINE ---
+  const chatFlatListRef = useRef(null);
+  const inputRef = useRef(null);
+  const lastTypingWriteRef = useRef(0);
+  const stopTypingTimeoutRef = useRef(null);
+
+  // Periodic tick to expire stale typing indicators cleanly
   useEffect(() => {
-    let engine = null;
-    const initAgora = async () => {
-      try {
-        engine = createAgoraRtcEngine();
-        engine.initialize({ appId: AGORA_APP_ID });
-        engine.setChannelProfile(CHANNEL_PROFILE_TYPE.channelProfileLiveBroadcasting);
-        engine.enableAudio();
-        engine.enableAudioVolumeIndication(200, 3, true);
+    if (!isInsideRoom) return;
+    const interval = setInterval(() => setNowTick(Date.now()), 2000);
+    return () => clearInterval(interval);
+  }, [isInsideRoom]);
 
-        engine.registerEventHandler({
-          onActiveSpeaker: (_, uid) => {
-            if (uid === 0) setIsSpeaking(true);
-          },
-          onAudioVolumeIndication: (_, speakers) => {
-            const speakingNow = speakers.some((s) => (s.volume || 0) > 10);
-            setIsSpeaking(speakingNow);
-          },
-        });
-
-        agoraEngineRef.current = engine;
-      } catch (e) {
-        console.warn('Agora Init Error:', e);
-      }
-    };
-
-    initAgora();
-
-    return () => {
-      try {
-        engine?.leaveChannel();
-        engine?.release();
-      } catch (_) {}
-    };
-  }, []);
-
-  // Join Agora Channel when inside room
-  useEffect(() => {
-    if (!isInsideRoom || !roomCode || !agoraEngineRef.current) return;
-    try {
-      const numericUid = Math.abs(
-        Array.from(memberKey).reduce((acc, char) => 0 | (31 * acc + char.charCodeAt(0)), 0)
-      ) % 100000;
-
-      agoraEngineRef.current.joinChannel('', String(roomCode), numericUid, {
-        clientRoleType: ClientRoleType.ClientRoleBroadcaster,
-      });
-      agoraEngineRef.current.muteLocalAudioStream(true);
-      setIsMicMuted(true);
-    } catch (e) {
-      console.warn('Agora Join Error:', e);
-    }
-
-    return () => {
-      try {
-        agoraEngineRef.current?.leaveChannel();
-      } catch (_) {}
-    };
-  }, [isInsideRoom, roomCode, memberKey]);
-
-  // Handle Mute / Unmute Mic with Agora
-  const handleToggleMic = async () => {
-    const nextMuted = !isMicMuted;
-    setIsMicMuted(nextMuted);
-
-    try {
-      if (agoraEngineRef.current) {
-        agoraEngineRef.current.muteLocalAudioStream(nextMuted);
-      }
-    } catch (_) {}
-
-    if (roomCode) {
-      firestore()
-        .collection('rooms')
-        .doc(roomCode)
-        .set(
-          {
-            membersMap: {
-              [memberKey]: {
-                isMuted: nextMuted,
-                isSpeaking: !nextMuted && isSpeaking,
-              },
-            },
-          },
-          { merge: true }
-        )
-        .catch(() => {});
-    }
-  };
-
-  // Handle Mute Everyone For Me
-  useEffect(() => {
-    if (!agoraEngineRef.current) return;
-    try {
-      agoraEngineRef.current.adjustPlaybackSignalVolume(muteEveryoneForMe ? 0 : 100);
-    } catch (_) {}
-  }, [muteEveryoneForMe]);
-
-  // Fetch Series Episodes for Room Creation
+  // 1. Fetch Series Episodes for Room Setup
   useEffect(() => {
     let isMounted = true;
     const fetchSeriesEpisodes = async () => {
@@ -367,7 +547,7 @@ export default function Room({
         const matches = searchJson?.data || [];
         if (matches.length > 0) {
           const exact =
-            matches.find((m) => (m.title || '').toLowerCase() === animeTitle.toLowerCase()) ||
+            matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) ||
             matches[0];
           if (exact?.id) targetId = exact.id;
         }
@@ -383,17 +563,18 @@ export default function Room({
             slug: String(ep.slug || ep.id || ep.num || idx + 1),
             num: Number(ep.num || idx + 1),
             title: ep.title || `Episode ${ep.num || idx + 1}`,
+            isFiller: Boolean(ep.isFiller),
           }));
           setAllEpisodes(formatted);
           setSelectedEpMap({ [formatted[0].num]: formatted[0] });
         } else if (isMounted) {
-          const fallbackEp = [{ id: '1', slug: '1', num: 1, title: 'Episode 1' }];
+          const fallbackEp = [{ id: '1', slug: '1', num: 1, title: 'Episode 1', isFiller: false }];
           setAllEpisodes(fallbackEp);
           setSelectedEpMap({ 1: fallbackEp[0] });
         }
       } catch (_) {
         if (isMounted) {
-          const fallbackEp = [{ id: '1', slug: '1', num: 1, title: 'Episode 1' }];
+          const fallbackEp = [{ id: '1', slug: '1', num: 1, title: 'Episode 1', isFiller: false }];
           setAllEpisodes(fallbackEp);
           setSelectedEpMap({ 1: fallbackEp[0] });
         }
@@ -406,7 +587,7 @@ export default function Room({
     return () => { isMounted = false; };
   }, [animeDocId, animeTitle]);
 
-  const episodeChunks = useMemo(() => {
+  const setupEpisodeChunks = useMemo(() => {
     const chunks = [];
     for (let i = 0; i < allEpisodes.length; i += EPISODE_CHUNK_SIZE) {
       chunks.push(allEpisodes.slice(i, i + EPISODE_CHUNK_SIZE));
@@ -414,7 +595,7 @@ export default function Room({
     return chunks;
   }, [allEpisodes]);
 
-  const currentChunkEpisodes = episodeChunks[selectedChunkIndex] || allEpisodes;
+  const currentSetupChunkEpisodes = setupEpisodeChunks[selectedChunkIndex] || allEpisodes;
 
   const isAllSelected =
     allEpisodes.length > 0 &&
@@ -444,7 +625,7 @@ export default function Room({
     });
   };
 
-  // Create Room in Firestore
+  // 2. Create Room in Firestore
   const handleCreateRoom = async () => {
     const chosenList = Object.values(selectedEpMap).sort((a, b) => a.num - b.num);
     if (chosenList.length === 0) {
@@ -464,8 +645,6 @@ export default function Room({
         name: memberName,
         avatar: memberAvatar,
         isAdmin: true,
-        isMuted: true,
-        isSpeaking: false,
         joinedAt: Date.now(),
       };
 
@@ -485,10 +664,11 @@ export default function Room({
         membersMap: {
           [memberKey]: adminMemberObj,
         },
+        typingMap: {},
         kickedKeys: [],
         currentEpisode: chosenList[0],
         playbackState: {
-          isPlaying: false,
+          isPlaying: true,
           positionMillis: 0,
           updatedAt: Date.now(),
         },
@@ -518,6 +698,7 @@ export default function Room({
       }
 
       setRoomCode(generatedCode);
+      setPlayingEpisode(chosenList[0]);
       setIsInsideRoom(true);
       setInviteModalVisible(true);
     } catch (err) {
@@ -527,7 +708,7 @@ export default function Room({
     }
   };
 
-  // Join Existing Room
+  // 3. Join Room by Alphanumeric Code
   const handleJoinRoom = async () => {
     const cleanCode = joinCodeInput.trim().toUpperCase();
     if (!cleanCode) {
@@ -566,8 +747,6 @@ export default function Room({
         name: memberName,
         avatar: memberAvatar,
         isAdmin: data.adminKey === memberKey,
-        isMuted: true,
-        isSpeaking: false,
         joinedAt: Date.now(),
       };
 
@@ -581,6 +760,7 @@ export default function Room({
       );
 
       setRoomCode(cleanCode);
+      if (data.currentEpisode) setPlayingEpisode(data.currentEpisode);
       setIsInsideRoom(true);
     } catch (err) {
       Alert.alert('Join Error', `Could not join room: ${err.message}`);
@@ -589,7 +769,7 @@ export default function Room({
     }
   };
 
-  // Real-Time Room Document & Live Chat Subscription
+  // 4. Real-Time Room & Chat Listeners
   useEffect(() => {
     if (!isInsideRoom || !roomCode) return;
 
@@ -628,7 +808,7 @@ export default function Room({
     const unsubChat = roomRef
       .collection('messages')
       .orderBy('createdAt', 'asc')
-      .limitToLast(100)
+      .limitToLast(120)
       .onSnapshot(
         (snap) => {
           const msgs = [];
@@ -644,13 +824,12 @@ export default function Room({
     };
   }, [isInsideRoom, roomCode, memberKey]);
 
-  // Resolve Stream When Episode is Selected
+  // 5. Resolve M3U8 Stream for Selected Room Episode
   useEffect(() => {
     if (!isInsideRoom || !playingEpisode || !activeRoomData) return;
     let isMounted = true;
 
     const loadRoomEpisodeStream = async () => {
-      setLoadingStream(true);
       setStreamUrl(null);
       const targetId = activeRoomData.providerAnimeId || activeRoomData.animeId || providerAnimeId;
       const targetSlug = playingEpisode.slug || playingEpisode.num;
@@ -671,57 +850,242 @@ export default function Room({
           }
         } catch (_) {}
       }
-      if (isMounted) setLoadingStream(false);
     };
 
     loadRoomEpisodeStream();
     return () => { isMounted = false; };
   }, [isInsideRoom, playingEpisode?.num, activeRoomData?.providerAnimeId]);
 
+  // 6. Live Typing Status Sync (Broadcasts Avatar & Name While Typing)
+  const syncTypingStatus = useCallback(
+    (isTypingNow) => {
+      if (!roomCode || !isInsideRoom) return;
+      firestore()
+        .collection('rooms')
+        .doc(roomCode)
+        .set(
+          {
+            typingMap: {
+              [memberKey]: isTypingNow
+                ? {
+                    key: memberKey,
+                    name: memberName,
+                    avatar: memberAvatar,
+                    isTyping: true,
+                    updatedAt: Date.now(),
+                  }
+                : firestore.FieldValue.delete(),
+            },
+          },
+          { merge: true }
+        )
+        .catch(() => {});
+    },
+    [roomCode, isInsideRoom, memberKey, memberName, memberAvatar]
+  );
+
+  const handleChatInputChange = (text) => {
+    setChatInput(text);
+
+    if (!text.trim()) {
+      if (stopTypingTimeoutRef.current) clearTimeout(stopTypingTimeoutRef.current);
+      syncTypingStatus(false);
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastTypingWriteRef.current > 2000) {
+      lastTypingWriteRef.current = now;
+      syncTypingStatus(true);
+    }
+
+    if (stopTypingTimeoutRef.current) clearTimeout(stopTypingTimeoutRef.current);
+    stopTypingTimeoutRef.current = setTimeout(() => {
+      syncTypingStatus(false);
+    }, 3200);
+  };
+
+  // Active Typing Users (Excludes Self, Expires After 5.5 Seconds)
+  const activeTypingUsers = useMemo(() => {
+    if (!activeRoomData?.typingMap) return [];
+    return Object.values(activeRoomData.typingMap).filter(
+      (u) =>
+        u &&
+        u.key !== memberKey &&
+        u.isTyping &&
+        nowTick - (u.updatedAt || 0) < 5500
+    );
+  }, [activeRoomData?.typingMap, memberKey, nowTick]);
+
+  // 7. Send New Message OR Save Edited Message
+  const handleSendOrSaveMessage = async () => {
+    const cleanText = chatInput.trim();
+    if (!cleanText || !roomCode) return;
+
+    setChatInput('');
+    if (stopTypingTimeoutRef.current) clearTimeout(stopTypingTimeoutRef.current);
+    syncTypingStatus(false);
+
+    const messagesRef = firestore()
+      .collection('rooms')
+      .doc(roomCode)
+      .collection('messages');
+
+    // A. If Editing an Existing Message
+    if (editingMsg) {
+      const targetId = editingMsg.id;
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setEditingMsg(null);
+      try {
+        await messagesRef.doc(targetId).update({
+          text: cleanText,
+          isEdited: true,
+          editedAt: Date.now(),
+        });
+      } catch (_) {}
+      return;
+    }
+
+    // B. Sending a Brand New Message (with Optional Swipe Reply Quote)
+    const replyPayload = replyingToMsg
+      ? {
+          id: replyingToMsg.id,
+          senderName: replyingToMsg.senderName || 'User',
+          text: replyingToMsg.text || '',
+        }
+      : null;
+
+    if (replyingToMsg) {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+      setReplyingToMsg(null);
+    }
+
+    try {
+      await messagesRef.add({
+        senderKey: memberKey,
+        senderName: memberName,
+        senderAvatar: memberAvatar,
+        isAdmin: activeRoomData?.adminKey === memberKey,
+        text: cleanText,
+        replyTo: replyPayload,
+        isEdited: false,
+        episodeNum: playingEpisode?.num || 1,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => {
+        chatFlatListRef.current?.scrollToEnd?.({ animated: true });
+      }, 80);
+    } catch (_) {}
+  };
+
+  // 8. Swipe to Reply, Edit Message, & Unsend Message Handlers
+  const handleTriggerSwipeReply = useCallback((msg) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setEditingMsg(null);
+    setReplyingToMsg(msg);
+    setTimeout(() => inputRef.current?.focus?.(), 60);
+  }, []);
+
+  const handleStartEditMessage = (msg) => {
+    setSelectedActionMsg(null);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setReplyingToMsg(null);
+    setEditingMsg(msg);
+    setChatInput(msg.text || '');
+    setTimeout(() => inputRef.current?.focus?.(), 80);
+  };
+
+  const handleUnsendMessage = async (msg) => {
+    setSelectedActionMsg(null);
+    if (!msg?.id || !roomCode) return;
+    try {
+      await firestore()
+        .collection('rooms')
+        .doc(roomCode)
+        .collection('messages')
+        .doc(msg.id)
+        .delete();
+    } catch (_) {}
+  };
+
+  // 9. Room Episodes Chunks (Identical to Play.js)
+  const roomEpisodes = activeRoomData?.episodes || [];
+  const roomEpisodeChunks = useMemo(() => {
+    const chunks = [];
+    for (let i = 0; i < roomEpisodes.length; i += EPISODE_CHUNK_SIZE) {
+      chunks.push(roomEpisodes.slice(i, i + EPISODE_CHUNK_SIZE));
+    }
+    return chunks;
+  }, [roomEpisodes]);
+
+  const currentRoomChunkEpisodes =
+    roomEpisodeChunks[roomEpChunkIndex] || roomEpisodeChunks[0] || roomEpisodes;
+
+  const toggleEpisodesDropdown = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setEpisodesDropdownOpen((prev) => !prev);
+  };
+
+  const handleSelectRoomEpisode = async (ep) => {
+    setPlayingEpisode(ep);
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setEpisodesDropdownOpen(false);
+
+    if (roomCode) {
+      try {
+        await firestore()
+          .collection('rooms')
+          .doc(roomCode)
+          .update({
+            currentEpisode: ep,
+            playbackState: {
+              isPlaying: true,
+              positionMillis: 0,
+              updatedBy: memberKey,
+              updatedAt: Date.now(),
+            },
+          });
+      } catch (_) {}
+    }
+  };
+
+  // 10. Room Admin & Leave/Close Controls
   const isCurrentUserAdmin = activeRoomData?.adminKey === memberKey;
 
   const joinedMembersList = useMemo(() => {
     if (!activeRoomData?.membersMap) return [];
-    const list = Object.values(activeRoomData.membersMap);
-    return list.sort((a, b) => {
+    return Object.values(activeRoomData.membersMap).sort((a, b) => {
       if (a.isAdmin && !b.isAdmin) return -1;
       if (!a.isAdmin && b.isAdmin) return 1;
       return (a.joinedAt || 0) - (b.joinedAt || 0);
     });
   }, [activeRoomData?.membersMap]);
 
-  const handleAdminDeleteUser = (targetMember) => {
+  const handleAdminKickMember = (targetMember) => {
     if (!isCurrentUserAdmin || !targetMember || targetMember.key === memberKey) return;
-
-    Alert.alert(
-      'Remove User',
-      `Remove ${targetMember.name} from the room?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const roomRef = firestore().collection('rooms').doc(roomCode);
-              const nextMap = { ...(activeRoomData.membersMap || {}) };
-              delete nextMap[targetMember.key];
-              await roomRef.update({
-                membersMap: nextMap,
-                kickedKeys: firestore.FieldValue.arrayUnion(targetMember.key),
-              });
-            } catch (_) {}
-          },
+    Alert.alert('Remove Member', `Remove ${targetMember.name} from this watch room?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Remove',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const roomRef = firestore().collection('rooms').doc(roomCode);
+            const nextMap = { ...(activeRoomData.membersMap || {}) };
+            delete nextMap[targetMember.key];
+            await roomRef.update({
+              membersMap: nextMap,
+              kickedKeys: firestore.FieldValue.arrayUnion(targetMember.key),
+            });
+          } catch (_) {}
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const handleLeaveOrCloseRoom = async () => {
     setSettingsMenuVisible(false);
-    try {
-      agoraEngineRef.current?.leaveChannel();
-    } catch (_) {}
+    syncTypingStatus(false);
 
     if (!roomCode) {
       if (onBack) onBack();
@@ -732,8 +1096,8 @@ export default function Room({
 
     if (isCurrentUserAdmin) {
       Alert.alert(
-        'Close Room',
-        'Closing the room will end the watch party for all joined members. Continue?',
+        'Close Watch Room',
+        'Closing the room will end the watch party for everyone. Continue?',
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -763,32 +1127,13 @@ export default function Room({
     }
   };
 
-  const handleSelectRoomEpisode = async (ep) => {
-    setPlayingEpisode(ep);
-    if (isCurrentUserAdmin && roomCode) {
-      try {
-        await firestore()
-          .collection('rooms')
-          .doc(roomCode)
-          .update({
-            currentEpisode: ep,
-            playbackState: {
-              isPlaying: true,
-              positionMillis: 0,
-              updatedAt: Date.now(),
-            },
-          });
-      } catch (_) {}
-    }
-  };
-
-  const handleCopyRoomCode = async () => {
+  const handleShareRoomCode = async () => {
     if (!roomCode) return;
     setCopiedFeedback(true);
     setTimeout(() => setCopiedFeedback(false), 2000);
     try {
       await Share.share({
-        message: `Join my Kameko Watch Room for ${animeTitle}! Room Code: ${roomCode}`,
+        message: `Join my Kameko Watch Party for ${animeTitle}! Room Code: ${roomCode}`,
       });
     } catch (_) {}
   };
@@ -799,26 +1144,31 @@ export default function Room({
       )}`
     : '';
 
-  // Setup View
+  // ============================================================================
+  // RENDER 1: CREATE OR JOIN ROOM SETUP SCREEN
+  // ============================================================================
   if (!isInsideRoom) {
     const selectedCount = Object.keys(selectedEpMap).length;
 
     return (
       <View style={styles.container}>
         <StatusBar hidden={true} />
-        <View style={styles.headerBar}>
+
+        {/* Top Bar */}
+        <View style={styles.topHeaderBar}>
           <TouchableOpacity
-            style={styles.iconCircleBtn}
+            style={styles.topCircleBtn}
             onPress={onBack || (() => navigation?.goBack?.())}
           >
             <IconBack />
           </TouchableOpacity>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+          <Text style={styles.topHeaderTitle} numberOfLines={1}>
             Watch Room • {animeTitle}
           </Text>
           <View style={{ width: 38 }} />
         </View>
 
+        {/* Create / Join Switcher */}
         <View style={styles.modeTabsRow}>
           <TouchableOpacity
             style={[styles.modeTabBtn, setupMode === 'create' && styles.modeTabBtnActive]}
@@ -850,10 +1200,10 @@ export default function Room({
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <Text style={styles.hostName}>{memberName}</Text>
                     <View style={styles.adminTagBadge}>
-                      <Text style={styles.adminTagText}>ADMIN</Text>
+                      <Text style={styles.adminTagText}>HOST</Text>
                     </View>
                   </View>
-                  <Text style={styles.hostSubtext}>Hosting {animeTitle}</Text>
+                  <Text style={styles.hostSubtext}>{animeTitle}</Text>
                 </View>
               </View>
 
@@ -864,7 +1214,6 @@ export default function Room({
                 placeholderTextColor={TEXT_GREY}
                 value={roomPasswordInput}
                 onChangeText={setRoomPasswordInput}
-                secureTextEntry={false}
                 maxLength={20}
               />
             </View>
@@ -883,11 +1232,11 @@ export default function Room({
               </TouchableOpacity>
             </View>
 
-            {episodeChunks.length > 1 && (
+            {setupEpisodeChunks.length > 1 && (
               <View style={{ marginBottom: 10 }}>
                 <FlatList
                   horizontal
-                  data={episodeChunks}
+                  data={setupEpisodeChunks}
                   showsHorizontalScrollIndicator={false}
                   keyExtractor={(_, idx) => `setup-chunk-${idx}`}
                   contentContainerStyle={{ gap: 8 }}
@@ -896,10 +1245,10 @@ export default function Room({
                     const isActive = selectedChunkIndex === index;
                     return (
                       <TouchableOpacity
-                        style={[styles.chunkPill, isActive && styles.chunkPillActive]}
+                        style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
                         onPress={() => setSelectedChunkIndex(index)}
                       >
-                        <Text style={[styles.chunkPillText, isActive && styles.chunkPillTextActive]}>
+                        <Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>
                           {label}
                         </Text>
                       </TouchableOpacity>
@@ -917,7 +1266,7 @@ export default function Room({
                 contentContainerStyle={styles.epSelectGrid}
                 showsVerticalScrollIndicator={false}
               >
-                {currentChunkEpisodes.map((ep) => {
+                {currentSetupChunkEpisodes.map((ep) => {
                   const isSelected = Boolean(selectedEpMap[ep.num]);
                   return (
                     <TouchableOpacity
@@ -947,7 +1296,7 @@ export default function Room({
                 <ActivityIndicator size="small" color={WHITE} />
               ) : (
                 <Text style={styles.primaryActionBtnText}>
-                  Create Room ({selectedCount} {selectedCount === 1 ? 'Episode' : 'Episodes'})
+                  Launch Watch Room ({selectedCount} {selectedCount === 1 ? 'Ep' : 'Eps'})
                 </Text>
               )}
             </TouchableOpacity>
@@ -967,11 +1316,11 @@ export default function Room({
               />
 
               <Text style={[styles.inputLabel, { marginTop: 14 }]}>
-                Room Password (If required)
+                Room Password (If locked)
               </Text>
               <TextInput
                 style={styles.textInput}
-                placeholder="Enter password if locked..."
+                placeholder="Enter password if required..."
                 placeholderTextColor={TEXT_GREY}
                 value={joinPasswordInput}
                 onChangeText={setJoinPasswordInput}
@@ -995,9 +1344,9 @@ export default function Room({
     );
   }
 
-  // Active Room View
-  const roomEpisodes = activeRoomData?.episodes || [];
-
+  // ============================================================================
+  // RENDER 2: ACTIVE WATCH ROOM (TOP BAR -> PLAYER -> PLAY.JS EPISODES DROPDOWN -> 100000x CHAT)
+  // ============================================================================
   return (
     <KeyboardAvoidingView
       style={styles.container}
@@ -1005,178 +1354,408 @@ export default function Room({
     >
       <StatusBar hidden={true} />
 
-      <View style={styles.headerBar}>
-        <TouchableOpacity style={styles.iconCircleBtn} onPress={handleLeaveOrCloseRoom}>
+      {/* 1. TOP BAR: Back Button (Left) + Room Info (Center) + Settings Button (Right) */}
+      <View style={styles.topHeaderBar}>
+        <TouchableOpacity style={styles.topCircleBtn} onPress={handleLeaveOrCloseRoom}>
           <IconBack />
         </TouchableOpacity>
 
-        <View style={styles.headerCenterCol}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
+        <View style={styles.topHeaderCenter}>
+          <Text style={styles.topHeaderTitle} numberOfLines={1}>
             {activeRoomData?.animeTitle || animeTitle}
           </Text>
-          <Text style={styles.headerRoomCodeSub}>
-            ROOM: {roomCode} • {joinedMembersList.length} ONLINE
-          </Text>
+          <View style={styles.topStatusPillRow}>
+            <View style={styles.liveGreenDot} />
+            <Text style={styles.topRoomCodeText}>
+              ROOM {roomCode} • {joinedMembersList.length} WATCHING
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.headerRightActions}>
-          <TouchableOpacity
-            style={[
-              styles.iconCircleBtn,
-              !isMicMuted && styles.micActiveCircle,
-              isSpeaking && styles.micSpeakingBorder,
-            ]}
-            onPress={handleToggleMic}
-          >
-            {isMicMuted ? <IconMicOff size={17} /> : <IconMicOn size={17} />}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.iconCircleBtn}
-            onPress={() => setMuteEveryoneForMe(!muteEveryoneForMe)}
-          >
-            {muteEveryoneForMe ? <IconSpeakerMuted size={17} /> : <IconSpeakerOn size={17} />}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.iconCircleBtn}
-            onPress={() => setSettingsMenuVisible(true)}
-          >
-            <IconVerticalDots size={20} color={WHITE} />
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={styles.topCircleBtn}
+          onPress={() => setSettingsMenuVisible(true)}
+        >
+          <IconSettingsDots size={20} color={WHITE} />
+        </TouchableOpacity>
       </View>
 
-      {/* Load Super Lightweight RoomPlayer Component */}
-      {playingEpisode && (
-        <RoomPlayer
-          roomCode={roomCode}
-          streamUrl={streamUrl}
-          streamReferer={streamReferer}
-          animeTitle={activeRoomData?.animeTitle || animeTitle}
-          episodeNum={playingEpisode.num}
-          episodeTitle={playingEpisode.title}
-          memberKey={memberKey}
-          memberName={memberName}
-          memberAvatar={memberAvatar}
-          isAdmin={isCurrentUserAdmin}
-          messages={chatMessages}
-          playbackState={activeRoomData?.playbackState}
-        />
-      )}
+      {/* 2. SYNCED VIDEO PLAYER (components/room/room_player.js) */}
+      <View style={styles.playerSectionWrapper}>
+        {RoomPlayerComponent && playingEpisode ? (
+          <RoomPlayerComponent
+            roomCode={roomCode}
+            streamUrl={streamUrl}
+            streamReferer={streamReferer}
+            animeTitle={activeRoomData?.animeTitle || animeTitle}
+            episodeNum={playingEpisode.num}
+            episodeTitle={playingEpisode.title}
+            memberKey={memberKey}
+            memberName={memberName}
+            memberAvatar={memberAvatar}
+            isAdmin={isCurrentUserAdmin}
+            messages={chatMessages}
+            playbackState={activeRoomData?.playbackState}
+          />
+        ) : (
+          <View style={styles.playerFallbackBox}>
+            <ActivityIndicator size="large" color={PURE_RED} />
+          </View>
+        )}
+      </View>
 
-      <View style={styles.membersSliderSection}>
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>
-            Joined Members ({joinedMembersList.length})
-          </Text>
-          {muteEveryoneForMe && (
-            <Text style={styles.deafenedNoticeText}>Everyone Muted For You</Text>
-          )}
-        </View>
-
-        <FlatList
-          horizontal
-          data={joinedMembersList}
-          showsHorizontalScrollIndicator={false}
-          keyExtractor={(item) => item.key}
-          contentContainerStyle={styles.membersSliderContent}
-          renderItem={({ item }) => {
-            const isMe = item.key === memberKey;
-            const effectiveMuted = isMe
-              ? isMicMuted
-              : muteEveryoneForMe || item.isMuted;
-            const effectiveSpeaking = !effectiveMuted && (isMe ? isSpeaking : item.isSpeaking);
-
-            return (
-              <View style={styles.memberCard}>
-                <View
-                  style={[
-                    styles.memberAvatarWrap,
-                    effectiveSpeaking && styles.memberAvatarSpeaking,
-                  ]}
-                >
-                  <Image
-                    source={AVATARS[item.avatar] || AVATARS['pfp1.jpg']}
-                    style={styles.memberAvatarImg}
-                  />
-
-                  {item.isAdmin && (
-                    <View style={styles.memberAdminRibbon}>
-                      <Text style={styles.memberAdminRibbonText}>ADMIN</Text>
-                    </View>
-                  )}
-
-                  <View
-                    style={[
-                      styles.memberMicBadge,
-                      !effectiveMuted && { backgroundColor: EMERALD },
-                    ]}
-                  >
-                    {effectiveMuted ? (
-                      <IconMicOff size={10} color={WHITE} />
-                    ) : (
-                      <IconMicOn size={10} color={WHITE} />
-                    )}
-                  </View>
-
-                  {isCurrentUserAdmin && !isMe && (
-                    <TouchableOpacity
-                      style={styles.kickMemberBtn}
-                      onPress={() => handleAdminDeleteUser(item)}
-                    >
-                      <IconTrash size={11} color={WHITE} />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                <Text style={styles.memberNameText} numberOfLines={1}>
-                  {isMe ? `${item.name} (You)` : item.name}
+      {/* 3. COLLAPSIBLE EPISODES DROPDOWN (EXACT PLAY.JS VIEW & STYLING) */}
+      <View style={styles.dropdownWrapper}>
+        <TouchableOpacity
+          style={styles.dropdownHeaderBar}
+          activeOpacity={0.85}
+          onPress={toggleEpisodesDropdown}
+        >
+          <View style={styles.dropdownHeaderLeft}>
+            <Text style={styles.dropdownHeaderTitle}>
+              Episodes ({roomEpisodes.length})
+            </Text>
+            {playingEpisode && (
+              <View style={styles.nowPlayingMiniBadge}>
+                <Text style={styles.nowPlayingMiniText}>
+                  Playing Ep {playingEpisode.num}
                 </Text>
               </View>
-            );
-          }}
-        />
+            )}
+          </View>
+
+          <View style={styles.dropdownHeaderRight}>
+            <Text style={styles.dropdownToggleHint}>
+              {episodesDropdownOpen ? 'Hide' : 'View All'}
+            </Text>
+            {episodesDropdownOpen ? (
+              <IconChevronUp size={18} color={WHITE} />
+            ) : (
+              <IconChevronDown size={18} color={WHITE} />
+            )}
+          </View>
+        </TouchableOpacity>
+
+        {episodesDropdownOpen && (
+          <View style={styles.dropdownExpandedBody}>
+            {/* 1 - 50 Rectangular Chunk Selector Pills (Play.js Style) */}
+            {roomEpisodeChunks.length > 1 && (
+              <FlatList
+                horizontal
+                data={roomEpisodeChunks}
+                showsHorizontalScrollIndicator={false}
+                keyExtractor={(_, idx) => `room-ep-chunk-${idx}`}
+                contentContainerStyle={styles.chunkSelectorContainer}
+                renderItem={({ item, index }) => {
+                  const rangeLabel = `${item[0].num} - ${item[item.length - 1].num}`;
+                  const isActive = roomEpChunkIndex === index;
+                  return (
+                    <TouchableOpacity
+                      style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
+                      activeOpacity={0.85}
+                      onPress={() => setRoomEpChunkIndex(index)}
+                    >
+                      <Text
+                        style={[
+                          styles.chunkRectPillText,
+                          isActive && styles.chunkRectPillTextActive,
+                        ]}
+                      >
+                        {rangeLabel}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            )}
+
+            {/* Episode Rows (Play.js Style: •Num + #050505 Card + Filler Tag + Play Icon) */}
+            <FlatList
+              data={currentRoomChunkEpisodes}
+              keyExtractor={(item) => String(item.num)}
+              style={styles.dropdownEpisodesList}
+              contentContainerStyle={{ paddingVertical: 8 }}
+              nestedScrollEnabled={true}
+              showsVerticalScrollIndicator={false}
+              renderItem={({ item }) => {
+                const isNowPlaying =
+                  playingEpisode && Number(playingEpisode.num) === Number(item.num);
+                return (
+                  <View style={styles.episodeRow}>
+                    <Text
+                      style={[
+                        styles.bulletNumber,
+                        isNowPlaying && { color: PURE_RED },
+                      ]}
+                    >
+                      •{item.num}
+                    </Text>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.episodeCard,
+                        isNowPlaying && styles.episodeCardActive,
+                      ]}
+                      activeOpacity={0.8}
+                      onPress={() => handleSelectRoomEpisode(item)}
+                    >
+                      <Text
+                        style={[
+                          styles.episodeCardTitle,
+                          isNowPlaying && { color: PURE_RED, fontWeight: '800' },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {item.title || `Episode ${item.num}`}
+                      </Text>
+
+                      <View style={styles.cardRightGroup}>
+                        {item.isFiller && (
+                          <View style={styles.fillerTag}>
+                            <Text style={styles.fillerTagText}>FILLER</Text>
+                          </View>
+                        )}
+                        <IconPlay
+                          size={18}
+                          color={isNowPlaying ? PURE_RED : WHITE}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                );
+              }}
+            />
+          </View>
+        )}
       </View>
 
-      <View style={styles.roomEpisodesSection}>
-        <Text style={[styles.sectionTitle, { paddingHorizontal: 16, marginBottom: 10 }]}>
-          Room Episodes ({roomEpisodes.length})
-        </Text>
+      {/* 4. 100,000x LIVE CHAT SECTION */}
+      <View style={styles.chatMasterSection}>
+        {/* Chat Subheader with Online Member Avatars Stack */}
+        <View style={styles.chatTopSubheader}>
+          <View style={styles.chatSubheaderLeft}>
+            <View style={styles.chatPulseDot} />
+            <Text style={styles.chatSubheaderTitle}>LIVE PARTY CHAT</Text>
+            <Text style={styles.chatSwipeHint}>• Swipe right to reply • Hold to edit/unsend</Text>
+          </View>
 
+          <TouchableOpacity
+            style={styles.avatarStackBtn}
+            activeOpacity={0.8}
+            onPress={() => setMembersModalVisible(true)}
+          >
+            {joinedMembersList.slice(0, 4).map((m, idx) => (
+              <Image
+                key={m.key}
+                source={AVATARS[m.avatar] || AVATARS['pfp1.jpg']}
+                style={[styles.stackedMiniAvatar, { marginLeft: idx === 0 ? 0 : -8 }]}
+              />
+            ))}
+          </TouchableOpacity>
+        </View>
+
+        {/* Messages FlatList */}
         <FlatList
-          data={roomEpisodes}
-          keyExtractor={(item) => String(item.num)}
-          contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 40 }}
+          ref={chatFlatListRef}
+          data={chatMessages}
+          keyExtractor={(item) => item.id}
+          style={styles.chatListArea}
+          contentContainerStyle={styles.chatListContent}
           showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => {
-            const isNowPlaying = playingEpisode && Number(playingEpisode.num) === Number(item.num);
-            return (
-              <TouchableOpacity
-                style={[styles.roomEpRow, isNowPlaying && styles.roomEpRowActive]}
-                activeOpacity={0.85}
-                onPress={() => handleSelectRoomEpisode(item)}
-              >
-                <View style={[styles.roomEpNumBox, isNowPlaying && { backgroundColor: PURE_RED }]}>
-                  <Text style={styles.roomEpNumText}>{item.num}</Text>
-                </View>
-
-                <View style={{ flex: 1, paddingHorizontal: 12 }}>
-                  <Text style={styles.roomEpTitle} numberOfLines={1}>
-                    {item.title || `Episode ${item.num}`}
-                  </Text>
-                  {isNowPlaying && (
-                    <Text style={styles.roomEpPlayingSub}>NOW PLAYING IN ROOM</Text>
-                  )}
-                </View>
-
-                <IconPlay size={18} color={isNowPlaying ? PURE_RED : WHITE} />
-              </TouchableOpacity>
-            );
-          }}
+          onContentSizeChange={() =>
+            chatFlatListRef.current?.scrollToEnd?.({ animated: true })
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyChatWrap}>
+              <Text style={styles.emptyChatTitle}>Watch Party Chat is Live</Text>
+              <Text style={styles.emptyChatSub}>
+                Send a message, swipe right on any bubble to reply, or hold your message to edit or unsend.
+              </Text>
+            </View>
+          }
+          renderItem={({ item }) => (
+            <SwipeableChatMessage
+              item={item}
+              isMe={item.senderKey === memberKey}
+              onSwipeReply={handleTriggerSwipeReply}
+              onLongPressMessage={(msg) => setSelectedActionMsg(msg)}
+            />
+          )}
         />
+
+        {/* LIVE TYPING INDICATOR BAR WITH USER AVATAR & 3-DOT BOUNCING WAVE */}
+        {activeTypingUsers.length > 0 && (
+          <View style={styles.typingIndicatorBar}>
+            <View style={styles.typingAvatarsWrap}>
+              {activeTypingUsers.slice(0, 3).map((u, i) => (
+                <Image
+                  key={u.key}
+                  source={AVATARS[u.avatar] || AVATARS['pfp1.jpg']}
+                  style={[styles.typingUserAvatar, { marginLeft: i === 0 ? 0 : -6 }]}
+                />
+              ))}
+            </View>
+            <Text style={styles.typingStatusText} numberOfLines={1}>
+              {activeTypingUsers.length === 1
+                ? `${activeTypingUsers[0].name} is typing`
+                : `${activeTypingUsers.map((u) => u.name).join(', ')} are typing`}
+            </Text>
+            <AnimatedTypingDots />
+          </View>
+        )}
+
+        {/* REPLYING OR EDITING BANNER ABOVE INPUT */}
+        {(replyingToMsg || editingMsg) && (
+          <View style={styles.composerBannerBar}>
+            <View style={styles.composerBannerAccent} />
+            <View style={{ flex: 1, paddingHorizontal: 10 }}>
+              <Text style={styles.composerBannerLabel}>
+                {editingMsg
+                  ? 'Editing Your Message'
+                  : `Replying to @${replyingToMsg?.senderName || 'User'}`}
+              </Text>
+              <Text style={styles.composerBannerPreview} numberOfLines={1}>
+                {editingMsg ? editingMsg.text : replyingToMsg?.text}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.composerBannerCancelBtn}
+              onPress={() => {
+                LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+                if (editingMsg) setChatInput('');
+                setEditingMsg(null);
+                setReplyingToMsg(null);
+              }}
+            >
+              <IconCloseX size={15} color={TEXT_GREY} />
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* SLEEK COMPOSER INPUT BAR */}
+        <View style={styles.composerInputContainer}>
+          <Image
+            source={AVATARS[memberAvatar] || AVATARS['pfp1.jpg']}
+            style={styles.composerMyAvatar}
+          />
+          <TextInput
+            ref={inputRef}
+            style={styles.composerTextInput}
+            placeholder={
+              editingMsg
+                ? 'Update your message...'
+                : replyingToMsg
+                ? `Reply to ${replyingToMsg.senderName}...`
+                : 'Message the watch party...'
+            }
+            placeholderTextColor={TEXT_GREY}
+            value={chatInput}
+            onChangeText={handleChatInputChange}
+            onSubmitEditing={handleSendOrSaveMessage}
+            returnKeyType="send"
+          />
+          <TouchableOpacity
+            style={[
+              styles.composerSendBtn,
+              editingMsg && { backgroundColor: EMERALD },
+              !chatInput.trim() && { opacity: 0.45 },
+            ]}
+            disabled={!chatInput.trim()}
+            activeOpacity={0.8}
+            onPress={handleSendOrSaveMessage}
+          >
+            {editingMsg ? (
+              <IconCheck size={18} color={WHITE} />
+            ) : (
+              <IconSend size={17} color={WHITE} />
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
 
+      {/* ============================================================================ */}
+      {/* MESSAGE LONG-PRESS ACTION SHEET (REPLY, EDIT, UNSEND, COPY) */}
+      {/* ============================================================================ */}
+      <Modal
+        visible={Boolean(selectedActionMsg)}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setSelectedActionMsg(null)}
+      >
+        <View style={styles.modalBackdrop}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setSelectedActionMsg(null)}
+          />
+          {selectedActionMsg && (
+            <View style={styles.msgActionSheet}>
+              <View style={styles.msgActionPreviewBox}>
+                <Text style={styles.msgActionPreviewSender}>
+                  {selectedActionMsg.senderName} • {formatMessageTime(selectedActionMsg.createdAt)}
+                </Text>
+                <Text style={styles.msgActionPreviewText} numberOfLines={2}>
+                  {selectedActionMsg.text}
+                </Text>
+              </View>
+
+              {/* Reply Option */}
+              <TouchableOpacity
+                style={styles.settingsItemRow}
+                onPress={() => {
+                  const target = selectedActionMsg;
+                  setSelectedActionMsg(null);
+                  handleTriggerSwipeReply(target);
+                }}
+              >
+                <IconReply size={18} color={WHITE} />
+                <Text style={styles.settingsItemText}>Reply to Message</Text>
+              </TouchableOpacity>
+
+              {/* Edit Option (Only for Sender) */}
+              {selectedActionMsg.senderKey === memberKey && (
+                <TouchableOpacity
+                  style={styles.settingsItemRow}
+                  onPress={() => handleStartEditMessage(selectedActionMsg)}
+                >
+                  <IconEdit size={18} color={WHITE} />
+                  <Text style={styles.settingsItemText}>Edit Message</Text>
+                </TouchableOpacity>
+              )}
+
+              {/* Share / Copy Text Option */}
+              <TouchableOpacity
+                style={styles.settingsItemRow}
+                onPress={() => {
+                  const txt = selectedActionMsg.text;
+                  setSelectedActionMsg(null);
+                  Share.share({ message: txt }).catch(() => {});
+                }}
+              >
+                <IconCopy size={18} color={WHITE} />
+                <Text style={styles.settingsItemText}>Copy / Share Text</Text>
+              </TouchableOpacity>
+
+              {/* Unsend Option (For Sender or Room Admin) */}
+              {(selectedActionMsg.senderKey === memberKey || isCurrentUserAdmin) && (
+                <TouchableOpacity
+                  style={[styles.settingsItemRow, { borderBottomWidth: 0 }]}
+                  onPress={() => handleUnsendMessage(selectedActionMsg)}
+                >
+                  <IconTrash size={18} color={PURE_RED} />
+                  <Text style={[styles.settingsItemText, { color: PURE_RED }]}>
+                    Unsend Message
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* ============================================================================ */}
+      {/* TOP RIGHT SETTINGS MODAL (Invite QR/Code, Members List, Leave/Close) */}
+      {/* ============================================================================ */}
       <Modal
         visible={settingsMenuVisible}
         transparent={true}
@@ -1209,36 +1788,19 @@ export default function Room({
               }}
             >
               <IconQr size={18} color={WHITE} />
-              <Text style={styles.settingsItemText}>Invite (QR & Room Code)</Text>
+              <Text style={styles.settingsItemText}>Invite Friends (QR & Room Code)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
               style={styles.settingsItemRow}
               onPress={() => {
-                handleToggleMic();
                 setSettingsMenuVisible(false);
+                setMembersModalVisible(true);
               }}
             >
-              {isMicMuted ? <IconMicOn size={18} color={WHITE} /> : <IconMicOff size={18} color={PURE_RED} />}
+              <IconUsers size={18} color={WHITE} />
               <Text style={styles.settingsItemText}>
-                {isMicMuted ? 'Unmute My Microphone' : 'Mute My Microphone'}
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.settingsItemRow}
-              onPress={() => {
-                setMuteEveryoneForMe(!muteEveryoneForMe);
-                setSettingsMenuVisible(false);
-              }}
-            >
-              {muteEveryoneForMe ? (
-                <IconSpeakerOn size={18} color={WHITE} />
-              ) : (
-                <IconSpeakerMuted size={18} color={PURE_RED} />
-              )}
-              <Text style={styles.settingsItemText}>
-                {muteEveryoneForMe ? 'Unmute Everyone For Me' : 'Mute Everyone For Me'}
+                Joined Members ({joinedMembersList.length})
               </Text>
             </TouchableOpacity>
 
@@ -1248,13 +1810,81 @@ export default function Room({
             >
               <IconTrash size={18} color={PURE_RED} />
               <Text style={[styles.settingsItemText, { color: PURE_RED }]}>
-                {isCurrentUserAdmin ? 'Close Room for Everyone' : 'Leave Room'}
+                {isCurrentUserAdmin ? 'Close Room for Everyone' : 'Leave Watch Room'}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
+      {/* ============================================================================ */}
+      {/* JOINED MEMBERS MODAL (With Admin Remove Button) */}
+      {/* ============================================================================ */}
+      <Modal
+        visible={membersModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setMembersModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setMembersModalVisible(false)}
+          />
+          <View style={styles.settingsSheet}>
+            <View style={styles.settingsSheetHeader}>
+              <Text style={styles.settingsSheetTitle}>
+                Room Members ({joinedMembersList.length})
+              </Text>
+              <TouchableOpacity
+                style={styles.closeIconBtn}
+                onPress={() => setMembersModalVisible(false)}
+              >
+                <IconCloseX size={18} color={WHITE} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
+              {joinedMembersList.map((m) => {
+                const isMe = m.key === memberKey;
+                return (
+                  <View key={m.key} style={styles.memberModalRow}>
+                    <Image
+                      source={AVATARS[m.avatar] || AVATARS['pfp1.jpg']}
+                      style={styles.memberModalAvatar}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={styles.memberModalName}>
+                          {isMe ? `${m.name} (You)` : m.name}
+                        </Text>
+                        {m.isAdmin && (
+                          <View style={styles.adminTagBadge}>
+                            <Text style={styles.adminTagText}>ADMIN</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                    {isCurrentUserAdmin && !isMe && (
+                      <TouchableOpacity
+                        style={styles.memberKickBtn}
+                        onPress={() => handleAdminKickMember(m)}
+                      >
+                        <IconTrash size={14} color={WHITE} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ============================================================================ */}
+      {/* INVITE QR & ALPHANUMERIC CODE MODAL */}
+      {/* ============================================================================ */}
       <Modal
         visible={inviteModalVisible}
         transparent={true}
@@ -1269,12 +1899,12 @@ export default function Room({
                 style={styles.closeIconBtn}
                 onPress={() => setInviteModalVisible(false)}
               >
-                <IconCloseX size={20} color={WHITE} />
+                <IconCloseX size={18} color={WHITE} />
               </TouchableOpacity>
             </View>
 
             <Text style={styles.inviteSubtitle}>
-              Scan this QR code or enter the alphanumeric code to join {animeTitle}
+              Scan this QR code or share the alphanumeric code to watch {animeTitle} together
             </Text>
 
             <View style={styles.qrFrameBox}>
@@ -1293,18 +1923,18 @@ export default function Room({
               <TouchableOpacity
                 style={styles.copyCodeBtn}
                 activeOpacity={0.8}
-                onPress={handleCopyRoomCode}
+                onPress={handleShareRoomCode}
               >
                 <IconCopy size={16} color={WHITE} />
                 <Text style={styles.copyCodeBtnText}>
-                  {copiedFeedback ? 'Shared!' : 'Share / Copy'}
+                  {copiedFeedback ? 'Shared!' : 'Share Code'}
                 </Text>
               </TouchableOpacity>
             </View>
 
             {activeRoomData?.hasPassword && (
               <Text style={styles.passwordHintText}>
-                Password Protected: {activeRoomData.password}
+                Room Password: {activeRoomData.password}
               </Text>
             )}
           </View>
@@ -1315,19 +1945,24 @@ export default function Room({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: BLACK },
-  headerBar: {
+  container: {
+    flex: 1,
+    backgroundColor: BLACK,
+  },
+
+  // 1. Top Header Bar
+  topHeaderBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingTop: 36,
-    paddingBottom: 12,
-    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 10,
+    paddingHorizontal: 14,
     backgroundColor: CARD_BG,
     borderBottomWidth: 1,
     borderBottomColor: BORDER_GREY,
   },
-  iconCircleBtn: {
+  topCircleBtn: {
     width: 38,
     height: 38,
     borderRadius: 19,
@@ -1337,12 +1972,498 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  micActiveCircle: { backgroundColor: 'rgba(16,185,129,0.18)', borderColor: EMERALD },
-  micSpeakingBorder: { borderWidth: 2, borderColor: EMERALD },
-  headerCenterCol: { flex: 1, paddingHorizontal: 12 },
-  headerTitle: { color: WHITE, fontSize: 16, fontWeight: '900' },
-  headerRoomCodeSub: { color: PURE_RED, fontSize: 10, fontWeight: '800', marginTop: 2, letterSpacing: 0.6 },
-  headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  topHeaderCenter: {
+    flex: 1,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+  },
+  topHeaderTitle: {
+    color: WHITE,
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  topStatusPillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginTop: 2,
+  },
+  liveGreenDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: EMERALD,
+  },
+  topRoomCodeText: {
+    color: TEXT_GREY,
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+
+  // 2. Player Wrapper
+  playerSectionWrapper: {
+    width: '100%',
+    backgroundColor: BLACK,
+  },
+  playerFallbackBox: {
+    width: '100%',
+    height: 220,
+    backgroundColor: BLACK,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  // 3. Collapsible Episodes Dropdown (Play.js Style)
+  dropdownWrapper: {
+    width: '100%',
+    backgroundColor: '#08080C',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: BORDER_GREY,
+  },
+  dropdownHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+  },
+  dropdownHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  dropdownHeaderTitle: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  nowPlayingMiniBadge: {
+    backgroundColor: 'rgba(229,9,20,0.18)',
+    borderWidth: 1,
+    borderColor: BRAND_RED,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  nowPlayingMiniText: {
+    color: PURE_RED,
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  dropdownHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dropdownToggleHint: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  dropdownExpandedBody: {
+    maxHeight: 245,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    paddingBottom: 6,
+  },
+  dropdownEpisodesList: {
+    maxHeight: 190,
+  },
+
+  // Play.js Exact Episode & Chunk Styles
+  chunkSelectorContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
+  },
+  chunkRectPill: {
+    backgroundColor: '#161616',
+    paddingHorizontal: 16,
+    paddingVertical: 7,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.16)',
+  },
+  chunkRectPillActive: {
+    backgroundColor: PURE_RED,
+    borderColor: PURE_RED,
+  },
+  chunkRectPillText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  chunkRectPillTextActive: {
+    color: WHITE,
+    fontWeight: '900',
+  },
+  episodeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  bulletNumber: {
+    color: WHITE,
+    fontSize: 15,
+    fontWeight: '800',
+    minWidth: 26,
+    marginRight: 6,
+  },
+  episodeCard: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#050505',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 4,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  episodeCardActive: {
+    borderColor: PURE_RED,
+    backgroundColor: '#14080A',
+  },
+  episodeCardTitle: {
+    color: WHITE,
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+    paddingRight: 8,
+  },
+  cardRightGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  fillerTag: {
+    backgroundColor: 'rgba(255,165,0,0.2)',
+    borderWidth: 1,
+    borderColor: '#FFA500',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  fillerTagText: {
+    color: '#FFA500',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+
+  // 4. 100,000x Live Chat Section
+  chatMasterSection: {
+    flex: 1,
+    backgroundColor: '#050508',
+  },
+  chatTopSubheader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: '#0B0B10',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.06)',
+  },
+  chatSubheaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+  },
+  chatPulseDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: PURE_RED,
+  },
+  chatSubheaderTitle: {
+    color: WHITE,
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+  },
+  chatSwipeHint: {
+    color: TEXT_GREY,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  avatarStackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  stackedMiniAvatar: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    borderColor: BLACK,
+  },
+
+  chatListArea: {
+    flex: 1,
+  },
+  chatListContent: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  emptyChatWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 30,
+  },
+  emptyChatTitle: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  emptyChatSub: {
+    color: TEXT_GREY,
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+
+  // Swipeable Message Bubbles
+  messageSwipeWrapper: {
+    position: 'relative',
+    justifyContent: 'center',
+    marginBottom: 10,
+  },
+  swipeReplyIconBadge: {
+    position: 'absolute',
+    left: 6,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(229,9,20,0.18)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: PURE_RED,
+  },
+  messageRowContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  messageRowOther: {
+    justifyContent: 'flex-start',
+    paddingRight: 42,
+  },
+  messageRowMe: {
+    justifyContent: 'flex-end',
+    paddingLeft: 42,
+  },
+  chatAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.15)',
+  },
+  messageBubble: {
+    maxWidth: '100%',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+  },
+  messageBubbleOther: {
+    backgroundColor: '#13131C',
+    borderColor: 'rgba(255,255,255,0.09)',
+    borderBottomLeftRadius: 4,
+  },
+  messageBubbleMe: {
+    backgroundColor: '#25090D',
+    borderColor: 'rgba(229,9,20,0.45)',
+    borderBottomRightRadius: 4,
+  },
+  senderHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 3,
+  },
+  senderNameText: {
+    color: '#F3F4F6',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  chatAdminTag: {
+    backgroundColor: PURE_RED,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  chatAdminTagText: {
+    color: WHITE,
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  quotedReplyBox: {
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderLeftWidth: 3,
+    borderLeftColor: PURE_RED,
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginBottom: 5,
+  },
+  quotedReplyBoxMe: {
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    borderLeftColor: WHITE,
+  },
+  quotedReplySender: {
+    color: PURE_RED,
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  quotedReplyText: {
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: 11,
+  },
+  messageBodyText: {
+    color: WHITE,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  messageMetaFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+    marginTop: 4,
+  },
+  editedBadgeText: {
+    color: TEXT_GREY,
+    fontSize: 9,
+    fontStyle: 'italic',
+  },
+  timestampText: {
+    color: TEXT_GREY,
+    fontSize: 9,
+    fontWeight: '700',
+  },
+  metaTextMe: {
+    color: 'rgba(255,255,255,0.65)',
+  },
+
+  // Live Typing Indicator with Avatar & Wave Dots
+  typingIndicatorBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    backgroundColor: '#0B0B12',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.06)',
+    gap: 8,
+  },
+  typingAvatarsWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  typingUserAvatar: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: PURE_RED,
+  },
+  typingStatusText: {
+    color: '#D1D5DB',
+    fontSize: 11,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  typingDotsContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    marginLeft: 2,
+  },
+  typingDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: PURE_RED,
+  },
+
+  // Reply / Edit Active Banner
+  composerBannerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#14141D',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderTopWidth: 1,
+    borderTopColor: BORDER_GREY,
+  },
+  composerBannerAccent: {
+    width: 3,
+    height: 26,
+    borderRadius: 2,
+    backgroundColor: PURE_RED,
+  },
+  composerBannerLabel: {
+    color: PURE_RED,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  composerBannerPreview: {
+    color: TEXT_GREY,
+    fontSize: 11,
+    marginTop: 1,
+  },
+  composerBannerCancelBtn: {
+    padding: 6,
+  },
+
+  // Composer Input Bar
+  composerInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: CARD_BG,
+    borderTopWidth: 1,
+    borderTopColor: BORDER_GREY,
+    gap: 8,
+  },
+  composerMyAvatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+  },
+  composerTextInput: {
+    flex: 1,
+    backgroundColor: DARK_GREY,
+    color: WHITE,
+    borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    fontSize: 13,
+    borderWidth: 1,
+    borderColor: BORDER_GREY,
+  },
+  composerSendBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: PURE_RED,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  // Setup Mode Styles
   modeTabsRow: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -1354,10 +2475,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  modeTabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6 },
-  modeTabBtnActive: { backgroundColor: PURE_RED },
-  modeTabText: { color: TEXT_GREY, fontSize: 13, fontWeight: '800' },
-  modeTabTextActive: { color: WHITE, fontWeight: '900' },
+  modeTabBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 6,
+  },
+  modeTabBtnActive: {
+    backgroundColor: PURE_RED,
+  },
+  modeTabText: {
+    color: TEXT_GREY,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  modeTabTextActive: {
+    color: WHITE,
+    fontWeight: '900',
+  },
   setupCard: {
     backgroundColor: CARD_BG,
     borderRadius: 12,
@@ -1366,13 +2501,45 @@ const styles = StyleSheet.create({
     borderColor: BORDER_GREY,
     marginBottom: 14,
   },
-  hostProfileRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
-  hostAvatar: { width: 46, height: 46, borderRadius: 8 },
-  hostName: { color: WHITE, fontSize: 15, fontWeight: '800' },
-  hostSubtext: { color: TEXT_GREY, fontSize: 12, marginTop: 2 },
-  adminTagBadge: { backgroundColor: PURE_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  adminTagText: { color: WHITE, fontSize: 9, fontWeight: '900' },
-  inputLabel: { color: TEXT_GREY, fontSize: 11, fontWeight: '800', textTransform: 'uppercase', marginBottom: 6 },
+  hostProfileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 14,
+  },
+  hostAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 8,
+  },
+  hostName: {
+    color: WHITE,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  hostSubtext: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  adminTagBadge: {
+    backgroundColor: PURE_RED,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  adminTagText: {
+    color: WHITE,
+    fontSize: 9,
+    fontWeight: '900',
+  },
+  inputLabel: {
+    color: TEXT_GREY,
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+    marginBottom: 6,
+  },
   textInput: {
     backgroundColor: DARK_GREY,
     color: WHITE,
@@ -1383,9 +2550,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  codeTextInput: { fontSize: 18, fontWeight: '900', letterSpacing: 2, textAlign: 'center' },
-  epSelectHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sectionTitle: { color: WHITE, fontSize: 14, fontWeight: '900' },
+  codeTextInput: {
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: 2,
+    textAlign: 'center',
+  },
+  epSelectHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  sectionTitle: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '900',
+  },
   selectAllBtn: {
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -1394,20 +2575,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: PURE_RED,
   },
-  selectAllBtnActive: { backgroundColor: PURE_RED },
-  selectAllBtnText: { color: PURE_RED, fontSize: 11, fontWeight: '900' },
-  chunkPill: {
-    backgroundColor: DARK_GREY,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
+  selectAllBtnActive: {
+    backgroundColor: PURE_RED,
   },
-  chunkPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
-  chunkPillText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
-  chunkPillTextActive: { color: WHITE, fontWeight: '900' },
-  epSelectGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 16 },
+  selectAllBtnText: {
+    color: PURE_RED,
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  epSelectGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingBottom: 16,
+  },
   epSelectBox: {
     width: '23%',
     paddingVertical: 10,
@@ -1417,9 +2598,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  epSelectBoxActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
-  epSelectBoxText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
-  epSelectBoxTextActive: { color: WHITE, fontWeight: '900' },
+  epSelectBoxActive: {
+    backgroundColor: PURE_RED,
+    borderColor: PURE_RED,
+  },
+  epSelectBoxText: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  epSelectBoxTextActive: {
+    color: WHITE,
+    fontWeight: '900',
+  },
   primaryActionBtn: {
     backgroundColor: PURE_RED,
     paddingVertical: 14,
@@ -1428,90 +2619,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginVertical: 12,
   },
-  primaryActionBtnText: { color: WHITE, fontSize: 15, fontWeight: '900' },
-  membersSliderSection: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: BORDER_GREY },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    marginBottom: 10,
+  primaryActionBtnText: {
+    color: WHITE,
+    fontSize: 15,
+    fontWeight: '900',
   },
-  deafenedNoticeText: { color: PURE_RED, fontSize: 11, fontWeight: '800' },
-  membersSliderContent: { paddingHorizontal: 16, gap: 14 },
-  memberCard: { width: 74, alignItems: 'center' },
-  memberAvatarWrap: {
-    width: 64,
-    height: 64,
-    borderRadius: 12,
-    position: 'relative',
-    backgroundColor: DARK_GREY,
-    borderWidth: 2,
-    borderColor: BORDER_GREY,
-  },
-  memberAvatarSpeaking: { borderColor: EMERALD },
-  memberAvatarImg: { width: '100%', height: '100%', borderRadius: 10 },
-  memberAdminRibbon: {
-    position: 'absolute',
-    top: -6,
-    alignSelf: 'center',
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 6,
-    paddingVertical: 1.5,
-    borderRadius: 3,
-  },
-  memberAdminRibbonText: { color: WHITE, fontSize: 8, fontWeight: '900' },
-  memberMicBadge: {
-    position: 'absolute',
-    bottom: -4,
-    right: -4,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: PURE_RED,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: BLACK,
-  },
-  kickMemberBtn: {
-    position: 'absolute',
-    top: -5,
-    right: -5,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: PURE_RED,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1.5,
-    borderColor: BLACK,
-  },
-  memberNameText: { color: WHITE, fontSize: 11, fontWeight: '700', marginTop: 7, textAlign: 'center' },
-  roomEpisodesSection: { flex: 1, paddingTop: 12 },
-  roomEpRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: CARD_BG,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  roomEpRowActive: { borderColor: PURE_RED, backgroundColor: '#170E10' },
-  roomEpNumBox: {
-    width: 32,
-    height: 32,
-    borderRadius: 4,
-    backgroundColor: DARK_GREY,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  roomEpNumText: { color: WHITE, fontSize: 13, fontWeight: '900' },
-  roomEpTitle: { color: WHITE, fontSize: 13, fontWeight: '700' },
-  roomEpPlayingSub: { color: PURE_RED, fontSize: 9, fontWeight: '900', marginTop: 2 },
+
+  // Modals (Message Actions, Settings, Members, Invite)
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.82)',
@@ -1519,17 +2633,54 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
   },
+  msgActionSheet: {
+    width: '100%',
+    maxWidth: 360,
+    backgroundColor: CARD_BG,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: BORDER_GREY,
+  },
+  msgActionPreviewBox: {
+    backgroundColor: DARK_GREY,
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: PURE_RED,
+  },
+  msgActionPreviewSender: {
+    color: TEXT_GREY,
+    fontSize: 10,
+    fontWeight: '800',
+    marginBottom: 2,
+  },
+  msgActionPreviewText: {
+    color: WHITE,
+    fontSize: 12,
+    fontWeight: '600',
+  },
   settingsSheet: {
     width: '100%',
-    maxWidth: 400,
+    maxWidth: 380,
     backgroundColor: CARD_BG,
-    borderRadius: 14,
+    borderRadius: 16,
     padding: 18,
     borderWidth: 1,
     borderColor: BORDER_GREY,
   },
-  settingsSheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  settingsSheetTitle: { color: WHITE, fontSize: 17, fontWeight: '900' },
+  settingsSheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  settingsSheetTitle: {
+    color: WHITE,
+    fontSize: 17,
+    fontWeight: '900',
+  },
   closeIconBtn: {
     width: 32,
     height: 32,
@@ -1546,7 +2697,37 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: BORDER_GREY,
   },
-  settingsItemText: { color: WHITE, fontSize: 14, fontWeight: '700' },
+  settingsItemText: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  memberModalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER_GREY,
+  },
+  memberModalAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+  },
+  memberModalName: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  memberKickBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: PURE_RED,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   inviteCard: {
     width: '100%',
     maxWidth: 380,
@@ -1557,9 +2738,25 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: PURE_RED,
   },
-  inviteHeaderRow: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  inviteTitle: { color: WHITE, fontSize: 18, fontWeight: '900' },
-  inviteSubtitle: { color: TEXT_GREY, fontSize: 12, textAlign: 'center', marginBottom: 16, lineHeight: 17 },
+  inviteHeaderRow: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  inviteTitle: {
+    color: WHITE,
+    fontSize: 18,
+    fontWeight: '900',
+  },
+  inviteSubtitle: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 16,
+    lineHeight: 17,
+  },
   qrFrameBox: {
     width: 200,
     height: 200,
@@ -1570,8 +2767,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 18,
   },
-  qrCodeImg: { width: '100%', height: '100%' },
-  codeLabel: { color: TEXT_GREY, fontSize: 10, fontWeight: '900', letterSpacing: 1, marginBottom: 6 },
+  qrCodeImg: {
+    width: '100%',
+    height: '100%',
+  },
+  codeLabel: {
+    color: TEXT_GREY,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 1,
+    marginBottom: 6,
+  },
   codeDisplayRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1585,7 +2791,12 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'space-between',
   },
-  codeBigText: { color: WHITE, fontSize: 22, fontWeight: '900', letterSpacing: 3 },
+  codeBigText: {
+    color: WHITE,
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 3,
+  },
   copyCodeBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1595,6 +2806,15 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 6,
   },
-  copyCodeBtnText: { color: WHITE, fontSize: 13, fontWeight: '900' },
-  passwordHintText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700', marginTop: 12 },
+  copyCodeBtnText: {
+    color: WHITE,
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  passwordHintText: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 12,
+  },
 });
