@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "953026999234",
+    "project_id": "kameko-e3d0f",
+    "storage_bucket": "kameko-e3d0f.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:953026999234:android:9b7a17537166e31e6f9c5b",
+        "android_client_info": {
+          "package_name": "com.kameko.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "953026999234-7eb29d7mmipotmq71ufraimhbd2unvqf.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.kameko.app",
+            "certificate_hash": "4ef0219a3675f917f488f22ddc6152abf392d1f1"
+          }
+        },
+        {
+          "client_id": "953026999234-esg9qfrqjeosi978lmasdkuivhsndorg.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.kameko.app",
+            "certificate_hash": "b8452820c7002d85f7fdfd640c4bcf60c125b19b"
+          }
+        },
+        {
+          "client_id": "953026999234-vtpccvf4nboqi8mtdndqfmopbol5h4i4.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD70RodOW4AbmyqBXmh6p8nAZsm1q9Y8yg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "953026999234-vtpccvf4nboqi8mtdndqfmopbol5h4i4.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
