@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { 
   View, Text, StyleSheet, Dimensions, 
   TouchableOpacity, Share, StatusBar, 
-  ActivityIndicator, FlatList, Modal, ScrollView, BackHandler 
+  ActivityIndicator, FlatList, Modal, ScrollView, BackHandler, Platform
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -35,7 +35,7 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
-// Safely extract a valid React component from a module import (prevents "Element type is invalid" crash)
+// Safely extract a valid React component from a module import
 const resolveValidComponent = (mod) => {
   if (!mod) return null;
   if (typeof mod === 'function') return mod;
@@ -61,7 +61,6 @@ const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
   }
 };
 
-// --- BUILD-SAFE LOCAL STORAGE HELPERS ---
 const readLocalJson = async (fileUri, fallback = {}) => {
   try {
     if (fileUri) {
@@ -84,7 +83,7 @@ const writeLocalJson = async (fileUri, data) => {
   } catch (_) {}
 };
 
-// UI Icons
+// --- SVG ICONS (STRICTLY WHITE) ---
 const IconBack = ({ size = 20 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M15 18l-6-6 6-6" />
@@ -100,7 +99,7 @@ const IconPlus = ({ size = 24, color = "#FFF" }) => (
     <Path d="M12 5v14M5 12h14" />
   </Svg>
 );
-const IconCheck = ({ size = 24, color = BRAND_RED }) => (
+const IconCheck = ({ size = 24, color = "#FFF" }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3">
     <Path d="M20 6L9 17l-5-5" />
   </Svg>
@@ -115,7 +114,7 @@ const IconDownload = ({ size = 22, color = "#FFF" }) => (
     <Path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
   </Svg>
 );
-const IconTrash = ({ size = 20, color = PURE_RED }) => (
+const IconTrash = ({ size = 20, color = "#FFF" }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
   </Svg>
@@ -133,7 +132,7 @@ const IconVerticalDots = ({ size = 22, color = "#FFF" }) => (
   </Svg>
 );
 const BookmarkIcon = ({ filled }) => (
-  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : "#FFFFFF"} strokeWidth="2.5">
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke="#FFFFFF" strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -213,7 +212,6 @@ export default function Play({
     auth().currentUser?.uid ||
     null;
 
-  // Fallback: Fetch active profile from Firestore if Play was opened without one
   useEffect(() => {
     if (resolvedProfileId || !resolvedUid) return;
     let isMounted = true;
@@ -254,7 +252,6 @@ export default function Play({
     return () => { isMounted = false; };
   }, [resolvedUid, resolvedProfileId]);
 
-  // Crash-safe string resolutions
   const animeDocId = String(currentAnime?.animeId || currentAnime?.id || 'solo-leveling');
   const resolvedTitle = String(currentAnime?.animeTitle || currentAnime?.title || 'Anime');
   const resolvedBackdrop = String(
@@ -272,11 +269,9 @@ export default function Play({
   const [moreLikeThis, setMoreLikeThis] = useState([]);
   const [sequelsAndRelated, setSequelsAndRelated] = useState([]);
 
-  // Progress Tracking
   const [userProgressMap, setUserProgressMap] = useState({});
   const [latestWatched, setLatestWatched] = useState(null);
 
-  // TMDB Metadata
   const [titleLogo, setTitleLogo] = useState(null);
   const [tmdbSynopsis, setTmdbSynopsis] = useState(
     String(currentAnime?.description || 'Watch all episodes in HD.')
@@ -285,28 +280,29 @@ export default function Play({
     String(currentAnime?.status || '').toUpperCase() === 'UPCOMING'
   );
 
-  // Episodes List & Pagination
   const [vercelAnimeId, setVercelAnimeId] = useState(animeDocId);
   const [episodes, setEpisodes] = useState([]);
   const [episodesLoading, setEpisodesLoading] = useState(true);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const hasRestoredLocalChunkRef = useRef(false);
 
-  // Player Overlay
   const [loadingEpisode, setLoadingEpisode] = useState(null);
   const [activePlayback, setActivePlayback] = useState(null);
 
-  // Top Right Vertical "..." Menu & Fullscreen Overlays (Share & Room)
+  // Settings Menu Modal & Overlays
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
 
-  // --- DOWNLOADED EPISODES & BULK DELETE STATES ---
+  // Downloaded Episodes & Bulk Delete States
   const [downloadedEpMap, setDownloadedEpMap] = useState({});
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
 
-  // --- DOWNLOAD SHEET STATES ---
+  // Custom CSS Confirmation Popup State (Replacing Alert.alert)
+  const [confirmDialog, setConfirmDialog] = useState(null);
+
+  // Download Sheet States
   const [downloadModalVisible, setDownloadModalVisible] = useState(false);
   const [isSingleEpisodeDownload, setIsSingleEpisodeDownload] = useState(false);
   const [downloadTargetEp, setDownloadTargetEp] = useState(null);
@@ -322,7 +318,6 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
-  // Handle hardware back button for fullscreen overlays and bulk-delete mode
   useEffect(() => {
     const onHardwareBack = () => {
       if (activePlayback) {
@@ -349,7 +344,6 @@ export default function Play({
     return () => sub.remove();
   }, [activePlayback, shareModalVisible, roomModalVisible, isBulkDeleteMode]);
 
-  // Sync downloaded episodes from local JSON queue + Firestore
   const syncLocalDownloads = useCallback(async () => {
     const queue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
     const list = Array.isArray(queue) ? queue : [];
@@ -393,15 +387,13 @@ export default function Play({
     return () => unsub();
   }, [resolvedUid, resolvedProfileId, animeDocId]);
 
-  // Delete single or multiple downloaded episodes
-  const handleDeleteDownloadedEpisodes = useCallback(
+  const executeDeleteDownloadedEpisodes = useCallback(
     async (epNumbersArray) => {
       const numsToDelete = (epNumbersArray || []).map((n) => Number(n)).filter(Boolean);
       if (numsToDelete.length === 0) return;
 
       const deleteSet = new Set(numsToDelete);
 
-      // 1. Update UI state immediately
       setDownloadedEpMap((prev) => {
         const next = { ...prev };
         numsToDelete.forEach((num) => {
@@ -410,7 +402,6 @@ export default function Play({
         return next;
       });
 
-      // 2. Remove from local file storage queue and delete local media files if saved
       const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
       if (Array.isArray(existingQueue)) {
         const toRemoveItems = existingQueue.filter(
@@ -429,7 +420,6 @@ export default function Play({
         await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
       }
 
-      // 3. Remove from Firestore downloads collection
       if (resolvedUid && resolvedProfileId) {
         for (const epNum of numsToDelete) {
           firestore()
@@ -450,7 +440,28 @@ export default function Play({
     [animeDocId, resolvedUid, resolvedProfileId]
   );
 
-  // Trigger long-press bulk selection for downloaded episodes
+  // Trigger Custom CSS Confirmation Popup when deleting episode(s)
+  const handleDeleteDownloadedEpisodes = useCallback(
+    (epNumbersArray) => {
+      const nums = (epNumbersArray || []).map((n) => Number(n)).filter(Boolean);
+      if (nums.length === 0) return;
+
+      const isMultiple = nums.length > 1;
+      setConfirmDialog({
+        title: isMultiple ? 'Delete Downloaded Episodes' : `Delete Episode ${nums[0]}`,
+        message: isMultiple
+          ? `Are you sure you want to permanently delete these ${nums.length} downloaded episodes from your device?`
+          : `Permanently delete downloaded Episode ${nums[0]} from your device?`,
+        confirmText: 'Delete',
+        onConfirm: async () => {
+          setConfirmDialog(null);
+          await executeDeleteDownloadedEpisodes(nums);
+        },
+      });
+    },
+    [executeDeleteDownloadedEpisodes]
+  );
+
   const handleLongPressDownloadedEpisode = useCallback((epNum) => {
     setIsBulkDeleteMode(true);
     setBulkDeleteSelectedMap((prev) => ({
@@ -470,7 +481,6 @@ export default function Play({
     });
   }, []);
 
-  // Safe Share handler (uses ShareSheet component if valid, otherwise native Share)
   const handleTriggerShare = async () => {
     if (ResolvedShareComp) {
       setShareModalVisible(true);
@@ -483,7 +493,6 @@ export default function Play({
     } catch (_) {}
   };
 
-  // Show phone's bottom navigation bar while keeping top notification bar hidden when Download Menu is open
   useEffect(() => {
     const syncSystemBars = async () => {
       try {
@@ -496,7 +505,6 @@ export default function Play({
     syncSystemBars();
   }, [downloadModalVisible]);
 
-  // --- LOAD & SAVE PREFERENCES IN LOCAL STORAGE ---
   const updateLocalPreferences = useCallback(async (patch) => {
     const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const merged = {
@@ -554,7 +562,6 @@ export default function Play({
     });
   }, [animeDocId, resolvedTitle, updateLocalPreferences]);
 
-  // 1. Firebase Watch History & Watchlist Listener
   useEffect(() => {
     if (!resolvedUid) return;
 
@@ -663,7 +670,6 @@ export default function Play({
     }
   };
 
-  // --- UNIFIED DOWNLOAD OPTIONS RESOLVER ---
   const fetchUnifiedDownloadOptions = useCallback(async (epItem, audioType) => {
     if (!epItem) return;
     setIsFetchingDownloadData(true);
@@ -816,7 +822,6 @@ export default function Play({
     }
   }, [vercelAnimeId, animeDocId]);
 
-  // A. Single Episode Download (Skips Choose Episodes Module)
   const handleOpenSingleEpisodeDownload = async (episodeItem) => {
     if (!episodeItem) return;
     const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
@@ -831,7 +836,6 @@ export default function Play({
     fetchUnifiedDownloadOptions(episodeItem, initialAudio);
   };
 
-  // B. Multi-Episode Download (From Hero Button or Top Menu)
   const handleOpenMultiEpisodeDownload = async (defaultEp) => {
     const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
     const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
@@ -945,7 +949,6 @@ export default function Play({
     });
   };
 
-  // 2. Fetch TMDB Data, Sequels/Related Slider, and "More Like This" Grid
   useEffect(() => {
     let isMounted = true;
     const loadTMDB = async () => {
@@ -1112,7 +1115,6 @@ export default function Play({
     return () => { isMounted = false; };
   }, [resolvedTitle, currentAnime?.format]);
 
-  // 3. Fetch Flat Episodes
   useEffect(() => {
     let isMounted = true;
     const fetchEpisodes = async () => {
@@ -1182,7 +1184,6 @@ export default function Play({
   const currentEpisodesToRender = episodeChunks[currentChunkIndex] || episodeChunks[0] || [];
   const currentDownloadChunkEpisodes = episodeChunks[downloadChunkIndex] || episodeChunks[0] || episodes;
 
-  // 4. Playback Navigation Handler
   const handlePlayEpisode = async (episodeItem) => {
     if (!episodeItem) return;
 
@@ -1653,7 +1654,6 @@ export default function Play({
                   )}
                 </TouchableOpacity>
 
-                {/* Show Delete Button (or Bulk Selection Checkbox) on Downloaded Episodes, otherwise Download Button */}
                 {isDownloaded ? (
                   <TouchableOpacity
                     style={[
@@ -1681,7 +1681,7 @@ export default function Play({
                         {isSelectedForDelete && <IconCheck size={14} color="#FFF" />}
                       </View>
                     ) : (
-                      <IconTrash size={20} color={PURE_RED} />
+                      <IconTrash size={20} color="#FFF" />
                     )}
                   </TouchableOpacity>
                 ) : (
@@ -1698,7 +1698,6 @@ export default function Play({
             );
           }
 
-          // GRID CARD FOR "MORE LIKE THIS"
           const isAdded = librarySet.has(String(item.id));
           return (
             <TouchableOpacity
@@ -1744,7 +1743,7 @@ export default function Play({
         showsVerticalScrollIndicator={false}
       />
 
-      {/* --- FLOATING BULK DELETE BAR (LONG-PRESS SELECTION MODE) --- */}
+      {/* FLOATING BULK DELETE BAR */}
       {isBulkDeleteMode && (
         <View style={styles.bulkDeleteFloatingBar}>
           <View style={styles.bulkDeleteBarTopRow}>
@@ -1801,62 +1800,119 @@ export default function Play({
         </View>
       )}
 
-      {/* --- TOP VERTICAL "..." MENU MODAL (Add to List, Download, Share, Room) --- */}
+      {/* --- SETTINGS POPUP FROM BOTTOM (MATCHING DOWNLOAD PAGE) --- */}
       <Modal
         visible={topMenuVisible}
         transparent={true}
         animationType="fade"
         onRequestClose={() => setTopMenuVisible(false)}
       >
-        <View style={styles.topMenuOverlay}>
+        <View style={styles.settingsModalOverlay}>
           <TouchableOpacity
             style={StyleSheet.absoluteFillObject}
             activeOpacity={1}
             onPress={() => setTopMenuVisible(false)}
           />
-          <View style={styles.topMenuContainer}>
-            <TouchableOpacity 
-              style={styles.topMenuItem} 
+          <View style={styles.settingsActionSheetBox}>
+            <Text style={styles.settingsSheetTitle} numberOfLines={1}>
+              {resolvedTitle}
+            </Text>
+
+            <TouchableOpacity
+              style={styles.settingsSheetOptionRow}
+              activeOpacity={0.8}
               onPress={() => {
                 setTopMenuVisible(false);
                 toggleLibrary();
               }}
             >
-              <Text style={styles.topMenuItemText}>
-                {inLibrary ? 'Remove from List' : 'Add to List'}
+              <BookmarkIcon filled={inLibrary} />
+              <Text style={styles.settingsSheetOptionText}>
+                {inLibrary ? 'Remove from User List' : 'Add to User List'}
               </Text>
             </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.topMenuItem} 
+            <TouchableOpacity
+              style={styles.settingsSheetOptionRow}
+              activeOpacity={0.8}
               onPress={() => {
                 setTopMenuVisible(false);
                 handleOpenMultiEpisodeDownload(targetEp);
               }}
             >
-              <Text style={styles.topMenuItemText}>Download</Text>
+              <IconDownload size={18} color="#FFF" />
+              <Text style={styles.settingsSheetOptionText}>Download</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.topMenuItem} 
+            <TouchableOpacity
+              style={styles.settingsSheetOptionRow}
+              activeOpacity={0.8}
               onPress={() => {
                 setTopMenuVisible(false);
                 handleTriggerShare();
               }}
             >
-              <Text style={styles.topMenuItemText}>Share</Text>
+              <IconShare size={18} color="#FFF" />
+              <Text style={styles.settingsSheetOptionText}>Share</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity 
-              style={styles.topMenuItem} 
+            <TouchableOpacity
+              style={styles.settingsSheetOptionRow}
+              activeOpacity={0.8}
               onPress={() => {
                 setTopMenuVisible(false);
                 setRoomModalVisible(true);
               }}
             >
-              <Text style={styles.topMenuItemText}>Room</Text>
+              <IconPlay size={18} color="#FFF" />
+              <Text style={styles.settingsSheetOptionText}>Room</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </Modal>
+
+      {/* --- CUSTOM CSS CONFIRMATION POPUP MODAL --- */}
+      <Modal
+        visible={Boolean(confirmDialog)}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setConfirmDialog(null)}
+      >
+        <View style={styles.confirmModalBackdrop}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setConfirmDialog(null)}
+          />
+          {confirmDialog && (
+            <View style={styles.confirmPopupCard}>
+              <View style={styles.confirmIconWrap}>
+                <IconTrash size={22} color="#FFF" />
+              </View>
+              <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
+              <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
+
+              <View style={styles.confirmBtnsRow}>
+                <TouchableOpacity
+                  style={styles.confirmCancelBtn}
+                  activeOpacity={0.85}
+                  onPress={() => setConfirmDialog(null)}
+                >
+                  <Text style={styles.confirmCancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.confirmDangerBtn}
+                  activeOpacity={0.85}
+                  onPress={confirmDialog.onConfirm}
+                >
+                  <Text style={styles.confirmDangerBtnText}>
+                    {confirmDialog.confirmText || 'Delete'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
         </View>
       </Modal>
 
@@ -1907,7 +1963,6 @@ export default function Play({
               </TouchableOpacity>
             </View>
 
-            {/* STEP 1: MULTI-EPISODE SELECTOR (ONLY FOR MULTI-DOWNLOAD) */}
             {!isSingleEpisodeDownload && downloadStep === 1 && (
               <View style={{ flex: 1 }}>
                 <View style={styles.multiEpSelectTopBar}>
@@ -2013,7 +2068,6 @@ export default function Play({
               </View>
             )}
 
-            {/* STEP 2: AUDIO, SUBTITLES & QUALITY */}
             {(isSingleEpisodeDownload || downloadStep === 2) && (
               <View style={{ flex: 1 }}>
                 <ScrollView
@@ -2146,7 +2200,7 @@ export default function Play({
         </View>
       </Modal>
 
-      {/* DIRECT FULLSCREEN SHARE OVERLAY (NO MODAL / NO ANIMATION) */}
+      {/* FULLSCREEN OVERLAYS */}
       {shareModalVisible && ResolvedShareComp && (
         <View style={styles.directFullscreenOverlay}>
           <ResolvedShareComp
@@ -2162,7 +2216,6 @@ export default function Play({
         </View>
       )}
 
-      {/* DIRECT FULLSCREEN ROOM OVERLAY (NO MODAL / NO ANIMATION) */}
       {roomModalVisible && ResolvedRoomComp && (
         <View style={styles.directFullscreenOverlay}>
           <ResolvedRoomComp
@@ -2178,7 +2231,6 @@ export default function Play({
         </View>
       )}
 
-      {/* Fullscreen Player Overlay */}
       {activePlayback && (
         <View style={styles.playerFullscreenContainer}>
           <Player
@@ -2265,7 +2317,7 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
-  listPadding: { paddingBottom: 70 },
+  listPadding: { paddingBottom: 110 },
   episodeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12 },
   bulletNumber: { color: '#FFF', fontSize: 16, fontWeight: '800', minWidth: 26, marginRight: 6 },
   episodeCard: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#050505', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 4, paddingVertical: 14, paddingHorizontal: 14, overflow: 'hidden' },
@@ -2354,6 +2406,127 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
+  // Settings Bottom Sheet (Matching Download Page)
+  settingsModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    justifyContent: 'flex-end',
+  },
+  settingsActionSheetBox: {
+    backgroundColor: '#121216',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 28,
+    borderTopWidth: 1,
+    borderTopColor: '#26262C',
+  },
+  settingsSheetTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 14,
+  },
+  settingsSheetOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#1E1E24',
+  },
+  settingsSheetOptionText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+
+  // Custom CSS Confirmation Popup Modal (Matching Download Page)
+  confirmModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.84)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  confirmPopupCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: '#0E0E13',
+    borderRadius: 16,
+    paddingHorizontal: 22,
+    paddingVertical: 22,
+    borderWidth: 1,
+    borderColor: '#262630',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.7,
+    shadowRadius: 18,
+    elevation: 14,
+  },
+  confirmIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(229,9,20,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(229,9,20,0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  confirmPopupTitle: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  confirmPopupMessage: {
+    color: '#8E8E93',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  confirmBtnsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 9,
+    backgroundColor: '#191922',
+    borderWidth: 1,
+    borderColor: '#2C2C38',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmCancelBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  confirmDangerBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 9,
+    backgroundColor: BRAND_RED,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmDangerBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
   // RecentSlider-matched UI for Bottom Sequel Slider
   recentStyleSection: { marginTop: 18, marginBottom: 25 },
   recentHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
@@ -2392,34 +2565,6 @@ const styles = StyleSheet.create({
 
   emptyContainer: { paddingVertical: 40, alignItems: 'center' },
   emptyText: { color: '#777', fontSize: 13 },
-
-  // Top Menu Modal
-  topMenuOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-start',
-    alignItems: 'flex-end',
-    paddingTop: 82,
-    paddingRight: 16,
-  },
-  topMenuContainer: {
-    width: 195,
-    backgroundColor: '#18181C',
-    borderRadius: 10,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
-    elevation: 20,
-  },
-  topMenuItem: {
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-  },
-  topMenuItemText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
 
   // Bottom Half-Screen Download Sheet
   bottomSheetOverlay: {
