@@ -12,7 +12,7 @@ import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
 import Player from './play/player';
-import * as ShareModule from '../components/share';
+import * as ShareSheetModule from '../components/ShareSheet';
 import * as RoomModule from '../components/room';
 
 const { width, height } = Dimensions.get('window');
@@ -35,18 +35,17 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
-// Safely extract a valid React component from a module import
+// Safely extract a valid React component from a module import (prevents "Element type is invalid" crash)
 const resolveValidComponent = (mod) => {
   if (!mod) return null;
   if (typeof mod === 'function') return mod;
   if (typeof mod.default === 'function') return mod.default;
-  if (typeof mod.Share === 'function') return mod.Share;
   if (typeof mod.ShareSheet === 'function') return mod.ShareSheet;
   if (typeof mod.Room === 'function') return mod.Room;
   return null;
 };
 
-const ResolvedShareComp = resolveValidComponent(ShareModule);
+const ResolvedShareComp = resolveValidComponent(ShareSheetModule);
 const ResolvedRoomComp = resolveValidComponent(RoomModule);
 
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
@@ -471,7 +470,7 @@ export default function Play({
     });
   }, []);
 
-  // Safe Share handler (opens fullscreen share.js if available, otherwise native Share)
+  // Safe Share handler (uses ShareSheet component if valid, otherwise native Share)
   const handleTriggerShare = async () => {
     if (ResolvedShareComp) {
       setShareModalVisible(true);
@@ -910,7 +909,7 @@ export default function Play({
         referer: finalQuality.referer || 'https://vidwish.live/',
         profileId: resolvedProfileId || 'default',
         userUid: resolvedUid || null,
-        status: 'downloaded',
+        status: 'queued',
         savedAt: Date.now(),
       };
 
@@ -1192,13 +1191,22 @@ export default function Play({
       const safeId = encodeURIComponent(vercelAnimeId || animeDocId);
       const safeEp = encodeURIComponent(String(episodeItem.slug));
 
+      const downloadedRecord = downloadedEpMap[episodeItem.num] || null;
+      const offlineFileUri =
+        downloadedRecord?.localUri ||
+        downloadedRecord?.fileUri ||
+        downloadedRecord?.streamUri ||
+        null;
+
       let streamManifest = null;
-      try {
-        const streamUrl = `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=hd-1&type=sub`;
-        const res = await fetchWithTimeout(streamUrl, {}, 8000);
-        const json = await res.json();
-        streamManifest = json?.data || json?.results || null;
-      } catch (_) {}
+      if (!offlineFileUri || !String(offlineFileUri).startsWith('file://')) {
+        try {
+          const streamUrl = `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=hd-1&type=sub`;
+          const res = await fetchWithTimeout(streamUrl, {}, 8000);
+          const json = await res.json();
+          streamManifest = json?.data || json?.results || null;
+        } catch (_) {}
+      }
 
       const savedEpProgress =
         userProgressMap[String(episodeItem.slug)] ||
@@ -1206,8 +1214,27 @@ export default function Play({
         null;
 
       const playbackPayload = {
-        streamUrl: streamManifest?.m3u8 || streamManifest?.streamingLink || null,
-        referer: streamManifest?.referer || 'https://vidwish.live/',
+        streamUrl:
+          offlineFileUri ||
+          streamManifest?.m3u8 ||
+          streamManifest?.streamingLink ||
+          null,
+        localUri:
+          offlineFileUri && String(offlineFileUri).startsWith('file://')
+            ? offlineFileUri
+            : null,
+        localMetaUri: downloadedRecord?.localMetaUri || null,
+        localSubtitleUri:
+          downloadedRecord?.localSubtitleUri ||
+          downloadedRecord?.subtitle?.file ||
+          null,
+        isOffline: Boolean(
+          offlineFileUri && String(offlineFileUri).startsWith('file://')
+        ),
+        referer:
+          downloadedRecord?.referer ||
+          streamManifest?.referer ||
+          'https://vidwish.live/',
         subtitles: streamManifest?.subtitles || [],
         animeTitle: resolvedTitle,
         title: resolvedTitle,
@@ -1223,6 +1250,8 @@ export default function Play({
         slug: String(episodeItem.slug),
         progress: savedEpProgress ? Number(savedEpProgress.progress || 0) : 0,
         duration: savedEpProgress ? Number(savedEpProgress.duration || 0) : 0,
+        positionMillis: savedEpProgress ? Number(savedEpProgress.positionMillis || 0) : 0,
+        durationMillis: savedEpProgress ? Number(savedEpProgress.durationMillis || 0) : 0,
         userUid: resolvedUid,
         uid: resolvedUid,
         user: resolvedUser,
@@ -1230,7 +1259,7 @@ export default function Play({
         profileId: resolvedProfileId,
         activeProfile: resolvedProfile,
         currentProfile: resolvedProfile,
-        targetType: currentAnime?.targetType || 'sub',
+        targetType: downloadedRecord?.audioType || currentAnime?.targetType || 'sub',
       };
 
       await updateLocalPreferences({
