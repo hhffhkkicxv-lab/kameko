@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { 
   View, Text, StyleSheet, Dimensions, 
   TouchableOpacity, Share, StatusBar, 
-  ActivityIndicator, FlatList, Modal, ScrollView 
+  ActivityIndicator, FlatList, Modal, ScrollView, BackHandler 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -12,7 +12,7 @@ import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
 import Player from './play/player';
-import * as ShareSheetModule from '../components/ShareSheet';
+import * as ShareModule from '../components/share';
 import * as RoomModule from '../components/room';
 
 const { width, height } = Dimensions.get('window');
@@ -35,17 +35,18 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
-// Safely extract a valid React component from a module import (prevents "Element type is invalid" crash)
+// Safely extract a valid React component from a module import
 const resolveValidComponent = (mod) => {
   if (!mod) return null;
   if (typeof mod === 'function') return mod;
   if (typeof mod.default === 'function') return mod.default;
+  if (typeof mod.Share === 'function') return mod.Share;
   if (typeof mod.ShareSheet === 'function') return mod.ShareSheet;
   if (typeof mod.Room === 'function') return mod.Room;
   return null;
 };
 
-const ResolvedShareComp = resolveValidComponent(ShareSheetModule);
+const ResolvedShareComp = resolveValidComponent(ShareModule);
 const ResolvedRoomComp = resolveValidComponent(RoomModule);
 
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
@@ -113,6 +114,11 @@ const IconShare = ({ size = 22, color = "#FFF" }) => (
 const IconDownload = ({ size = 22, color = "#FFF" }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
     <Path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+  </Svg>
+);
+const IconTrash = ({ size = 20, color = PURE_RED }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
   </Svg>
 );
 const IconClose = ({ size = 18, color = "#FFF" }) => (
@@ -291,10 +297,15 @@ export default function Play({
   const [loadingEpisode, setLoadingEpisode] = useState(null);
   const [activePlayback, setActivePlayback] = useState(null);
 
-  // Top Right Vertical "..." Menu & Sub-Modals (Share & Room)
+  // Top Right Vertical "..." Menu & Fullscreen Overlays (Share & Room)
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
+
+  // --- DOWNLOADED EPISODES & BULK DELETE STATES ---
+  const [downloadedEpMap, setDownloadedEpMap] = useState({});
+  const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
+  const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
 
   // --- DOWNLOAD SHEET STATES ---
   const [downloadModalVisible, setDownloadModalVisible] = useState(false);
@@ -312,7 +323,155 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
-  // Safe Share handler (uses ShareSheet component if valid, otherwise native Share)
+  // Handle hardware back button for fullscreen overlays and bulk-delete mode
+  useEffect(() => {
+    const onHardwareBack = () => {
+      if (activePlayback) {
+        setActivePlayback(null);
+        return true;
+      }
+      if (shareModalVisible) {
+        setShareModalVisible(false);
+        return true;
+      }
+      if (roomModalVisible) {
+        setRoomModalVisible(false);
+        return true;
+      }
+      if (isBulkDeleteMode) {
+        setIsBulkDeleteMode(false);
+        setBulkDeleteSelectedMap({});
+        return true;
+      }
+      return false;
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+    return () => sub.remove();
+  }, [activePlayback, shareModalVisible, roomModalVisible, isBulkDeleteMode]);
+
+  // Sync downloaded episodes from local JSON queue + Firestore
+  const syncLocalDownloads = useCallback(async () => {
+    const queue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
+    const list = Array.isArray(queue) ? queue : [];
+    const map = {};
+    list.forEach((item) => {
+      if (String(item?.animeId) === animeDocId && item?.episodeNum != null) {
+        map[Number(item.episodeNum)] = item;
+      }
+    });
+    setDownloadedEpMap((prev) => ({ ...prev, ...map }));
+  }, [animeDocId]);
+
+  useEffect(() => {
+    syncLocalDownloads();
+  }, [syncLocalDownloads]);
+
+  useEffect(() => {
+    if (!resolvedUid || !resolvedProfileId || !animeDocId) return;
+    const dlRef = firestore()
+      .collection('users')
+      .doc(String(resolvedUid))
+      .collection('profiles')
+      .doc(String(resolvedProfileId))
+      .collection('downloads')
+      .where('animeId', '==', animeDocId);
+
+    const unsub = dlRef.onSnapshot(
+      (snap) => {
+        const fsMap = {};
+        snap?.forEach((doc) => {
+          const d = doc.data();
+          if (d?.episodeNum != null) {
+            fsMap[Number(d.episodeNum)] = d;
+          }
+        });
+        setDownloadedEpMap((prev) => ({ ...prev, ...fsMap }));
+      },
+      () => {}
+    );
+
+    return () => unsub();
+  }, [resolvedUid, resolvedProfileId, animeDocId]);
+
+  // Delete single or multiple downloaded episodes
+  const handleDeleteDownloadedEpisodes = useCallback(
+    async (epNumbersArray) => {
+      const numsToDelete = (epNumbersArray || []).map((n) => Number(n)).filter(Boolean);
+      if (numsToDelete.length === 0) return;
+
+      const deleteSet = new Set(numsToDelete);
+
+      // 1. Update UI state immediately
+      setDownloadedEpMap((prev) => {
+        const next = { ...prev };
+        numsToDelete.forEach((num) => {
+          delete next[num];
+        });
+        return next;
+      });
+
+      // 2. Remove from local file storage queue and delete local media files if saved
+      const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
+      if (Array.isArray(existingQueue)) {
+        const toRemoveItems = existingQueue.filter(
+          (item) => String(item?.animeId) === animeDocId && deleteSet.has(Number(item?.episodeNum))
+        );
+        for (const rem of toRemoveItems) {
+          const localUri = rem?.localUri || rem?.fileUri;
+          if (localUri && String(localUri).startsWith('file://')) {
+            FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+          }
+        }
+
+        const updatedQueue = existingQueue.filter(
+          (item) => !(String(item?.animeId) === animeDocId && deleteSet.has(Number(item?.episodeNum)))
+        );
+        await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
+      }
+
+      // 3. Remove from Firestore downloads collection
+      if (resolvedUid && resolvedProfileId) {
+        for (const epNum of numsToDelete) {
+          firestore()
+            .collection('users')
+            .doc(String(resolvedUid))
+            .collection('profiles')
+            .doc(String(resolvedProfileId))
+            .collection('downloads')
+            .doc(`${animeDocId}_ep_${epNum}`)
+            .delete()
+            .catch(() => {});
+        }
+      }
+
+      setIsBulkDeleteMode(false);
+      setBulkDeleteSelectedMap({});
+    },
+    [animeDocId, resolvedUid, resolvedProfileId]
+  );
+
+  // Trigger long-press bulk selection for downloaded episodes
+  const handleLongPressDownloadedEpisode = useCallback((epNum) => {
+    setIsBulkDeleteMode(true);
+    setBulkDeleteSelectedMap((prev) => ({
+      ...prev,
+      [epNum]: true,
+    }));
+  }, []);
+
+  const toggleBulkDeleteEpisodeSelection = useCallback((epNum) => {
+    setBulkDeleteSelectedMap((prev) => {
+      const next = { ...prev, [epNum]: !prev[epNum] };
+      const anyLeft = Object.keys(next).some((k) => next[k]);
+      if (!anyLeft) {
+        setIsBulkDeleteMode(false);
+      }
+      return next;
+    });
+  }, []);
+
+  // Safe Share handler (opens fullscreen share.js if available, otherwise native Share)
   const handleTriggerShare = async () => {
     if (ResolvedShareComp) {
       setShareModalVisible(true);
@@ -713,6 +872,7 @@ export default function Play({
     const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
     const queueArray = Array.isArray(existingQueue) ? existingQueue : [];
     const newRecords = [];
+    const newlyDownloadedMapPatch = {};
 
     for (const numStr of selectedNums) {
       const epNum = Number(numStr);
@@ -750,11 +910,12 @@ export default function Play({
         referer: finalQuality.referer || 'https://vidwish.live/',
         profileId: resolvedProfileId || 'default',
         userUid: resolvedUid || null,
-        status: 'queued',
+        status: 'downloaded',
         savedAt: Date.now(),
       };
 
       newRecords.push(downloadRecord);
+      newlyDownloadedMapPatch[epNum] = downloadRecord;
 
       if (resolvedUid && resolvedProfileId) {
         firestore()
@@ -768,6 +929,8 @@ export default function Play({
           .catch(() => {});
       }
     }
+
+    setDownloadedEpMap((prev) => ({ ...prev, ...newlyDownloadedMapPatch }));
 
     const filteredQueue = queueArray.filter(
       (item) => !newRecords.some((n) => n.id === item.id)
@@ -1356,6 +1519,18 @@ export default function Play({
   const selectedDownloadCount = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]).length;
   const isAllEpisodesSelected = episodes.length > 0 && selectedDownloadCount === episodes.length;
 
+  const downloadedEpNumbersList = useMemo(
+    () => Object.keys(downloadedEpMap).map((k) => Number(k)).filter(Boolean),
+    [downloadedEpMap]
+  );
+  const selectedBulkDeleteNums = useMemo(
+    () => Object.keys(bulkDeleteSelectedMap).filter((k) => bulkDeleteSelectedMap[k]).map((k) => Number(k)),
+    [bulkDeleteSelectedMap]
+  );
+  const isAllDownloadedSelectedForDelete =
+    downloadedEpNumbersList.length > 0 &&
+    selectedBulkDeleteNums.length === downloadedEpNumbersList.length;
+
   return (
     <View style={styles.screenContainer}>
       <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1395,15 +1570,35 @@ export default function Play({
             const isLoadingThis = loadingEpisode === item.num;
             const epProgress = userProgressMap[String(item.slug)] || userProgressMap[`ep_${item.num}`];
             const isFinished = epProgress?.finishedEp === true;
+            const isDownloaded = Boolean(downloadedEpMap[item.num]);
+            const isSelectedForDelete = Boolean(bulkDeleteSelectedMap[item.num]);
 
             return (
               <View style={styles.episodeRow}>
                 <Text style={[styles.bulletNumber, isFinished && styles.watchedText]}>•{item.num}</Text>
 
                 <TouchableOpacity
-                  style={[styles.episodeCard, isFinished && styles.watchedCardBg]}
+                  style={[
+                    styles.episodeCard,
+                    isFinished && styles.watchedCardBg,
+                    isBulkDeleteMode && isSelectedForDelete && styles.episodeCardSelectedDelete,
+                  ]}
                   activeOpacity={0.8}
-                  onPress={() => handlePlayEpisode(item)}
+                  delayLongPress={320}
+                  onLongPress={() => {
+                    if (isDownloaded) {
+                      handleLongPressDownloadedEpisode(item.num);
+                    }
+                  }}
+                  onPress={() => {
+                    if (isBulkDeleteMode) {
+                      if (isDownloaded) {
+                        toggleBulkDeleteEpisodeSelection(item.num);
+                      }
+                      return;
+                    }
+                    handlePlayEpisode(item);
+                  }}
                 >
                   <Text style={[styles.episodeCardTitle, isFinished && styles.watchedText]} numberOfLines={1}>
                     {item.title}
@@ -1429,14 +1624,47 @@ export default function Play({
                   )}
                 </TouchableOpacity>
 
-                {/* Single Episode Download Button -> Skips Choose Episodes Module! */}
-                <TouchableOpacity
-                  style={styles.downloadIconBtn}
-                  activeOpacity={0.7}
-                  onPress={() => handleOpenSingleEpisodeDownload(item)}
-                >
-                  <IconDownload size={22} color={isFinished ? "rgba(255,255,255,0.4)" : "#FFF"} />
-                </TouchableOpacity>
+                {/* Show Delete Button (or Bulk Selection Checkbox) on Downloaded Episodes, otherwise Download Button */}
+                {isDownloaded ? (
+                  <TouchableOpacity
+                    style={[
+                      styles.deleteIconBtn,
+                      isBulkDeleteMode && isSelectedForDelete && styles.deleteIconBtnSelected,
+                    ]}
+                    activeOpacity={0.75}
+                    delayLongPress={320}
+                    onLongPress={() => handleLongPressDownloadedEpisode(item.num)}
+                    onPress={() => {
+                      if (isBulkDeleteMode) {
+                        toggleBulkDeleteEpisodeSelection(item.num);
+                      } else {
+                        handleDeleteDownloadedEpisodes([item.num]);
+                      }
+                    }}
+                  >
+                    {isBulkDeleteMode ? (
+                      <View
+                        style={[
+                          styles.bulkCheckCircle,
+                          isSelectedForDelete && styles.bulkCheckCircleActive,
+                        ]}
+                      >
+                        {isSelectedForDelete && <IconCheck size={14} color="#FFF" />}
+                      </View>
+                    ) : (
+                      <IconTrash size={20} color={PURE_RED} />
+                    )}
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.downloadIconBtn, isBulkDeleteMode && { opacity: 0.35 }]}
+                    activeOpacity={0.7}
+                    disabled={isBulkDeleteMode}
+                    onPress={() => handleOpenSingleEpisodeDownload(item)}
+                  >
+                    <IconDownload size={22} color={isFinished ? "rgba(255,255,255,0.4)" : "#FFF"} />
+                  </TouchableOpacity>
+                )}
               </View>
             );
           }
@@ -1480,9 +1708,69 @@ export default function Play({
             </TouchableOpacity>
           );
         }}
-        contentContainerStyle={styles.listPadding}
+        contentContainerStyle={[
+          styles.listPadding,
+          isBulkDeleteMode && { paddingBottom: 110 },
+        ]}
         showsVerticalScrollIndicator={false}
       />
+
+      {/* --- FLOATING BULK DELETE BAR (LONG-PRESS SELECTION MODE) --- */}
+      {isBulkDeleteMode && (
+        <View style={styles.bulkDeleteFloatingBar}>
+          <View style={styles.bulkDeleteBarTopRow}>
+            <Text style={styles.bulkDeleteCountText}>
+              {selectedBulkDeleteNums.length} Downloaded {selectedBulkDeleteNums.length === 1 ? 'Episode' : 'Episodes'} Selected
+            </Text>
+
+            <View style={styles.bulkDeleteTopActions}>
+              <TouchableOpacity
+                style={styles.bulkSelectAllBtn}
+                onPress={() => {
+                  if (isAllDownloadedSelectedForDelete) {
+                    setBulkDeleteSelectedMap({});
+                  } else {
+                    const allDl = {};
+                    downloadedEpNumbersList.forEach((n) => {
+                      allDl[n] = true;
+                    });
+                    setBulkDeleteSelectedMap(allDl);
+                  }
+                }}
+              >
+                <Text style={styles.bulkSelectAllText}>
+                  {isAllDownloadedSelectedForDelete ? 'Deselect All' : 'Select All'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.bulkCancelBtn}
+                onPress={() => {
+                  setIsBulkDeleteMode(false);
+                  setBulkDeleteSelectedMap({});
+                }}
+              >
+                <Text style={styles.bulkCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.bulkConfirmDeleteBtn,
+              selectedBulkDeleteNums.length === 0 && { opacity: 0.45 },
+            ]}
+            disabled={selectedBulkDeleteNums.length === 0}
+            activeOpacity={0.85}
+            onPress={() => handleDeleteDownloadedEpisodes(selectedBulkDeleteNums)}
+          >
+            <IconTrash size={18} color="#FFF" />
+            <Text style={styles.bulkConfirmDeleteText}>
+              Delete Selected ({selectedBulkDeleteNums.length})
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* --- TOP VERTICAL "..." MENU MODAL (Add to List, Download, Share, Room) --- */}
       <Modal
@@ -1542,47 +1830,6 @@ export default function Play({
           </View>
         </View>
       </Modal>
-
-      {/* SHARE COMPONENT MODAL (Only renders if ShareSheet exports a valid React component) */}
-      {ResolvedShareComp ? (
-        <Modal
-          visible={shareModalVisible}
-          animationType="slide"
-          transparent={true}
-          onRequestClose={() => setShareModalVisible(false)}
-        >
-          <View style={styles.fullscreenModalOverlay}>
-            <ResolvedShareComp
-              visible={shareModalVisible}
-              anime={currentAnime}
-              user={resolvedUser}
-              activeProfile={resolvedProfile}
-              onClose={() => setShareModalVisible(false)}
-              onBack={() => setShareModalVisible(false)}
-            />
-          </View>
-        </Modal>
-      ) : null}
-
-      {/* ROOM COMPONENT MODAL */}
-      {ResolvedRoomComp ? (
-        <Modal
-          visible={roomModalVisible}
-          animationType="slide"
-          transparent={false}
-          onRequestClose={() => setRoomModalVisible(false)}
-        >
-          <View style={styles.fullscreenModalOverlay}>
-            <ResolvedRoomComp
-              anime={currentAnime}
-              user={resolvedUser}
-              activeProfile={resolvedProfile}
-              activeProfileId={resolvedProfileId}
-              onBack={() => setRoomModalVisible(false)}
-            />
-          </View>
-        </Modal>
-      ) : null}
 
       {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET --- */}
       <Modal
@@ -1870,6 +2117,38 @@ export default function Play({
         </View>
       </Modal>
 
+      {/* DIRECT FULLSCREEN SHARE OVERLAY (NO MODAL / NO ANIMATION) */}
+      {shareModalVisible && ResolvedShareComp && (
+        <View style={styles.directFullscreenOverlay}>
+          <ResolvedShareComp
+            visible={shareModalVisible}
+            anime={currentAnime}
+            user={resolvedUser}
+            activeProfile={resolvedProfile}
+            activeProfileId={resolvedProfileId}
+            onClose={() => setShareModalVisible(false)}
+            onBack={() => setShareModalVisible(false)}
+            navigation={{ goBack: () => setShareModalVisible(false) }}
+          />
+        </View>
+      )}
+
+      {/* DIRECT FULLSCREEN ROOM OVERLAY (NO MODAL / NO ANIMATION) */}
+      {roomModalVisible && ResolvedRoomComp && (
+        <View style={styles.directFullscreenOverlay}>
+          <ResolvedRoomComp
+            visible={roomModalVisible}
+            anime={currentAnime}
+            user={resolvedUser}
+            activeProfile={resolvedProfile}
+            activeProfileId={resolvedProfileId}
+            onClose={() => setRoomModalVisible(false)}
+            onBack={() => setRoomModalVisible(false)}
+            navigation={{ goBack: () => setRoomModalVisible(false) }}
+          />
+        </View>
+      )}
+
       {/* Fullscreen Player Overlay */}
       {activePlayback && (
         <View style={styles.playerFullscreenContainer}>
@@ -1888,7 +2167,7 @@ export default function Play({
 const styles = StyleSheet.create({
   screenContainer: { flex: 1, backgroundColor: '#000000' },
   playerFullscreenContainer: { ...StyleSheet.absoluteFillObject, zIndex: 9999, backgroundColor: '#000' },
-  fullscreenModalOverlay: { flex: 1, backgroundColor: '#000' },
+  directFullscreenOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 9998, backgroundColor: '#000000' },
 
   topNavFloatContainer: {
     position: 'absolute',
@@ -1961,16 +2240,90 @@ const styles = StyleSheet.create({
   episodeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12 },
   bulletNumber: { color: '#FFF', fontSize: 16, fontWeight: '800', minWidth: 26, marginRight: 6 },
   episodeCard: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#050505', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 4, paddingVertical: 14, paddingHorizontal: 14, overflow: 'hidden' },
+  episodeCardSelectedDelete: { borderColor: PURE_RED, backgroundColor: 'rgba(229,9,20,0.14)' },
   episodeCardTitle: { color: '#FFF', fontSize: 14, fontWeight: '600', flex: 1 },
   cardRightGroup: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   fillerTag: { backgroundColor: 'rgba(255,165,0,0.2)', borderWidth: 1, borderColor: '#FFA500', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 },
   fillerTagText: { color: '#FFA500', fontSize: 9, fontWeight: '900' },
-  downloadIconBtn: { padding: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
-  
+  downloadIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  deleteIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: 'rgba(255,0,0,0.45)', backgroundColor: 'rgba(229,9,20,0.1)', borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  deleteIconBtnSelected: { borderColor: PURE_RED, backgroundColor: 'rgba(229,9,20,0.25)' },
+  bulkCheckCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: 'rgba(255,255,255,0.6)', justifyContent: 'center', alignItems: 'center' },
+  bulkCheckCircleActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
+
   watchedText: { color: 'rgba(255,255,255,0.4)' },
   watchedCardBg: { backgroundColor: '#111', borderColor: 'rgba(255,255,255,0.05)' },
   epMiniProgressBg: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.1)' },
   epMiniProgressFill: { height: '100%', backgroundColor: PURE_RED },
+
+  // Bulk Delete Floating Bar
+  bulkDeleteFloatingBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: '#121217',
+    borderTopWidth: 1.5,
+    borderTopColor: 'rgba(255,0,0,0.4)',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 18,
+    zIndex: 900,
+    elevation: 25,
+  },
+  bulkDeleteBarTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  bulkDeleteCountText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  bulkDeleteTopActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  bulkSelectAllBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: PURE_RED,
+  },
+  bulkSelectAllText: {
+    color: PURE_RED,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  bulkCancelBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 4,
+    backgroundColor: '#23232B',
+  },
+  bulkCancelText: {
+    color: '#DDD',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  bulkConfirmDeleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: PURE_RED,
+    paddingVertical: 13,
+    borderRadius: 6,
+  },
+  bulkConfirmDeleteText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+  },
 
   // RecentSlider-matched UI for Bottom Sequel Slider
   recentStyleSection: { marginTop: 18, marginBottom: 25 },
