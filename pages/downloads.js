@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
-  FlatList, StatusBar, Modal, Alert, DeviceEventEmitter, Platform 
+  FlatList, StatusBar, Modal, DeviceEventEmitter, Platform 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -12,6 +12,7 @@ import Svg, { Path, Circle, Polyline, Rect } from 'react-native-svg';
 
 import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
+import PlayScreen from './play/play';
 import * as NotificationEngine from '../components/NotificationEngine';
 
 // --- STRICT PALETTE ---
@@ -823,11 +824,12 @@ const IconBookmark = ({ size = 18, color = WHITE, filled = false }) => (
   </Svg>
 );
 
-const IconDotsHorizontal = ({ size = 18, color = WHITE }) => (
+// Vertical 3-Dots Icon (⋮) for Settings / Options
+const IconDotsVertical = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Circle cx="5" cy="12" r="2" />
+    <Circle cx="12" cy="5" r="2" />
     <Circle cx="12" cy="12" r="2" />
-    <Circle cx="19" cy="12" r="2" />
+    <Circle cx="12" cy="19" r="2" />
   </Svg>
 );
 
@@ -858,6 +860,8 @@ export default function Downloads({
   activeProfileId: propActiveProfileId,
   navigation,
   onBack,
+  onSelectAnime,
+  onOpenPlay,
 }) {
   const resolvedUser = propUser || auth().currentUser || null;
   const resolvedProfile = propActiveProfile || propCurrentProfile || null;
@@ -867,15 +871,24 @@ export default function Downloads({
   const [queueItems, setQueueItems] = useState([]);
   const [jobsMap, setJobsMap] = useState(() => getJobsSnapshot());
 
-  // 2 Main Tabs: 'downloading' | 'downloaded'
-  const [activeTab, setActiveTab] = useState('downloading');
-  // Selected Anime Series in the 'Downloaded' tab (null = show Series List View; object = show its Episodes List View)
+  // Default to 'downloaded' initially; switches automatically to 'downloading' if active items exist
+  const [activeTab, setActiveTab] = useState('downloaded');
+  const hasSetInitialTab = useRef(false);
+  const prevActiveDlCountRef = useRef(0);
+
+  // Selected Anime Series in the 'Downloaded' tab (null = show Series List View; string = show its Episodes List View)
   const [selectedDownloadedAnimeId, setSelectedDownloadedAnimeId] = useState(null);
+
+  // Fullscreen Play.js Modal state when clicking a Series Card
+  const [activePlaySeries, setActivePlaySeries] = useState(null);
 
   const [watchlistMap, setWatchlistMap] = useState({});
   const [watchHistoryMap, setWatchHistoryMap] = useState({});
   const [menuTarget, setMenuTarget] = useState(null);
   const [topLevelPlayback, setTopLevelPlayback] = useState(null);
+
+  // Custom CSS Confirmation Popup State (replaces native Alert.alert)
+  const [confirmDialog, setConfirmDialog] = useState(null);
 
   useEffect(() => {
     initBackgroundDaemon();
@@ -893,7 +906,7 @@ export default function Downloads({
       } catch (_) {}
     };
     syncBars();
-  }, [topLevelPlayback]);
+  }, [topLevelPlayback, activePlaySeries]);
 
   // Load local queue & subscribe to concurrent background downloader
   useEffect(() => {
@@ -903,6 +916,21 @@ export default function Downloads({
       const list = await readLocalQueue();
       if (isMounted) {
         setQueueItems(list);
+
+        const activeCount = list.filter(
+          (i) => i.status === 'downloading' || i.status === 'paused' || i.status === 'queued'
+        ).length;
+
+        // Initial default tab decision on first load
+        if (!hasSetInitialTab.current) {
+          hasSetInitialTab.current = true;
+          setActiveTab(activeCount > 0 ? 'downloading' : 'downloaded');
+        } else if (prevActiveDlCountRef.current === 0 && activeCount > 0) {
+          // If a new download starts while nothing was downloading, switch to downloading tab
+          setActiveTab('downloading');
+        }
+
+        prevActiveDlCountRef.current = activeCount;
       }
     };
 
@@ -1029,12 +1057,12 @@ export default function Downloads({
     };
   }, [queueItems, jobsMap]);
 
-  // Auto-switch to Downloaded tab if there are no active downloads on initial load
+  // If all active downloads finish or get canceled, automatically flip to Downloaded tab
   useEffect(() => {
-    if (activeDownloadList.length === 0 && downloadedSeriesGroups.length > 0 && activeTab === 'downloading') {
-      // Keep user's tab choice if they manually switched, or show downloaded if queue is empty
+    if (hasSetInitialTab.current && activeDownloadList.length === 0 && activeTab === 'downloading') {
+      setActiveTab('downloaded');
     }
-  }, [activeDownloadList.length, downloadedSeriesGroups.length]);
+  }, [activeDownloadList.length]);
 
   const selectedSeriesObj = useMemo(() => {
     if (!selectedDownloadedAnimeId) return null;
@@ -1044,6 +1072,42 @@ export default function Downloads({
       ) || null
     );
   }, [downloadedSeriesGroups, selectedDownloadedAnimeId]);
+
+  // --- OPEN SERIES IN PLAY.JS ---
+  const handleOpenSeriesPlayScreen = (series) => {
+    if (!series) return;
+    setMenuTarget(null);
+
+    const animePayload = {
+      id: series.animeId,
+      animeId: series.animeId,
+      title: series.animeTitle,
+      name: series.animeTitle,
+      animeTitle: series.animeTitle,
+      poster: series.coverImage,
+      img: series.coverImage,
+      image: series.coverImage,
+      coverImage: series.coverImage,
+      backdrop: series.backdrop || series.coverImage,
+      bannerImage: series.backdrop || series.coverImage,
+      synopsis: series.synopsis,
+      description: series.synopsis,
+      genres: series.genres,
+      totalEpisodes: series.totalEpisodes,
+      offlineEpisodes: series.episodes,
+      isOffline: true,
+    };
+
+    if (typeof onOpenPlay === 'function') {
+      onOpenPlay(animePayload);
+      return;
+    }
+    if (typeof onSelectAnime === 'function') {
+      onSelectAnime(animePayload);
+      return;
+    }
+    setActivePlaySeries(animePayload);
+  };
 
   // --- PAUSE ALL / RESUME ALL CURRENTLY DOWNLOADING ---
   const handlePauseOrResumeAllDownloading = async () => {
@@ -1057,60 +1121,78 @@ export default function Downloads({
     setQueueItems(updated);
   };
 
-  // --- DELETE ALL DOWNLOADED ---
+  // --- DELETE ALL DOWNLOADED (CUSTOM CSS POPUP) ---
   const handleDeleteAllDownloaded = () => {
     const completedItems = queueItems.filter((i) => i.status === 'completed');
     if (completedItems.length === 0) return;
 
-    Alert.alert(
-      'Delete All Downloaded',
-      `Are you sure you want to permanently delete all ${completedItems.length} downloaded ${
+    setConfirmDialog({
+      title: 'Delete All Downloaded',
+      message: `Are you sure you want to permanently delete all ${completedItems.length} downloaded ${
         completedItems.length === 1 ? 'episode' : 'episodes'
       } from your device?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete All',
-          style: 'destructive',
-          onPress: async () => {
-            for (const ep of completedItems) {
-              await handleCancelJob(ep.id);
-            }
-            setSelectedDownloadedAnimeId(null);
-            const remaining = await readLocalQueue();
-            setQueueItems(remaining);
-          },
-        },
-      ]
-    );
+      confirmText: 'Delete All',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        for (const ep of completedItems) {
+          await handleCancelJob(ep.id);
+        }
+        setSelectedDownloadedAnimeId(null);
+        const remaining = await readLocalQueue();
+        setQueueItems(remaining);
+      },
+    });
   };
 
-  // Delete an entire downloaded series
+  // --- DELETE AN ENTIRE DOWNLOADED SERIES (CUSTOM CSS POPUP) ---
   const handleDeleteEntireSeries = (series) => {
     if (!series || !Array.isArray(series.episodes)) return;
     setMenuTarget(null);
 
-    Alert.alert(
-      'Delete Series',
-      `Delete all ${series.episodes.length} downloaded episodes of ${series.animeTitle}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete Series',
-          style: 'destructive',
-          onPress: async () => {
-            for (const ep of series.episodes) {
-              await handleCancelJob(ep.id);
-            }
-            if (String(selectedDownloadedAnimeId) === String(series.animeId)) {
-              setSelectedDownloadedAnimeId(null);
-            }
-            const remaining = await readLocalQueue();
-            setQueueItems(remaining);
-          },
-        },
-      ]
-    );
+    setConfirmDialog({
+      title: 'Delete Series',
+      message: `Delete all ${series.episodes.length} downloaded ${
+        series.episodes.length === 1 ? 'episode' : 'episodes'
+      } of "${series.animeTitle}"?`,
+      confirmText: 'Delete Series',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        for (const ep of series.episodes) {
+          await handleCancelJob(ep.id);
+        }
+        if (String(selectedDownloadedAnimeId) === String(series.animeId)) {
+          setSelectedDownloadedAnimeId(null);
+        }
+        const remaining = await readLocalQueue();
+        setQueueItems(remaining);
+      },
+    });
+  };
+
+  // --- DELETE SINGLE EPISODE OR CANCEL ACTIVE DOWNLOAD (CUSTOM CSS POPUP) ---
+  const handleDeleteEpisode = (epItem) => {
+    if (!epItem) return;
+    if (Array.isArray(epItem.episodes)) {
+      handleDeleteEntireSeries(epItem);
+      return;
+    }
+    setMenuTarget(null);
+
+    const isCompleted = epItem.status === 'completed';
+
+    setConfirmDialog({
+      title: isCompleted ? 'Delete Download' : 'Cancel Download',
+      message: isCompleted
+        ? `Remove "${epItem.animeTitle} - Episode ${epItem.episodeNum}" from offline storage?`
+        : `Stop downloading "${epItem.animeTitle} - Episode ${epItem.episodeNum}" and remove partial files?`,
+      confirmText: isCompleted ? 'Delete' : 'Cancel Download',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        await handleCancelJob(epItem.id);
+        const updated = await readLocalQueue();
+        setQueueItems(updated);
+      },
+    });
   };
 
   const toggleBookmarkWatchlist = async (animeItem) => {
@@ -1143,33 +1225,7 @@ export default function Downloads({
     } catch (_) {}
   };
 
-  const handleDeleteEpisode = (epItem) => {
-    if (!epItem) return;
-    if (Array.isArray(epItem.episodes)) {
-      handleDeleteEntireSeries(epItem);
-      return;
-    }
-    setMenuTarget(null);
-
-    Alert.alert(
-      'Delete Download',
-      `Remove ${epItem.animeTitle} - Episode ${epItem.episodeNum}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            await handleCancelJob(epItem.id);
-            const updated = await readLocalQueue();
-            setQueueItems(updated);
-          },
-        },
-      ]
-    );
-  };
-
-  // Launch Player.js in Full Immersive Landscape Mode (No Notification Bar & No Default Phone Navigation Bar)
+  // Launch Player.js in Full Immersive Landscape Mode
   const handleOpenPlayerOnTop = async (epItem) => {
     if (!epItem) return;
     setMenuTarget(null);
@@ -1297,7 +1353,7 @@ export default function Downloads({
       <View style={styles.fullDividerLine} />
 
       {/* ============================================================================ */}
-      {/* TAB 1: DOWNLOADING (FLAT LIST VIEW - NO DROPDOWN + PAUSE ALL BUTTON) */}
+      {/* TAB 1: DOWNLOADING (FLAT LIST VIEW + PAUSE ALL BUTTON) */}
       {/* ============================================================================ */}
       {activeTab === 'downloading' && (
         <View style={{ flex: 1 }}>
@@ -1360,7 +1416,7 @@ export default function Downloads({
                     />
                   </View>
 
-                  {/* Right Details Column (Flat View - Always Visible) */}
+                  {/* Right Details Column */}
                   <View style={styles.cardRightCol}>
                     <View style={styles.titleAndDotsRow}>
                       <Text style={styles.animeMainTitle} numberOfLines={1}>
@@ -1369,8 +1425,9 @@ export default function Downloads({
                       <TouchableOpacity
                         style={styles.dotsBtn}
                         onPress={() => setMenuTarget(dlItem)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                       >
-                        <IconDotsHorizontal size={18} color={WHITE} />
+                        <IconDotsVertical size={18} color={WHITE} />
                       </TouchableOpacity>
                     </View>
 
@@ -1433,7 +1490,7 @@ export default function Downloads({
                       <TouchableOpacity
                         style={styles.whiteActionBtn}
                         activeOpacity={0.85}
-                        onPress={() => handleCancelJob(dlItem.id)}
+                        onPress={() => handleDeleteEpisode(dlItem)}
                       >
                         <Text style={styles.whiteActionBtnText}>Cancel</Text>
                       </TouchableOpacity>
@@ -1447,11 +1504,11 @@ export default function Downloads({
       )}
 
       {/* ============================================================================ */}
-      {/* TAB 2: DOWNLOADED (SERIES LIST VIEW -> CLICK ANIME TO SHOW ITS EPISODES) */}
+      {/* TAB 2: DOWNLOADED (SERIES LIST VIEW -> CLICK SERIES OPENS PLAY.JS) */}
       {/* ============================================================================ */}
       {activeTab === 'downloaded' && (
         <View style={{ flex: 1 }}>
-          {/* Top Action Bar: Back to Series (if inside a series) + Delete All Downloaded Button */}
+          {/* Top Action Bar */}
           {downloadedSeriesGroups.length > 0 && (
             <View style={styles.bulkActionBar}>
               {selectedSeriesObj ? (
@@ -1482,7 +1539,7 @@ export default function Downloads({
             </View>
           )}
 
-          {/* VIEW A: LIST OF DOWNLOADED ANIME SERIES */}
+          {/* VIEW A: LIST OF DOWNLOADED ANIME SERIES (Click Opens play.js) */}
           {!selectedSeriesObj ? (
             <FlatList
               data={downloadedSeriesGroups}
@@ -1498,7 +1555,7 @@ export default function Downloads({
                 <TouchableOpacity
                   style={[styles.mainCard, { marginBottom: 14 }]}
                   activeOpacity={0.88}
-                  onPress={() => setSelectedDownloadedAnimeId(series.animeId)}
+                  onPress={() => handleOpenSeriesPlayScreen(series)}
                 >
                   {/* Left Portrait Poster */}
                   <View style={styles.posterContainer}>
@@ -1517,9 +1574,13 @@ export default function Downloads({
                       </Text>
                       <TouchableOpacity
                         style={styles.dotsBtn}
-                        onPress={() => setMenuTarget(series)}
+                        onPress={(e) => {
+                          e?.stopPropagation?.();
+                          setMenuTarget(series);
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                       >
-                        <IconDotsHorizontal size={18} color={WHITE} />
+                        <IconDotsVertical size={18} color={WHITE} />
                       </TouchableOpacity>
                     </View>
 
@@ -1542,7 +1603,7 @@ export default function Downloads({
                     </Text>
 
                     <View style={styles.viewEpisodesFooterRow}>
-                      <Text style={styles.viewEpisodesHintText}>Tap to view episodes</Text>
+                      <Text style={styles.viewEpisodesHintText}>Tap to open series</Text>
                       <IconChevronRight size={16} color={TEXT_GREY} />
                     </View>
                   </View>
@@ -1550,14 +1611,18 @@ export default function Downloads({
               )}
             />
           ) : (
-            /* VIEW B: EPISODES LIST FOR THE CLICKED ANIME SERIES */
+            /* VIEW B: EPISODES LIST FOR THE SELECTED ANIME SERIES */
             <FlatList
               data={selectedSeriesObj.episodes}
               keyExtractor={(ep) => String(ep.id)}
               contentContainerStyle={styles.scrollPadding}
               showsVerticalScrollIndicator={false}
               ListHeaderComponent={
-                <View style={[styles.mainCard, { marginBottom: 18 }]}>
+                <TouchableOpacity
+                  style={[styles.mainCard, { marginBottom: 18 }]}
+                  activeOpacity={0.88}
+                  onPress={() => handleOpenSeriesPlayScreen(selectedSeriesObj)}
+                >
                   <View style={styles.posterContainer}>
                     <ProxyImage
                       source={{
@@ -1587,7 +1652,7 @@ export default function Downloads({
                       {selectedSeriesObj.synopsis}
                     </Text>
                   </View>
-                </View>
+                </TouchableOpacity>
               }
               renderItem={({ item: ep }) => {
                 const epHistId = `${ep.animeId}_ep_${ep.episodeNum}`;
@@ -1635,7 +1700,7 @@ export default function Downloads({
                       )}
                     </View>
 
-                    {/* Right Episode Number, Specs, Synopsis & "..." Button */}
+                    {/* Right Episode Number, Specs, Synopsis & Vertical "⋮" Button */}
                     <View style={styles.epRowRightCol}>
                       <View style={styles.epHeaderRow}>
                         <Text style={styles.epRowTitle} numberOfLines={1}>
@@ -1643,10 +1708,13 @@ export default function Downloads({
                         </Text>
                         <TouchableOpacity
                           style={styles.epDotsBtn}
-                          onPress={() => setMenuTarget(ep)}
+                          onPress={(e) => {
+                            e?.stopPropagation?.();
+                            setMenuTarget(ep);
+                          }}
                           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         >
-                          <IconDotsHorizontal size={16} color={TEXT_GREY} />
+                          <IconDotsVertical size={16} color={TEXT_GREY} />
                         </TouchableOpacity>
                       </View>
 
@@ -1677,7 +1745,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* "..." OPTIONS BOTTOM SHEET MODAL (Play, Add to User List, Delete) */}
+      {/* "⋮" SETTINGS BOTTOM SHEET MODAL */}
       <Modal
         visible={Boolean(menuTarget)}
         transparent={true}
@@ -1698,7 +1766,33 @@ export default function Downloads({
                 {menuTarget.episodeNum ? `• Episode ${menuTarget.episodeNum}` : ''}
               </Text>
 
-              {menuTarget.status === 'completed' && (
+              {Array.isArray(menuTarget.episodes) && (
+                <>
+                  <TouchableOpacity
+                    style={styles.sheetOptionRow}
+                    activeOpacity={0.8}
+                    onPress={() => handleOpenSeriesPlayScreen(menuTarget)}
+                  >
+                    <IconPlay size={18} color={WHITE} />
+                    <Text style={styles.sheetOptionText}>Open Series Page</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.sheetOptionRow}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      const sId = menuTarget.animeId;
+                      setMenuTarget(null);
+                      setSelectedDownloadedAnimeId(sId);
+                    }}
+                  >
+                    <IconChevronRight size={18} color={WHITE} />
+                    <Text style={styles.sheetOptionText}>View Downloaded Episodes</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {menuTarget.status === 'completed' && !Array.isArray(menuTarget.episodes) && (
                 <TouchableOpacity
                   style={styles.sheetOptionRow}
                   activeOpacity={0.8}
@@ -1735,7 +1829,9 @@ export default function Downloads({
                 <Text style={[styles.sheetOptionText, { color: PURE_RED }]}>
                   {Array.isArray(menuTarget.episodes)
                     ? 'Delete Entire Series'
-                    : 'Delete Download'}
+                    : menuTarget.status === 'completed'
+                    ? 'Delete Download'
+                    : 'Cancel Download'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1743,7 +1839,84 @@ export default function Downloads({
         </View>
       </Modal>
 
-      {/* TOP-MOST FULLSCREEN IMMERSIVE PLAYER MODAL (Hides notification bar & phone navigation bar completely) */}
+      {/* CUSTOM CSS CONFIRMATION POPUP MODAL (Replaces Native Alert.alert) */}
+      <Modal
+        visible={Boolean(confirmDialog)}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setConfirmDialog(null)}
+      >
+        <View style={styles.confirmModalBackdrop}>
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setConfirmDialog(null)}
+          />
+          {confirmDialog && (
+            <View style={styles.confirmPopupCard}>
+              <View style={styles.confirmIconWrap}>
+                <IconTrash size={22} color={PURE_RED} />
+              </View>
+              <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
+              <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
+
+              <View style={styles.confirmBtnsRow}>
+                <TouchableOpacity
+                  style={styles.confirmCancelBtn}
+                  activeOpacity={0.85}
+                  onPress={() => setConfirmDialog(null)}
+                >
+                  <Text style={styles.confirmCancelBtnText}>Cancel</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.confirmDangerBtn}
+                  activeOpacity={0.85}
+                  onPress={confirmDialog.onConfirm}
+                >
+                  <Text style={styles.confirmDangerBtnText}>
+                    {confirmDialog.confirmText || 'Delete'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
+
+      {/* PLAY.JS MODAL WHEN CLICKING A SERIES IN DOWNLOADED TAB */}
+      <Modal
+        visible={Boolean(activePlaySeries)}
+        animationType="slide"
+        transparent={false}
+        hardwareAccelerated={true}
+        statusBarTranslucent={true}
+        onRequestClose={() => setActivePlaySeries(null)}
+      >
+        <View style={styles.topPlayerModalContainer}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          {activePlaySeries && (
+            <PlayScreen
+              anime={activePlaySeries}
+              selectedAnime={activePlaySeries}
+              item={activePlaySeries}
+              route={{ params: { anime: activePlaySeries, ...activePlaySeries } }}
+              navigation={{
+                ...(navigation || {}),
+                goBack: () => setActivePlaySeries(null),
+              }}
+              onBack={() => setActivePlaySeries(null)}
+              onClose={() => setActivePlaySeries(null)}
+              user={resolvedUser}
+              activeProfile={resolvedProfile}
+              currentProfile={resolvedProfile}
+              activeProfileId={resolvedProfileId}
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* TOP-MOST FULLSCREEN IMMERSIVE PLAYER MODAL */}
       <Modal
         visible={Boolean(topLevelPlayback)}
         animationType="fade"
@@ -2180,7 +2353,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 
-  // "..." Action Sheet Modal
+  // "⋮" Action Sheet Modal
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.8)',
@@ -2214,5 +2387,90 @@ const styles = StyleSheet.create({
     color: WHITE,
     fontSize: 14,
     fontWeight: '700',
+  },
+
+  // Custom CSS Confirmation Popup Modal
+  confirmModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.84)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  confirmPopupCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: '#0E0E13',
+    borderRadius: 16,
+    paddingHorizontal: 22,
+    paddingVertical: 22,
+    borderWidth: 1,
+    borderColor: '#262630',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.7,
+    shadowRadius: 18,
+    elevation: 14,
+  },
+  confirmIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: 'rgba(229,9,20,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(229,9,20,0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  confirmPopupTitle: {
+    color: WHITE,
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  confirmPopupMessage: {
+    color: TEXT_GREY,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  confirmBtnsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 9,
+    backgroundColor: '#191922',
+    borderWidth: 1,
+    borderColor: '#2C2C38',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmCancelBtnText: {
+    color: WHITE,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  confirmDangerBtn: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 9,
+    backgroundColor: BRAND_RED,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmDangerBtnText: {
+    color: WHITE,
+    fontSize: 13,
+    fontWeight: '800',
   },
 });
