@@ -12,7 +12,7 @@ import Svg, { Path, Circle, Polyline, Rect } from 'react-native-svg';
 
 import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
-import PlayScreen from './play/play';
+import PlayScreen from './pages/play';
 import * as NotificationEngine from '../components/NotificationEngine';
 
 // --- STRICT PALETTE ---
