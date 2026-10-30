@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
-  FlatList, StatusBar, Modal, DeviceEventEmitter, Platform, ScrollVersion, ScrollView
+  FlatList, StatusBar, Modal, DeviceEventEmitter, Platform, ScrollView
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -15,14 +15,14 @@ import Player from './play/player';
 import PlayScreen from './play';
 import * as NotificationEngine from '../components/NotificationEngine';
 
-// --- STRICT NETFLIX PALETTE (BLACK, PURE WHITE, GREY — NO RED BORDERS) ---
+// --- STRICT NETFLIX PALETTE (BLACK, PURE WHITE, GREY — NO HOLLOW RED BORDERS) ---
 const BLACK = '#000000';
 const CARD_BG = '#0B0B0E';
 const DARK_GREY = '#18181C';
 const BORDER_GREY = '#222228';
 const TEXT_GREY = '#8E8E93';
 const WHITE = '#FFFFFF';
-const NETFLIX_RED = '#E50914';
+const PURE_RED = '#FF0000';
 
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
@@ -379,6 +379,24 @@ const executeConcurrentDownload = async (task) => {
           }
         } catch (_) {}
       }
+    }
+
+    if (!subtitleFileUrl && task.subtitle?.lang !== 'none') {
+      const safeAnimeId = encodeURIComponent(task.animeId);
+      const safeSlug = encodeURIComponent(task.slug || task.episodeNum);
+      try {
+        const subApiRes = await fetch(
+          `${VERCEL_API_BASE}/api/stream?id=${safeAnimeId}&ep=${safeSlug}&server=hd-1&type=sub`
+        );
+        const subApiJson = await subApiRes.json();
+        const subPayload = subApiJson?.data || subApiJson?.results;
+        if (Array.isArray(subPayload?.subtitles) && subPayload.subtitles.length > 0) {
+          const matchedSub =
+            subPayload.subtitles.find((s) => (s.label || s.lang) === task.subtitle?.label) ||
+            subPayload.subtitles[0];
+          subtitleFileUrl = matchedSub?.file || null;
+        }
+      } catch (_) {}
     }
 
     if (!streamUri) throw new Error('Episode unavailable');
@@ -814,7 +832,7 @@ export default function Downloads({
     initBackgroundDaemon();
   }, []);
 
-  // Immersive mode: hide notification bar and phone navigation bar
+  // Enforce immersive UI lock for fullscreen elements
   useEffect(() => {
     const syncBars = async () => {
       try {
@@ -824,6 +842,7 @@ export default function Downloads({
             await NavigationBar.setVisibilityAsync('hidden');
             await NavigationBar.setBehaviorAsync('overlay-swipe');
           } else {
+            // Restore normal behavior when closed
             await NavigationBar.setVisibilityAsync('visible');
           }
         }
@@ -852,13 +871,12 @@ export default function Downloads({
             for (const folder of contents) {
               const folderInfo = await FileSystem.getInfoAsync(`${VAULT_ROOT_DIR}${folder}`);
               if (folderInfo?.exists) {
-                // Approximate folder size from queue items or file stats
                 const queue = await readLocalQueue();
                 const matched = queue.find((q) => q.targetFolder?.includes(folder));
                 if (matched?.sizeBytes) {
                   totalBytes += matched.sizeBytes;
                 } else {
-                  totalBytes += 45 * 1024 * 1024; // fallback estimate per folder
+                  totalBytes += 45 * 1024 * 1024;
                 }
               }
             }
@@ -1075,26 +1093,6 @@ export default function Downloads({
     setQueueItems(updated);
   };
 
-  const handleDeleteAllDownloaded = () => {
-    const completedItems = queueItems.filter((i) => i.status === 'completed');
-    if (completedItems.length === 0) return;
-
-    setConfirmDialog({
-      title: 'Delete All Downloaded',
-      message: `Are you sure you want to permanently delete all ${completedItems.length} downloaded episodes?`,
-      confirmText: 'Delete All',
-      onConfirm: async () => {
-        setConfirmDialog(null);
-        for (const ep of completedItems) {
-          await handleCancelJob(ep.id);
-        }
-        setSelectedDownloadedAnimeId(null);
-        const remaining = await readLocalQueue();
-        setQueueItems(remaining);
-      },
-    });
-  };
-
   // Bulk Delete Execution for Selected Series
   const handleExecuteBulkSeriesDelete = () => {
     const targetIds = Object.keys(bulkSelectedSeriesMap).filter((k) => bulkSelectedSeriesMap[k]);
@@ -1283,7 +1281,7 @@ export default function Downloads({
         </View>
       </View>
 
-      {/* 3. TWO TABS: DOWNLOADING | DOWNLOADED */}
+      {/* 3. TWO TABS */}
       <View style={styles.tabsBarContainer}>
         <TouchableOpacity
           style={[styles.tabPillBtn, activeTab === 'downloading' && styles.tabPillBtnActive]}
@@ -1432,7 +1430,8 @@ export default function Downloads({
                 </Text>
               )}
 
-              {isBulkDeleteMode ? (
+              {/* Only show bulk delete actions when in selection mode. The Delete All button is removed. */}
+              {isBulkDeleteMode && !selectedSeriesObj && (
                 <View style={{ flexDirection: 'row', gap: 8 }}>
                   <TouchableOpacity
                     style={styles.bulkDeleteActionBtn}
@@ -1453,15 +1452,6 @@ export default function Downloads({
                     <Text style={styles.bulkCancelActionText}>Cancel</Text>
                   </TouchableOpacity>
                 </View>
-              ) : (
-                <TouchableOpacity
-                  style={styles.deleteAllDownloadedBtn}
-                  activeOpacity={0.85}
-                  onPress={handleDeleteAllDownloaded}
-                >
-                  <IconTrash size={14} color={WHITE} />
-                  <Text style={styles.deleteAllDownloadedText}>Delete All</Text>
-                </TouchableOpacity>
               )}
             </View>
           )}
@@ -1529,11 +1519,6 @@ export default function Downloads({
                       </View>
 
                       <View style={[styles.outlinedPillsRow, { marginTop: 6 }]}>
-                        <View style={styles.outlinedPill}>
-                          <Text style={[styles.outlinedPillText, { color: WHITE, fontWeight: '800' }]}>
-                            {series.episodes.length} {series.episodes.length === 1 ? 'Episode' : 'Episodes'}
-                          </Text>
-                        </View>
                         {series.genres.slice(0, 2).map((genre, idx) => (
                           <View key={idx} style={styles.outlinedPill}>
                             <Text style={styles.outlinedPillText}>{genre}</Text>
@@ -1547,7 +1532,7 @@ export default function Downloads({
 
                       {/* Explicit Episode Count Displayed Below Synopsis */}
                       <Text style={styles.episodeCountFooterText}>
-                        Total Episodes Downloaded: {series.episodes.length}
+                        {series.episodes.length} {series.episodes.length === 1 ? 'Episode Downloaded' : 'Episodes Downloaded'}
                       </Text>
 
                       <View style={styles.viewEpisodesFooterRow}>
@@ -1582,11 +1567,6 @@ export default function Downloads({
                   <View style={styles.cardRightCol}>
                     <Text style={styles.animeMainTitle} numberOfLines={2}>{selectedSeriesObj.animeTitle}</Text>
                     <View style={styles.outlinedPillsRow}>
-                      <View style={styles.outlinedPill}>
-                        <Text style={[styles.outlinedPillText, { color: WHITE, fontWeight: '800' }]}>
-                          {selectedSeriesObj.episodes.length} Saved
-                        </Text>
-                      </View>
                       {selectedSeriesObj.genres.slice(0, 2).map((genre, idx) => (
                         <View key={idx} style={styles.outlinedPill}>
                           <Text style={styles.outlinedPillText}>{genre}</Text>
@@ -1595,7 +1575,7 @@ export default function Downloads({
                     </View>
                     <Text style={styles.seriesSynopsisText} numberOfLines={3}>{selectedSeriesObj.synopsis}</Text>
                     <Text style={styles.episodeCountFooterText}>
-                      Total Episodes Downloaded: {selectedSeriesObj.episodes.length}
+                      {selectedSeriesObj.episodes.length} {selectedSeriesObj.episodes.length === 1 ? 'Episode Downloaded' : 'Episodes Downloaded'}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -1749,9 +1729,18 @@ export default function Downloads({
         hardwareAccelerated={true}
         statusBarTranslucent={true}
         onRequestClose={() => setSettingsModalVisible(false)}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
       >
         <View style={styles.settingsModalContainer}>
-          <StatusBar hidden={true} />
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
           
           <View style={styles.settingsHeaderRow}>
             <TouchableOpacity style={styles.backTouch} onPress={() => setSettingsModalVisible(false)}>
@@ -1802,18 +1791,6 @@ export default function Downloads({
                 <Text style={styles.storageNumberText}>{formatBytesToMbOrGb(totalStorageBytes)}</Text>
                 <Text style={styles.storageLabelText}>Used in Kameko Vault</Text>
               </View>
-
-              <TouchableOpacity
-                style={styles.clearStorageBtn}
-                activeOpacity={0.8}
-                onPress={() => {
-                  setSettingsModalVisible(false);
-                  handleDeleteAllDownloaded();
-                }}
-              >
-                <IconTrash size={16} color={WHITE} />
-                <Text style={styles.clearStorageBtnText}>Clear All Downloaded Content</Text>
-              </TouchableOpacity>
             </View>
           </ScrollView>
         </View>
@@ -1866,6 +1843,15 @@ export default function Downloads({
         hardwareAccelerated={true}
         statusBarTranslucent={true}
         onRequestClose={() => setActivePlaySeries(null)}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
       >
         <View style={styles.topPlayerModalContainer}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1898,6 +1884,15 @@ export default function Downloads({
         hardwareAccelerated={true}
         statusBarTranslucent={true}
         onRequestClose={handleCloseTopPlayer}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
       >
         <View style={styles.topPlayerModalContainer}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -2021,20 +2016,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
   },
-  clearStorageBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#1D1D24',
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  clearStorageBtnText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '800',
-  },
 
   // Header
   headerRow: {
@@ -2116,7 +2097,7 @@ const styles = StyleSheet.create({
     borderRadius: 7,
   },
   tabPillBtnActive: {
-    backgroundColor: NETFLIX_RED,
+    backgroundColor: PURE_RED,
   },
   tabPillText: {
     color: TEXT_GREY,
@@ -2163,27 +2144,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  deleteAllDownloadedBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#1C1C24',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#33333E',
-  },
-  deleteAllDownloadedText: {
-    color: WHITE,
-    fontSize: 12,
-    fontWeight: '800',
-  },
   bulkDeleteActionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: NETFLIX_RED,
+    backgroundColor: PURE_RED,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 8,
@@ -2229,7 +2194,7 @@ const styles = StyleSheet.create({
     paddingBottom: 110,
   },
 
-  // Main Card Styling (Netflix Style, No Red Border)
+  // Main Card Styling (No Hollow Red Borders, Strict Netflix Scheme)
   mainCard: {
     flexDirection: 'row',
     backgroundColor: CARD_BG,
@@ -2240,8 +2205,8 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   cardSelectedBulk: {
-    backgroundColor: '#14141C',
-    borderColor: '#444455',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderColor: WHITE, // Pure white border for selected
   },
   bulkCheckboxIndicator: {
     position: 'absolute',
@@ -2250,18 +2215,18 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   bulkCheckboxBox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 12, // Fully circular matching Netflix style
     borderWidth: 2,
-    borderColor: '#555566',
-    backgroundColor: '#111115',
+    borderColor: '#666677',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   bulkCheckboxBoxActive: {
-    backgroundColor: NETFLIX_RED,
-    borderColor: NETFLIX_RED,
+    backgroundColor: PURE_RED,
+    borderColor: PURE_RED,
   },
   posterContainer: {
     width: 105,
@@ -2385,7 +2350,7 @@ const styles = StyleSheet.create({
     color: WHITE,
     fontSize: 11.5,
     fontWeight: '800',
-    marginTop: 4,
+    marginTop: 8,
   },
   viewEpisodesFooterRow: {
     flexDirection: 'row',
@@ -2496,7 +2461,7 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 28,
     borderTopWidth: 1,
-    borderTopColor: BORDER_GREY,
+    borderTopColor: '#26262C',
   },
   sheetTitle: {
     color: WHITE,
