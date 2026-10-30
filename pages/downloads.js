@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
-  FlatList, StatusBar, Modal, DeviceEventEmitter, Platform, ScrollView
+  FlatList, StatusBar, Modal, DeviceEventEmitter, Platform, Switch 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -12,16 +12,18 @@ import Svg, { Path, Circle, Polyline, Rect } from 'react-native-svg';
 
 import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
+import PlayScreen from './play';
 import * as NotificationEngine from '../components/NotificationEngine';
 
-// --- STRICT NETFLIX PALETTE (BLACK, PURE WHITE, GREY) ---
+// --- STRICT PALETTE ---
 const BLACK = '#000000';
 const CARD_BG = '#0B0B0E';
 const DARK_GREY = '#18181C';
-const BORDER_GREY = '#222228';
+const BORDER_GREY = '#26262C';
 const TEXT_GREY = '#8E8E93';
 const WHITE = '#FFFFFF';
 const PURE_RED = '#FF0000';
+const BRAND_RED = '#E50914';
 
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
@@ -31,9 +33,6 @@ const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
   : null;
 const VAULT_ROOT_DIR = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_vault/`
-  : null;
-const SETTINGS_FILE_URI = FileSystem.documentDirectory
-  ? `${FileSystem.documentDirectory}kameko_download_settings.json`
   : null;
 
 // --- HELPERS ---
@@ -45,19 +44,26 @@ const buildProxyUrl = (targetUrl, referer = 'https://vidwish.live/') => {
   return `${PROXY_URL}${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(referer)}`;
 };
 
+const resolveRelativeUrl = (baseUrl, relativeOrAbsolute) => {
+  const trimmed = (relativeOrAbsolute || '').trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+  if (trimmed.startsWith('//')) return `https:${trimmed}`;
+  try {
+    const urlObj = new URL(baseUrl);
+    if (trimmed.startsWith('/')) return `${urlObj.origin}${trimmed}`;
+    const baseDir = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+    return `${baseDir}${trimmed}`;
+  } catch (_) {
+    const baseDir = baseUrl.substring(0, baseUrl.lastIndexOf('/') + 1);
+    return `${baseDir}${trimmed}`;
+  }
+};
+
 const formatMbRatio = (downloadedBytes, totalEstimatedBytes) => {
   const dlMb = Math.max(0, Math.round((downloadedBytes || 0) / (1024 * 1024)));
   const totMb = Math.max(dlMb, Math.round((totalEstimatedBytes || 100 * 1024 * 1024) / (1024 * 1024)));
   return `${dlMb}mb/${totMb}mb`;
-};
-
-const formatBytesToMbOrGb = (bytes) => {
-  if (!bytes || isNaN(bytes) || bytes <= 0) return '0 MB';
-  const mb = bytes / (1024 * 1024);
-  if (mb >= 1024) {
-    return `${(mb / 1024).toFixed(2)} GB`;
-  }
-  return `${Math.round(mb)} MB`;
 };
 
 const formatDurationClock = (seconds) => {
@@ -73,7 +79,7 @@ const stripNonAscii = (str) =>
     .replace(/[^\x20-\x7E]/g, '')
     .trim();
 
-// --- ATOMIC SERIALIZED LOCAL STORAGE READ / WRITE ---
+// --- ATOMIC SERIALIZED LOCAL STORAGE READ / WRITE (SAFE FOR PARALLEL DOWNLOADS) ---
 let storageLockPromise = Promise.resolve();
 
 const readLocalQueue = async () => {
@@ -116,7 +122,7 @@ const mutateQueueSafe = (mutatorFn) => {
   return storageLockPromise;
 };
 
-// --- NOTIFICATIONS ---
+// --- EMOJI-FREE PLAIN TEXT NOTIFICATIONS WITH PORTRAIT POSTER ON LEFT ---
 const pushPlainNotification = async (notifId, titleText, bodyText, pct, isPaused, posterUri) => {
   try {
     if (typeof NotificationEngine?.showProgressNotification === 'function') {
@@ -134,8 +140,14 @@ const pushPlainNotification = async (notifId, titleText, bodyText, pct, isPaused
           imageUrl: posterUri || null,
           ongoing: !isPaused,
           actions: [
-            { id: isPaused ? 'RESUME_DOWNLOAD' : 'PAUSE_DOWNLOAD', title: isPaused ? 'resume' : 'pause' },
-            { id: 'CANCEL_DOWNLOAD', title: 'Cancel' },
+            {
+              id: isPaused ? 'RESUME_DOWNLOAD' : 'PAUSE_DOWNLOAD',
+              title: isPaused ? 'resume' : 'pause',
+            },
+            {
+              id: 'CANCEL_DOWNLOAD',
+              title: 'Cancel',
+            },
           ],
         }
       );
@@ -149,7 +161,11 @@ const pushPlainDoneNotification = async (notifId, titleText, posterUri) => {
       await NotificationEngine.showCompletionNotification(
         notifId,
         stripNonAscii(titleText),
-        { largeIcon: posterUri || null, posterUrl: posterUri || null, plainText: true }
+        {
+          largeIcon: posterUri || null,
+          posterUrl: posterUri || null,
+          plainText: true,
+        }
       );
     }
   } catch (_) {}
@@ -163,6 +179,7 @@ const dismissPlainNotification = async (notifId) => {
   } catch (_) {}
 };
 
+// --- FETCH ANIME SYNOPSIS, GENRES & PORTRAIT COVER FROM ANILIST ---
 const fetchAnimeDetailsForOffline = async (animeTitle) => {
   try {
     const query = `
@@ -203,7 +220,7 @@ const fetchAnimeDetailsForOffline = async (animeTitle) => {
 };
 
 // ============================================================================
-// CONCURRENT BACKGROUND DOWNLOAD ENGINE
+// CONCURRENT MULTI-DOWNLOAD BACKGROUND ENGINE
 // ============================================================================
 const BgManager = {
   jobs: new Map(),
@@ -298,16 +315,26 @@ const executeConcurrentDownload = async (task) => {
       }
     }
 
-    if (!synopsis) synopsis = `${task.animeTitle} offline episode saved in ${task.quality || '1080p'}.`;
-    if (!epSynopsis) epSynopsis = task.episodeTitle ? `${task.episodeTitle} - ${synopsis.slice(0, 95)}` : synopsis.slice(0, 110);
-    if (!genres || genres.length === 0) genres = ['Action', 'Adventure'];
+    if (!synopsis) {
+      synopsis = `${task.animeTitle} offline episode saved in ${task.quality || '1080p'}.`;
+    }
+    if (!epSynopsis) {
+      epSynopsis = task.episodeTitle
+        ? `${task.episodeTitle} - ${synopsis.slice(0, 95)}`
+        : synopsis.slice(0, 110);
+    }
+    if (!genres || genres.length === 0) {
+      genres = ['Action', 'Adventure'];
+    }
 
     let localPosterUri = task.localPosterUri || remoteCover;
     if (remoteCover && remoteCover.startsWith('http')) {
       try {
         const posterPath = `${epFolderUri}poster.jpg`;
         const info = await FileSystem.getInfoAsync(posterPath);
-        if (!info.exists) await FileSystem.downloadAsync(remoteCover, posterPath);
+        if (!info.exists) {
+          await FileSystem.downloadAsync(remoteCover, posterPath);
+        }
         localPosterUri = posterPath;
       } catch (_) {}
     }
@@ -317,7 +344,9 @@ const executeConcurrentDownload = async (task) => {
       try {
         const thumbPath = `${epFolderUri}thumb.jpg`;
         const info = await FileSystem.getInfoAsync(thumbPath);
-        if (!info.exists) await FileSystem.downloadAsync(remoteBackdrop, thumbPath);
+        if (!info.exists) {
+          await FileSystem.downloadAsync(remoteBackdrop, thumbPath);
+        }
         localThumbUri = thumbPath;
       } catch (_) {}
     }
@@ -398,7 +427,9 @@ const executeConcurrentDownload = async (task) => {
       } catch (_) {}
     }
 
-    if (!streamUri) throw new Error('Episode unavailable');
+    if (!streamUri) {
+      throw new Error('Episode unavailable');
+    }
 
     let localSubtitleUri = null;
     if (subtitleFileUrl && task.subtitle?.lang !== 'none') {
@@ -406,7 +437,11 @@ const executeConcurrentDownload = async (task) => {
         const subRes = await fetch(buildProxyUrl(subtitleFileUrl, referer));
         if (subRes.ok) {
           const subText = await subRes.text();
-          if (subText && !subText.trim().toLowerCase().startsWith('<!doctype') && !subText.trim().toLowerCase().startsWith('<html')) {
+          if (
+            subText &&
+            !subText.trim().toLowerCase().startsWith('<!doctype') &&
+            !subText.trim().toLowerCase().startsWith('<html')
+          ) {
             localSubtitleUri = `${epFolderUri}subtitle.vtt`;
             await FileSystem.writeAsStringAsync(localSubtitleUri, subText);
           }
@@ -468,7 +503,10 @@ const executeConcurrentDownload = async (task) => {
           const absKeyUrl = resolveRelativeUrl(activePlaylistUrl, uriMatch[1]);
           const keyFileName = `key_${segCounter}.bin`;
           const localKeyUri = `${epFolderUri}${keyFileName}`;
-          segmentEntries.push({ remoteUrl: absKeyUrl, localUri: localKeyUri });
+          segmentEntries.push({
+            remoteUrl: absKeyUrl,
+            localUri: localKeyUri,
+          });
           rewrittenLines.push(line.replace(uriMatch[0], `URI="${localKeyUri}"`));
           continue;
         }
@@ -484,11 +522,17 @@ const executeConcurrentDownload = async (task) => {
       const localSegUri = `${epFolderUri}${segFileName}`;
       segCounter++;
 
-      segmentEntries.push({ remoteUrl: absSegUrl, localUri: localSegUri });
+      segmentEntries.push({
+        remoteUrl: absSegUrl,
+        localUri: localSegUri,
+      });
+
       rewrittenLines.push(localSegUri);
     }
 
-    if (segmentEntries.length === 0) throw new Error('No video data');
+    if (segmentEntries.length === 0) {
+      throw new Error('No video data');
+    }
 
     const totalSegs = segmentEntries.length;
     let completedSegs = 0;
@@ -535,7 +579,10 @@ const executeConcurrentDownload = async (task) => {
       );
 
       const pct = Math.min(100, Math.round((completedSegs / totalSegs) * 100));
-      const dynamicTotalBytes = completedSegs > 4 ? Math.round((accumulatedBytes / completedSegs) * totalSegs) : 100 * 1024 * 1024;
+      const dynamicTotalBytes =
+        completedSegs > 4
+          ? Math.round((accumulatedBytes / completedSegs) * totalSegs)
+          : 100 * 1024 * 1024;
 
       jobState.pct = pct;
       jobState.downloadedBytes = accumulatedBytes;
@@ -580,7 +627,10 @@ const executeConcurrentDownload = async (task) => {
       quality: task.quality,
       coverImage: localPosterUri,
       backdrop: localThumbUri,
-      subtitle: { ...(task.subtitle || {}), localUri: localSubtitleUri },
+      subtitle: {
+        ...(task.subtitle || {}),
+        localUri: localSubtitleUri,
+      },
       localM3u8Uri,
       sizeBytes: accumulatedBytes,
       downloadedAt: Date.now(),
@@ -614,7 +664,9 @@ const executeConcurrentDownload = async (task) => {
       } catch (_) {}
     } else {
       await dismissPlainNotification(notifId);
-      await updateQueueRecord(task.id, { status: 'failed' });
+      await updateQueueRecord(task.id, {
+        status: 'failed',
+      });
     }
   } finally {
     BgManager.jobs.delete(task.id);
@@ -628,8 +680,11 @@ const handleTogglePauseJob = async (taskId, forcePauseState = null) => {
     const queue = await readLocalQueue();
     const targetItem = queue.find((i) => i.id === taskId);
     if (!targetItem) return;
-    const nextPaused = forcePauseState !== null ? forcePauseState : targetItem.status !== 'paused';
-    await updateQueueRecord(taskId, { status: nextPaused ? 'paused' : 'queued' });
+    const nextPaused =
+      forcePauseState !== null ? forcePauseState : targetItem.status !== 'paused';
+    await updateQueueRecord(taskId, {
+      status: nextPaused ? 'paused' : 'queued',
+    });
     return;
   }
 
@@ -651,7 +706,9 @@ const handleTogglePauseJob = async (taskId, forcePauseState = null) => {
     task.localPosterUri || task.coverImage || task.backdrop
   );
 
-  await updateQueueRecord(task.id, { status: nextPaused ? 'paused' : 'downloading' });
+  await updateQueueRecord(task.id, {
+    status: nextPaused ? 'paused' : 'downloading',
+  });
 };
 
 const handleCancelJob = async (taskId) => {
@@ -696,22 +753,42 @@ const initBackgroundDaemon = () => {
 
   DeviceEventEmitter.addListener('PAUSE_DOWNLOAD', (notifId) => {
     const tId = extractTaskId(notifId);
-    if (tId) handleTogglePauseJob(tId, true);
+    if (tId) {
+      handleTogglePauseJob(tId, true);
+    } else {
+      BgManager.jobs.forEach((job, id) => {
+        if (!job.isPaused) handleTogglePauseJob(id, true);
+      });
+    }
   });
 
   DeviceEventEmitter.addListener('RESUME_DOWNLOAD', (notifId) => {
     const tId = extractTaskId(notifId);
-    if (tId) handleTogglePauseJob(tId, false);
+    if (tId) {
+      handleTogglePauseJob(tId, false);
+    } else {
+      BgManager.jobs.forEach((job, id) => {
+        if (job.isPaused) handleTogglePauseJob(id, false);
+      });
+    }
   });
 
   DeviceEventEmitter.addListener('CANCEL_DOWNLOAD', (notifId) => {
     const tId = extractTaskId(notifId);
-    if (tId) handleCancelJob(tId);
+    if (tId) {
+      handleCancelJob(tId);
+    } else {
+      const firstKey = BgManager.jobs.keys().next().value;
+      if (firstKey) handleCancelJob(firstKey);
+    }
   });
 
   setInterval(async () => {
     const queue = await readLocalQueue();
-    const pendingItems = queue.filter((i) => i.status === 'queued' || i.status === 'downloading');
+    const pendingItems = queue.filter(
+      (item) => item.status === 'queued' || item.status === 'downloading'
+    );
+
     for (const item of pendingItems) {
       const existing = BgManager.jobs.get(item.id);
       if (!existing || (!existing.isRunning && !existing.isPaused)) {
@@ -721,12 +798,13 @@ const initBackgroundDaemon = () => {
   }, 1500);
 };
 
+// Delayed startup so FileSystem is never hammered during the first 0.5s of app boot
 setTimeout(() => {
   initBackgroundDaemon();
 }, 2500);
 
 // ============================================================================
-// SVG ICONS (STRICTLY WHITE / GREY / BLACK)
+// SVG ICONS
 // ============================================================================
 const IconChevronLeft = ({ size = 22, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -741,7 +819,7 @@ const IconChevronRight = ({ size = 18, color = TEXT_GREY }) => (
 );
 
 const IconBookmark = ({ size = 18, color = WHITE, filled = false }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? WHITE : 'none'} stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : 'none'} stroke={filled ? PURE_RED : color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -767,23 +845,17 @@ const IconPause = ({ size = 15, color = WHITE }) => (
   </Svg>
 );
 
-const IconTrash = ({ size = 16, color = WHITE }) => (
+const IconTrash = ({ size = 16, color = PURE_RED }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <Polyline points="3 6 5 6 21 6" />
     <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
   </Svg>
 );
 
-const IconCheck = ({ size = 14, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3">
-    <Path d="M20 6L9 17l-5-5" />
-  </Svg>
-);
-
-const IconGear = ({ size = 20, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
-    <Path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
+const IconSettings = ({ size = 22, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <Circle cx="12" cy="12" r="3" />
+    <Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
   </Svg>
 );
 
@@ -810,89 +882,46 @@ export default function Downloads({
   const prevActiveDlCountRef = useRef(0);
 
   const [selectedDownloadedAnimeId, setSelectedDownloadedAnimeId] = useState(null);
-
-  // Bulk Deletion / Long Press Selection States
-  const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
-  const [bulkSelectedSeriesMap, setBulkSelectedSeriesMap] = useState({});
-
-  // Download Settings State
-  const [settingsModalVisible, setSettingsModalVisible] = useState(false);
-  const [downloadNetworkMode, setDownloadNetworkMode] = useState('wifi'); 
-  const [totalStorageBytes, setTotalStorageBytes] = useState(0);
+  const [activePlaySeries, setActivePlaySeries] = useState(null);
 
   const [watchlistMap, setWatchlistMap] = useState({});
   const [watchHistoryMap, setWatchHistoryMap] = useState({});
   const [menuTarget, setMenuTarget] = useState(null);
   const [topLevelPlayback, setTopLevelPlayback] = useState(null);
+
   const [confirmDialog, setConfirmDialog] = useState(null);
 
+  // Settings State
+  const [showSettings, setShowSettings] = useState(false);
+  const [wifiOnly, setWifiOnly] = useState(true);
+
+  // Hide UI Bars immediately on Downloads mount
   useEffect(() => {
-    initBackgroundDaemon();
+    const hideBars = async () => {
+      try {
+        StatusBar.setHidden(true, 'none');
+        if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+          await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
+        }
+      } catch (_) {}
+    };
+    hideBars();
   }, []);
 
-  // System UI sync for normal download page vs fullscreen components
+  // Enforce total immersive mode when Player opens
   useEffect(() => {
     const syncBars = async () => {
       try {
         StatusBar.setHidden(true, 'none');
         if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-          if (topLevelPlayback || settingsModalVisible) {
-            await NavigationBar.setVisibilityAsync('hidden');
-            await NavigationBar.setBehaviorAsync('overlay-swipe');
-          } else {
-            await NavigationBar.setVisibilityAsync('visible');
-          }
+          await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
         }
       } catch (_) {}
     };
     syncBars();
-  }, [topLevelPlayback, settingsModalVisible]);
-
-  // Load Settings and Total Storage
-  useEffect(() => {
-    const loadSettingsAndStorage = async () => {
-      try {
-        if (SETTINGS_FILE_URI) {
-          const info = await FileSystem.getInfoAsync(SETTINGS_FILE_URI);
-          if (info?.exists) {
-            const raw = await FileSystem.readAsStringAsync(SETTINGS_FILE_URI);
-            const parsed = JSON.parse(raw);
-            if (parsed?.downloadNetworkMode) setDownloadNetworkMode(parsed.downloadNetworkMode);
-          }
-        }
-        if (VAULT_ROOT_DIR) {
-          const vaultInfo = await FileSystem.getInfoAsync(VAULT_ROOT_DIR);
-          if (vaultInfo?.exists) {
-            const contents = await FileSystem.readDirectoryAsync(VAULT_ROOT_DIR);
-            let totalBytes = 0;
-            for (const folder of contents) {
-              const folderInfo = await FileSystem.getInfoAsync(`${VAULT_ROOT_DIR}${folder}`);
-              if (folderInfo?.exists) {
-                const queue = await readLocalQueue();
-                const matched = queue.find((q) => q.targetFolder?.includes(folder));
-                if (matched?.sizeBytes) {
-                  totalBytes += matched.sizeBytes;
-                } else {
-                  totalBytes += 45 * 1024 * 1024;
-                }
-              }
-            }
-            setTotalStorageBytes(totalBytes);
-          }
-        }
-      } catch (_) {}
-    };
-    loadSettingsAndStorage();
-  }, [queueItems]);
-
-  const saveSettings = async (newMode) => {
-    setDownloadNetworkMode(newMode);
-    try {
-      if (SETTINGS_FILE_URI) {
-        await FileSystem.writeAsStringAsync(SETTINGS_FILE_URI, JSON.stringify({ downloadNetworkMode: newMode }));
-      }
-    } catch (_) {}
-  };
+  }, [topLevelPlayback, activePlaySeries]);
 
   useEffect(() => {
     let isMounted = true;
@@ -901,6 +930,7 @@ export default function Downloads({
       const list = await readLocalQueue();
       if (isMounted) {
         setQueueItems(list);
+
         const activeCount = list.filter(
           (i) => i.status === 'downloading' || i.status === 'paused' || i.status === 'queued'
         ).length;
@@ -911,6 +941,7 @@ export default function Downloads({
         } else if (prevActiveDlCountRef.current === 0 && activeCount > 0) {
           setActiveTab('downloading');
         }
+
         prevActiveDlCountRef.current = activeCount;
       }
     };
@@ -943,7 +974,9 @@ export default function Downloads({
       .onSnapshot(
         (snap) => {
           const map = {};
-          snap?.forEach((doc) => { map[doc.id] = true; });
+          snap?.forEach((doc) => {
+            map[doc.id] = true;
+          });
           setWatchlistMap(map);
         },
         () => {}
@@ -962,7 +995,9 @@ export default function Downloads({
       .onSnapshot(
         (snap) => {
           const map = {};
-          snap?.forEach((doc) => { map[doc.id] = doc.data(); });
+          snap?.forEach((doc) => {
+            map[doc.id] = doc.data();
+          });
           setWatchHistoryMap(map);
         },
         () => {}
@@ -999,7 +1034,9 @@ export default function Downloads({
           coverImage: item.localPosterUri || item.coverImage || item.backdrop || '',
           backdrop: item.localThumbUri || item.backdrop || item.coverImage || '',
           genres: Array.isArray(item.genres) && item.genres.length > 0 ? item.genres : ['Action', 'Adventure'],
-          synopsis: item.synopsis || `${item.animeTitle} offline episodes saved.`,
+          synopsis:
+            item.synopsis ||
+            `${item.animeTitle} offline episodes saved with subtitles and cover art.`,
           totalEpisodes: item.totalEpisodes || completedItems.length,
           episodes: [],
         });
@@ -1044,7 +1081,6 @@ export default function Downloads({
     );
   }, [downloadedSeriesGroups, selectedDownloadedAnimeId]);
 
-  // DIRECT REDIRECT VIA REACT NAVIGATION (Replaces Modals/Mounting)
   const handleOpenSeriesPlayScreen = (series) => {
     if (!series) return;
     setMenuTarget(null);
@@ -1069,13 +1105,15 @@ export default function Downloads({
       isOffline: true,
     };
 
-    if (navigation && navigation.navigate) {
-      navigation.navigate('Play', { anime: animePayload });
-    } else if (typeof onOpenPlay === 'function') {
+    if (typeof onOpenPlay === 'function') {
       onOpenPlay(animePayload);
-    } else if (typeof onSelectAnime === 'function') {
-      onSelectAnime(animePayload);
+      return;
     }
+    if (typeof onSelectAnime === 'function') {
+      onSelectAnime(animePayload);
+      return;
+    }
+    setActivePlaySeries(animePayload);
   };
 
   const handlePauseOrResumeAllDownloading = async () => {
@@ -1089,28 +1127,46 @@ export default function Downloads({
     setQueueItems(updated);
   };
 
-  // Bulk Delete Execution for Selected Series
-  const handleExecuteBulkSeriesDelete = () => {
-    const targetIds = Object.keys(bulkSelectedSeriesMap).filter((k) => bulkSelectedSeriesMap[k]);
-    if (targetIds.length === 0) return;
+  const handleDeleteAllDownloaded = () => {
+    const completedItems = queueItems.filter((i) => i.status === 'completed');
+    if (completedItems.length === 0) return;
 
     setConfirmDialog({
-      title: 'Delete Selected Series',
-      message: `Permanently delete all episodes for the ${targetIds.length} selected ${targetIds.length === 1 ? 'series' : 'series'}?`,
-      confirmText: 'Delete Selected',
+      title: 'Delete All Downloaded',
+      message: `Are you sure you want to permanently delete all ${completedItems.length} downloaded ${
+        completedItems.length === 1 ? 'episode' : 'episodes'
+      } from your device?`,
+      confirmText: 'Delete All',
       onConfirm: async () => {
         setConfirmDialog(null);
-        for (const sId of targetIds) {
-          const foundSeries = downloadedSeriesGroups.find((g) => String(g.animeId) === String(sId));
-          if (foundSeries && Array.isArray(foundSeries.episodes)) {
-            for (const ep of foundSeries.episodes) {
-              await handleCancelJob(ep.id);
-            }
-          }
+        for (const ep of completedItems) {
+          await handleCancelJob(ep.id);
         }
-        setIsBulkDeleteMode(false);
-        setBulkSelectedSeriesMap({});
         setSelectedDownloadedAnimeId(null);
+        const remaining = await readLocalQueue();
+        setQueueItems(remaining);
+      },
+    });
+  };
+
+  const handleDeleteEntireSeries = (series) => {
+    if (!series || !Array.isArray(series.episodes)) return;
+    setMenuTarget(null);
+
+    setConfirmDialog({
+      title: 'Delete Series',
+      message: `Delete all ${series.episodes.length} downloaded ${
+        series.episodes.length === 1 ? 'episode' : 'episodes'
+      } of "${series.animeTitle}"?`,
+      confirmText: 'Delete Series',
+      onConfirm: async () => {
+        setConfirmDialog(null);
+        for (const ep of series.episodes) {
+          await handleCancelJob(ep.id);
+        }
+        if (String(selectedDownloadedAnimeId) === String(series.animeId)) {
+          setSelectedDownloadedAnimeId(null);
+        }
         const remaining = await readLocalQueue();
         setQueueItems(remaining);
       },
@@ -1119,6 +1175,10 @@ export default function Downloads({
 
   const handleDeleteEpisode = (epItem) => {
     if (!epItem) return;
+    if (Array.isArray(epItem.episodes)) {
+      handleDeleteEntireSeries(epItem);
+      return;
+    }
     setMenuTarget(null);
 
     const isCompleted = epItem.status === 'completed';
@@ -1127,7 +1187,7 @@ export default function Downloads({
       title: isCompleted ? 'Delete Download' : 'Cancel Download',
       message: isCompleted
         ? `Remove "${epItem.animeTitle} - Episode ${epItem.episodeNum}" from offline storage?`
-        : `Stop downloading "${epItem.animeTitle} - Episode ${epItem.episodeNum}"?`,
+        : `Stop downloading "${epItem.animeTitle} - Episode ${epItem.episodeNum}" and remove partial files?`,
       confirmText: isCompleted ? 'Delete' : 'Cancel Download',
       onConfirm: async () => {
         setConfirmDialog(null);
@@ -1218,7 +1278,7 @@ export default function Downloads({
     try {
       StatusBar.setHidden(true, 'none');
       if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-        await NavigationBar.setVisibilityAsync('visible');
+        await NavigationBar.setVisibilityAsync('hidden');
       }
       await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
     } catch (_) {}
@@ -1228,7 +1288,6 @@ export default function Downloads({
     <View style={styles.container}>
       <StatusBar hidden={true} />
 
-      {/* 1. HEADER: "< Downloads" + Gear Settings Icon */}
       <View style={styles.headerRow}>
         <TouchableOpacity
           style={styles.backTouch}
@@ -1249,17 +1308,15 @@ export default function Downloads({
             ? selectedSeriesObj.animeTitle
             : 'Downloads'}
         </Text>
-
-        <TouchableOpacity
-          style={styles.settingsHeaderBtn}
-          activeOpacity={0.8}
-          onPress={() => setSettingsModalVisible(true)}
+        <TouchableOpacity 
+          style={styles.settingsIconTouch} 
+          onPress={() => setShowSettings(true)}
+          activeOpacity={0.7}
         >
-          <IconGear size={20} color={WHITE} />
+          <IconSettings size={22} color={WHITE} />
         </TouchableOpacity>
       </View>
 
-      {/* 2. TOP STATS BOX */}
       <View style={styles.statsContainer}>
         <View style={styles.statColumn}>
           <Text style={styles.statNumber}>{readyCount}</Text>
@@ -1277,7 +1334,6 @@ export default function Downloads({
         </View>
       </View>
 
-      {/* 3. TWO TABS */}
       <View style={styles.tabsBarContainer}>
         <TouchableOpacity
           style={[styles.tabPillBtn, activeTab === 'downloading' && styles.tabPillBtnActive]}
@@ -1302,15 +1358,13 @@ export default function Downloads({
 
       <View style={styles.fullDividerLine} />
 
-      {/* ============================================================================ */}
-      {/* TAB 1: DOWNLOADING */}
-      {/* ============================================================================ */}
       {activeTab === 'downloading' && (
         <View style={{ flex: 1 }}>
           {activeDownloadList.length > 0 && (
             <View style={styles.bulkActionBar}>
               <Text style={styles.bulkActionInfoText}>
-                {activeDownloadList.length} {activeDownloadList.length === 1 ? 'Episode' : 'Episodes'} Active
+                {activeDownloadList.length}{' '}
+                {activeDownloadList.length === 1 ? 'Episode' : 'Episodes'} Active
               </Text>
 
               <TouchableOpacity
@@ -1318,8 +1372,14 @@ export default function Downloads({
                 activeOpacity={0.85}
                 onPress={handlePauseOrResumeAllDownloading}
               >
-                {areAllActivePaused ? <IconPlay size={14} color={WHITE} /> : <IconPause size={14} color={WHITE} />}
-                <Text style={styles.pauseAllBtnText}>{areAllActivePaused ? 'Resume All' : 'Pause All'}</Text>
+                {areAllActivePaused ? (
+                  <IconPlay size={14} color={WHITE} />
+                ) : (
+                  <IconPause size={14} color={WHITE} />
+                )}
+                <Text style={styles.pauseAllBtnText}>
+                  {areAllActivePaused ? 'Resume All' : 'Pause All'}
+                </Text>
               </TouchableOpacity>
             </View>
           )}
@@ -1338,14 +1398,21 @@ export default function Downloads({
               const liveJob = jobsMap[dlItem.id];
               const currentPct = liveJob ? liveJob.pct : dlItem.progressPct || 0;
               const currentBytes = liveJob ? liveJob.downloadedBytes : dlItem.sizeBytes || 0;
-              const totalBytes = liveJob ? liveJob.estimatedTotalBytes : dlItem.estimatedTotalBytes || 100 * 1024 * 1024;
+              const totalBytes = liveJob
+                ? liveJob.estimatedTotalBytes
+                : dlItem.estimatedTotalBytes || 100 * 1024 * 1024;
               const isItemPaused = liveJob ? liveJob.isPaused : dlItem.status === 'paused';
 
               return (
                 <View style={[styles.mainCard, { marginBottom: 12 }]}>
                   <View style={styles.posterContainer}>
                     <ProxyImage
-                      source={{ uri: dlItem.localPosterUri || dlItem.coverImage || dlItem.backdrop }}
+                      source={{
+                        uri:
+                          dlItem.localPosterUri ||
+                          dlItem.coverImage ||
+                          dlItem.backdrop,
+                      }}
                       style={styles.posterImage}
                       resizeMode="cover"
                     />
@@ -1353,29 +1420,57 @@ export default function Downloads({
 
                   <View style={styles.cardRightCol}>
                     <View style={styles.titleAndDotsRow}>
-                      <Text style={styles.animeMainTitle} numberOfLines={1}>{dlItem.animeTitle}</Text>
-                      <TouchableOpacity style={styles.dotsBtn} onPress={() => setMenuTarget(dlItem)}>
+                      <Text style={styles.animeMainTitle} numberOfLines={1}>
+                        {dlItem.animeTitle}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.dotsBtn}
+                        onPress={() => setMenuTarget(dlItem)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
                         <IconDotsVertical size={18} color={WHITE} />
                       </TouchableOpacity>
                     </View>
 
                     <Text style={styles.episodeSubLabel} numberOfLines={1}>
-                      Episode {dlItem.episodeNum} : {dlItem.episodeTitle || `Episode ${dlItem.episodeNum}`}
+                      Episode {dlItem.episodeNum} :{' '}
+                      {dlItem.episodeTitle || `Episode ${dlItem.episodeNum}`}
                     </Text>
 
                     <View style={styles.outlinedPillsRow}>
-                      <View style={styles.outlinedPill}><Text style={styles.outlinedPillText}>{dlItem.quality || '1080p'}</Text></View>
-                      <View style={styles.outlinedPill}><Text style={styles.outlinedPillText} numberOfLines={1}>{(dlItem.subtitle?.label || 'English').split(' ')[0]}</Text></View>
-                      <View style={styles.outlinedPill}><Text style={styles.outlinedPillText}>{dlItem.audioType === 'dub' ? 'Dub' : 'Sub'}</Text></View>
+                      <View style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText}>
+                          {dlItem.quality || '1080p'}
+                        </Text>
+                      </View>
+                      <View style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText} numberOfLines={1}>
+                          {(dlItem.subtitle?.label || 'English').split(' ')[0]}
+                        </Text>
+                      </View>
+                      <View style={styles.outlinedPill}>
+                        <Text style={styles.outlinedPillText}>
+                          {dlItem.audioType === 'dub' ? 'Dub' : 'Sub'}
+                        </Text>
+                      </View>
                     </View>
 
                     <View style={styles.progressSection}>
                       <View style={styles.progressLabelRow}>
-                        <Text style={styles.statusMiniText}>{isItemPaused ? 'PAUSED' : `${currentPct}%`}</Text>
-                        <Text style={styles.mbRatioText}>{formatMbRatio(currentBytes, totalBytes)}</Text>
+                        <Text style={styles.statusMiniText}>
+                          {isItemPaused ? 'PAUSED' : `${currentPct}%`}
+                        </Text>
+                        <Text style={styles.mbRatioText}>
+                          {formatMbRatio(currentBytes, totalBytes)}
+                        </Text>
                       </View>
                       <View style={styles.thinProgressBg}>
-                        <View style={[styles.thinProgressFill, { width: `${currentPct}%` }]} />
+                        <View
+                          style={[
+                            styles.thinProgressFill,
+                            { width: `${currentPct}%` },
+                          ]}
+                        />
                       </View>
                     </View>
 
@@ -1385,7 +1480,9 @@ export default function Downloads({
                         activeOpacity={0.85}
                         onPress={() => handleTogglePauseJob(dlItem.id)}
                       >
-                        <Text style={styles.whiteActionBtnText}>{isItemPaused ? 'resume' : 'pause'}</Text>
+                        <Text style={styles.whiteActionBtnText}>
+                          {isItemPaused ? 'resume' : 'pause'}
+                        </Text>
                       </TouchableOpacity>
 
                       <TouchableOpacity
@@ -1404,9 +1501,6 @@ export default function Downloads({
         </View>
       )}
 
-      {/* ============================================================================ */}
-      {/* TAB 2: DOWNLOADED */}
-      {/* ============================================================================ */}
       {activeTab === 'downloaded' && (
         <View style={{ flex: 1 }}>
           {downloadedSeriesGroups.length > 0 && (
@@ -1422,37 +1516,23 @@ export default function Downloads({
                 </TouchableOpacity>
               ) : (
                 <Text style={styles.bulkActionInfoText}>
-                  {downloadedSeriesGroups.length} {downloadedSeriesGroups.length === 1 ? 'Series' : 'Series'} • {readyCount} {readyCount === 1 ? 'Episode' : 'Episodes'}
+                  {downloadedSeriesGroups.length}{' '}
+                  {downloadedSeriesGroups.length === 1 ? 'Series' : 'Series'} • {readyCount}{' '}
+                  {readyCount === 1 ? 'Episode' : 'Episodes'}
                 </Text>
               )}
 
-              {/* Only show bulk delete actions when in selection mode */}
-              {isBulkDeleteMode && !selectedSeriesObj && (
-                <View style={{ flexDirection: 'row', gap: 8 }}>
-                  <TouchableOpacity
-                    style={styles.bulkDeleteActionBtn}
-                    activeOpacity={0.8}
-                    onPress={handleExecuteBulkSeriesDelete}
-                  >
-                    <IconTrash size={14} color={WHITE} />
-                    <Text style={styles.bulkDeleteActionText}>Delete ({Object.keys(bulkSelectedSeriesMap).filter(k => bulkSelectedSeriesMap[k]).length})</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.bulkCancelActionBtn}
-                    activeOpacity={0.8}
-                    onPress={() => {
-                      setIsBulkDeleteMode(false);
-                      setBulkSelectedSeriesMap({});
-                    }}
-                  >
-                    <Text style={styles.bulkCancelActionText}>Cancel</Text>
-                  </TouchableOpacity>
-                </View>
-              )}
+              <TouchableOpacity
+                style={styles.deleteAllDownloadedBtn}
+                activeOpacity={0.85}
+                onPress={handleDeleteAllDownloaded}
+              >
+                <IconTrash size={14} color={PURE_RED} />
+                <Text style={styles.deleteAllDownloadedText}>Delete All</Text>
+              </TouchableOpacity>
             </View>
           )}
 
-          {/* VIEW A: SERIES LIST WITH LONG PRESS SELECTION */}
           {!selectedSeriesObj ? (
             <FlatList
               data={downloadedSeriesGroups}
@@ -1464,88 +1544,63 @@ export default function Downloads({
                   <Text style={styles.emptyText}>No downloaded anime yet</Text>
                 </View>
               }
-              renderItem={({ item: series }) => {
-                const isSelectedForBulk = Boolean(bulkSelectedSeriesMap[series.animeId]);
+              renderItem={({ item: series }) => (
+                <TouchableOpacity
+                  style={[styles.mainCard, { marginBottom: 14 }]}
+                  activeOpacity={0.88}
+                  onPress={() => handleOpenSeriesPlayScreen(series)}
+                  onLongPress={() => handleDeleteEntireSeries(series)}
+                >
+                  <View style={styles.posterContainer}>
+                    <ProxyImage
+                      source={{ uri: series.coverImage || series.backdrop }}
+                      style={styles.posterImage}
+                      resizeMode="cover"
+                    />
+                  </View>
 
-                return (
-                  <TouchableOpacity
-                    style={[
-                      styles.mainCard, 
-                      { marginBottom: 14 }, 
-                      isSelectedForBulk && styles.cardSelectedBulk
-                    ]}
-                    activeOpacity={0.88}
-                    delayLongPress={400}
-                    onLongPress={() => {
-                      setIsBulkDeleteMode(true);
-                      setBulkSelectedSeriesMap(prev => ({ ...prev, [series.animeId]: !prev[series.animeId] }));
-                    }}
-                    onPress={() => {
-                      if (isBulkDeleteMode) {
-                        setBulkSelectedSeriesMap(prev => ({ ...prev, [series.animeId]: !prev[series.animeId] }));
-                      } else {
-                        handleOpenSeriesPlayScreen(series);
-                      }
-                    }}
-                  >
-                    {isBulkDeleteMode && (
-                      <View style={styles.bulkCheckboxIndicator}>
-                        <View style={[styles.bulkCheckboxBox, isSelectedForBulk && styles.bulkCheckboxBoxActive]}>
-                          {isSelectedForBulk && <IconCheck size={14} color={WHITE} />}
+                  <View style={styles.cardRightCol}>
+                    <View style={styles.titleAndDotsRow}>
+                      <Text style={styles.animeMainTitle} numberOfLines={1}>
+                        {series.animeTitle}
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.dotsBtn}
+                        onPress={(e) => {
+                          e?.stopPropagation?.();
+                          setMenuTarget(series);
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      >
+                        <IconDotsVertical size={18} color={WHITE} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={[styles.outlinedPillsRow, { marginTop: 6 }]}>
+                      {series.genres.slice(0, 3).map((genre, idx) => (
+                        <View key={idx} style={styles.outlinedPill}>
+                          <Text style={styles.outlinedPillText}>{genre}</Text>
                         </View>
-                      </View>
-                    )}
-
-                    <View style={styles.posterContainer}>
-                      <ProxyImage
-                        source={{ uri: series.coverImage || series.backdrop }}
-                        style={styles.posterImage}
-                        resizeMode="cover"
-                      />
+                      ))}
                     </View>
 
-                    <View style={styles.cardRightCol}>
-                      <View style={styles.titleAndDotsRow}>
-                        <Text style={styles.animeMainTitle} numberOfLines={1}>{series.animeTitle}</Text>
-                        <TouchableOpacity
-                          style={styles.dotsBtn}
-                          onPress={(e) => {
-                            e?.stopPropagation?.();
-                            setMenuTarget(series);
-                          }}
-                        >
-                          <IconDotsVertical size={18} color={WHITE} />
-                        </TouchableOpacity>
-                      </View>
+                    <Text style={styles.seriesSynopsisText} numberOfLines={3}>
+                      {series.synopsis}
+                    </Text>
 
-                      <View style={[styles.outlinedPillsRow, { marginTop: 6 }]}>
-                        {series.genres.slice(0, 2).map((genre, idx) => (
-                          <View key={idx} style={styles.outlinedPill}>
-                            <Text style={styles.outlinedPillText}>{genre}</Text>
-                          </View>
-                        ))}
-                      </View>
-
-                      <Text style={styles.seriesSynopsisText} numberOfLines={2}>
-                        {series.synopsis}
+                    <View style={styles.viewEpisodesFooterRow}>
+                      <Text style={styles.episodesCountBottomText}>
+                        {series.episodes.length} {series.episodes.length === 1 ? 'Episode' : 'Episodes'}
                       </Text>
-
-                      {/* Explicit Episode Count Displayed Below Synopsis */}
-                      <Text style={styles.episodeCountFooterText}>
-                        {series.episodes.length} {series.episodes.length === 1 ? 'Episode Downloaded' : 'Episodes Downloaded'}
-                      </Text>
-
-                      <View style={styles.viewEpisodesFooterRow}>
-                        <Text style={styles.viewEpisodesHintText}>Tap to open series</Text>
-                        <IconChevronRight size={16} color={TEXT_GREY} />
-                      </View>
+                      <View style={{flex: 1}} />
+                      <Text style={styles.viewEpisodesHintText}>Tap to open series</Text>
+                      <IconChevronRight size={16} color={TEXT_GREY} />
                     </View>
-                  </TouchableOpacity>
-                );
-              }}
+                  </View>
+                </TouchableOpacity>
+              )}
             />
           ) : (
-            /* VIEW B: EPISODES LIST FOR SELECTED SERIES */
             <FlatList
               data={selectedSeriesObj.episodes}
               keyExtractor={(ep) => String(ep.id)}
@@ -1556,27 +1611,36 @@ export default function Downloads({
                   style={[styles.mainCard, { marginBottom: 18 }]}
                   activeOpacity={0.88}
                   onPress={() => handleOpenSeriesPlayScreen(selectedSeriesObj)}
+                  onLongPress={() => handleDeleteEntireSeries(selectedSeriesObj)}
                 >
                   <View style={styles.posterContainer}>
                     <ProxyImage
-                      source={{ uri: selectedSeriesObj.coverImage || selectedSeriesObj.backdrop }}
+                      source={{
+                        uri: selectedSeriesObj.coverImage || selectedSeriesObj.backdrop,
+                      }}
                       style={styles.posterImage}
                       resizeMode="cover"
                     />
                   </View>
                   <View style={styles.cardRightCol}>
-                    <Text style={styles.animeMainTitle} numberOfLines={2}>{selectedSeriesObj.animeTitle}</Text>
+                    <Text style={styles.animeMainTitle} numberOfLines={2}>
+                      {selectedSeriesObj.animeTitle}
+                    </Text>
                     <View style={styles.outlinedPillsRow}>
-                      {selectedSeriesObj.genres.slice(0, 2).map((genre, idx) => (
+                      {selectedSeriesObj.genres.slice(0, 3).map((genre, idx) => (
                         <View key={idx} style={styles.outlinedPill}>
                           <Text style={styles.outlinedPillText}>{genre}</Text>
                         </View>
                       ))}
                     </View>
-                    <Text style={styles.seriesSynopsisText} numberOfLines={3}>{selectedSeriesObj.synopsis}</Text>
-                    <Text style={styles.episodeCountFooterText}>
-                      {selectedSeriesObj.episodes.length} {selectedSeriesObj.episodes.length === 1 ? 'Episode Downloaded' : 'Episodes Downloaded'}
+                    <Text style={styles.seriesSynopsisText} numberOfLines={3}>
+                      {selectedSeriesObj.synopsis}
                     </Text>
+                    <View style={styles.viewEpisodesFooterRow}>
+                      <Text style={styles.episodesCountBottomText}>
+                        {selectedSeriesObj.episodes.length} Saved
+                      </Text>
+                    </View>
                   </View>
                 </TouchableOpacity>
               }
@@ -1585,9 +1649,15 @@ export default function Downloads({
                 const hist = watchHistoryMap[epHistId] || watchHistoryMap[String(ep.animeId)];
                 const isSameEp = hist && String(hist.episodeNum) === String(ep.episodeNum);
                 const watchedSecs = isSameEp ? Number(hist.progress || 0) : 0;
-                const totalSecs = isSameEp && Number(hist.duration) > 0 ? Number(hist.duration) : 1440;
-                const barPct = watchedSecs > 0 ? Math.min(100, Math.max(5, (watchedSecs / totalSecs) * 100)) : 0;
-                const timeOverlayStr = `${formatDurationClock(watchedSecs)} / ${formatDurationClock(totalSecs)}`;
+                const totalSecs =
+                  isSameEp && Number(hist.duration) > 0 ? Number(hist.duration) : 1440;
+                const barPct =
+                  watchedSecs > 0
+                    ? Math.min(100, Math.max(5, (watchedSecs / totalSecs) * 100))
+                    : 0;
+                const timeOverlayStr = `${formatDurationClock(watchedSecs)} / ${formatDurationClock(
+                  totalSecs
+                )}`;
 
                 return (
                   <TouchableOpacity
@@ -1597,7 +1667,13 @@ export default function Downloads({
                   >
                     <View style={styles.epThumbBox}>
                       <ProxyImage
-                        source={{ uri: ep.localThumbUri || ep.backdrop || ep.localPosterUri || ep.coverImage }}
+                        source={{
+                          uri:
+                            ep.localThumbUri ||
+                            ep.backdrop ||
+                            ep.localPosterUri ||
+                            ep.coverImage,
+                        }}
                         style={styles.epThumbImg}
                         resizeMode="cover"
                       />
@@ -1606,32 +1682,47 @@ export default function Downloads({
                       </View>
                       {barPct > 0 && (
                         <View style={styles.epBottomProgressTrack}>
-                          <View style={[styles.epBottomProgressFill, { width: `${barPct}%` }]} />
+                          <View
+                            style={[styles.epBottomProgressFill, { width: `${barPct}%` }]}
+                          />
                         </View>
                       )}
                     </View>
 
                     <View style={styles.epRowRightCol}>
                       <View style={styles.epHeaderRow}>
-                        <Text style={styles.epRowTitle} numberOfLines={1}>Episode {ep.episodeNum}</Text>
+                        <Text style={styles.epRowTitle} numberOfLines={1}>
+                          Episode {ep.episodeNum}
+                        </Text>
                         <TouchableOpacity
                           style={styles.epDotsBtn}
                           onPress={(e) => {
                             e?.stopPropagation?.();
                             setMenuTarget(ep);
                           }}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         >
                           <IconDotsVertical size={16} color={TEXT_GREY} />
                         </TouchableOpacity>
                       </View>
 
                       <Text style={styles.epRowSynopsis} numberOfLines={2}>
-                        {ep.episodeSynopsis || ep.episodeTitle || selectedSeriesObj.synopsis}
+                        {ep.episodeSynopsis ||
+                          ep.episodeTitle ||
+                          selectedSeriesObj.synopsis}
                       </Text>
 
                       <View style={[styles.outlinedPillsRow, { marginTop: 6 }]}>
-                        <View style={styles.outlinedPill}><Text style={styles.outlinedPillText}>{ep.quality || '1080p'}</Text></View>
-                        <View style={styles.outlinedPill}><Text style={styles.outlinedPillText}>{ep.audioType === 'dub' ? 'Dub' : 'Sub'}</Text></View>
+                        <View style={styles.outlinedPill}>
+                          <Text style={styles.outlinedPillText}>
+                            {ep.quality || '1080p'}
+                          </Text>
+                        </View>
+                        <View style={styles.outlinedPill}>
+                          <Text style={styles.outlinedPillText}>
+                            {ep.audioType === 'dub' ? 'Dub' : 'Sub'}
+                          </Text>
+                        </View>
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -1642,20 +1733,85 @@ export default function Downloads({
         </View>
       )}
 
-      {/* OPTIONS BOTTOM SHEET MODAL */}
+      {/* SETTINGS BOTTOM SHEET MODAL */}
+      <Modal
+        visible={showSettings}
+        animationType="fade"
+        transparent={true}
+        hardwareAccelerated={true}
+        statusBarTranslucent={true}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
+        onRequestClose={() => setShowSettings(false)}
+      >
+        <View style={styles.settingsModalOverlay}>
+          <View style={styles.settingsCard}>
+            <Text style={styles.settingsTitle}>Download Settings</Text>
+            
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsLabel}>Download over Wi-Fi only</Text>
+              <Switch
+                value={wifiOnly}
+                onValueChange={setWifiOnly}
+                trackColor={{ false: '#3A3A44', true: BRAND_RED }}
+                thumbColor={WHITE}
+              />
+            </View>
+
+            <View style={styles.settingsRow}>
+              <Text style={styles.settingsLabel}>Total Download Storage</Text>
+              <Text style={styles.settingsValue}>
+                {((queueItems.reduce((acc, item) => acc + (item.sizeBytes || 0), 0)) / (1024 * 1024)).toFixed(2)} MB
+              </Text>
+            </View>
+
+            <TouchableOpacity 
+              style={styles.settingsCloseBtn} 
+              activeOpacity={0.8}
+              onPress={() => setShowSettings(false)}
+            >
+              <Text style={styles.settingsCloseBtnText}>Close</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* "⋮" MENU ACTION SHEET MODAL */}
       <Modal
         visible={Boolean(menuTarget)}
         transparent={true}
         animationType="fade"
+        statusBarTranslucent={true}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
         onRequestClose={() => setMenuTarget(null)}
       >
         <View style={styles.modalOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setMenuTarget(null)} />
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setMenuTarget(null)}
+          />
 
           {menuTarget && (
             <View style={styles.actionSheetBox}>
               <Text style={styles.sheetTitle} numberOfLines={1}>
-                {menuTarget.animeTitle} {menuTarget.episodeNum ? `• Episode ${menuTarget.episodeNum}` : ''}
+                {menuTarget.animeTitle}{' '}
+                {menuTarget.episodeNum ? `• Episode ${menuTarget.episodeNum}` : ''}
               </Text>
 
               {Array.isArray(menuTarget.episodes) && (
@@ -1700,9 +1856,15 @@ export default function Downloads({
                 activeOpacity={0.8}
                 onPress={() => toggleBookmarkWatchlist(menuTarget)}
               >
-                <IconBookmark size={18} color={WHITE} filled={Boolean(watchlistMap[String(menuTarget.animeId)])} />
+                <IconBookmark
+                  size={18}
+                  color={WHITE}
+                  filled={Boolean(watchlistMap[String(menuTarget.animeId)])}
+                />
                 <Text style={styles.sheetOptionText}>
-                  {watchlistMap[String(menuTarget.animeId)] ? 'Remove from User List' : 'Add to User List'}
+                  {watchlistMap[String(menuTarget.animeId)]
+                    ? 'Remove from User List'
+                    : 'Add to User List'}
                 </Text>
               </TouchableOpacity>
 
@@ -1711,9 +1873,13 @@ export default function Downloads({
                 activeOpacity={0.8}
                 onPress={() => handleDeleteEpisode(menuTarget)}
               >
-                <IconTrash size={18} color={WHITE} />
-                <Text style={[styles.sheetOptionText, { color: WHITE }]}>
-                  {Array.isArray(menuTarget.episodes) ? 'Delete Entire Series' : 'Delete Download'}
+                <IconTrash size={18} color={PURE_RED} />
+                <Text style={[styles.sheetOptionText, { color: PURE_RED }]}>
+                  {Array.isArray(menuTarget.episodes)
+                    ? 'Delete Entire Series'
+                    : menuTarget.status === 'completed'
+                    ? 'Delete Download'
+                    : 'Cancel Download'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1721,14 +1887,12 @@ export default function Downloads({
         </View>
       </Modal>
 
-      {/* DOWNLOAD SETTINGS FULL SCREEN MODAL */}
+      {/* CONFIRMATION POPUP MODAL */}
       <Modal
-        visible={settingsModalVisible}
-        animationType="slide"
-        transparent={false}
-        hardwareAccelerated={true}
+        visible={Boolean(confirmDialog)}
+        transparent={true}
+        animationType="fade"
         statusBarTranslucent={true}
-        onRequestClose={() => setSettingsModalVisible(false)}
         onShow={async () => {
           try {
             StatusBar.setHidden(true, 'none');
@@ -1738,77 +1902,18 @@ export default function Downloads({
             }
           } catch (_) {}
         }}
-      >
-        <View style={styles.settingsModalContainer}>
-          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-          
-          <View style={styles.settingsHeaderRow}>
-            <TouchableOpacity style={styles.backTouch} onPress={() => setSettingsModalVisible(false)}>
-              <IconChevronLeft size={22} color={WHITE} />
-            </TouchableOpacity>
-            <Text style={styles.headerTitleText}>Download Settings</Text>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.settingsScrollContent}>
-            <View style={styles.settingsSectionCard}>
-              <Text style={styles.settingsSectionTitle}>Network Preference</Text>
-              <Text style={styles.settingsSectionSub}>Choose when downloads are permitted to run.</Text>
-
-              <TouchableOpacity
-                style={[styles.settingsRadioRow, downloadNetworkMode === 'wifi' && styles.settingsRadioRowActive]}
-                activeOpacity={0.8}
-                onPress={() => saveSettings('wifi')}
-              >
-                <View style={styles.radioOuterCircle}>
-                  {downloadNetworkMode === 'wifi' && <View style={styles.radioInnerDot} />}
-                </View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.settingsRadioTitle}>Wi-Fi Only</Text>
-                  <Text style={styles.settingsRadioDesc}>Download episodes only when connected to a Wi-Fi network.</Text>
-                </View>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.settingsRadioRow, downloadNetworkMode === 'any' && styles.settingsRadioRowActive]}
-                activeOpacity={0.8}
-                onPress={() => saveSettings('any')}
-              >
-                <View style={styles.radioOuterCircle}>
-                  {downloadNetworkMode === 'any' && <View style={styles.radioInnerDot} />}
-                </View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.settingsRadioTitle}>Wi-Fi or Cellular Data</Text>
-                  <Text style={styles.settingsRadioDesc}>Permit downloads over mobile cellular data and Wi-Fi.</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.settingsSectionCard}>
-              <Text style={styles.settingsSectionTitle}>Storage Usage</Text>
-              <Text style={styles.settingsSectionSub}>Total space occupied by offline anime vault.</Text>
-
-              <View style={styles.storageStatsBox}>
-                <Text style={styles.storageNumberText}>{formatBytesToMbOrGb(totalStorageBytes)}</Text>
-                <Text style={styles.storageLabelText}>Used in Kameko Vault</Text>
-              </View>
-            </View>
-          </ScrollView>
-        </View>
-      </Modal>
-
-      {/* CUSTOM CSS CONFIRMATION POPUP MODAL */}
-      <Modal
-        visible={Boolean(confirmDialog)}
-        transparent={true}
-        animationType="fade"
         onRequestClose={() => setConfirmDialog(null)}
       >
         <View style={styles.confirmModalBackdrop}>
-          <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setConfirmDialog(null)} />
+          <TouchableOpacity
+            style={StyleSheet.absoluteFillObject}
+            activeOpacity={1}
+            onPress={() => setConfirmDialog(null)}
+          />
           {confirmDialog && (
             <View style={styles.confirmPopupCard}>
               <View style={styles.confirmIconWrap}>
-                <IconTrash size={22} color={WHITE} />
+                <IconTrash size={22} color={PURE_RED} />
               </View>
               <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
               <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
@@ -1827,7 +1932,9 @@ export default function Downloads({
                   activeOpacity={0.85}
                   onPress={confirmDialog.onConfirm}
                 >
-                  <Text style={styles.confirmDangerBtnText}>{confirmDialog.confirmText || 'Delete'}</Text>
+                  <Text style={styles.confirmDangerBtnText}>
+                    {confirmDialog.confirmText || 'Delete'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1835,14 +1942,13 @@ export default function Downloads({
         </View>
       </Modal>
 
-      {/* PLAYER MODAL (IMMERSIVE FULL SCREEN) */}
+      {/* PLAY.JS MODAL FOR SERIES */}
       <Modal
-        visible={Boolean(topLevelPlayback)}
-        animationType="fade"
+        visible={Boolean(activePlaySeries)}
+        animationType="slide"
         transparent={false}
         hardwareAccelerated={true}
         statusBarTranslucent={true}
-        onRequestClose={handleCloseTopPlayer}
         onShow={async () => {
           try {
             StatusBar.setHidden(true, 'none');
@@ -1852,6 +1958,48 @@ export default function Downloads({
             }
           } catch (_) {}
         }}
+        onRequestClose={() => setActivePlaySeries(null)}
+      >
+        <View style={styles.topPlayerModalContainer}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          {activePlaySeries && (
+            <PlayScreen
+              anime={activePlaySeries}
+              selectedAnime={activePlaySeries}
+              item={activePlaySeries}
+              route={{ params: { anime: activePlaySeries, ...activePlaySeries } }}
+              navigation={{
+                ...(navigation || {}),
+                goBack: () => setActivePlaySeries(null),
+              }}
+              onBack={() => setActivePlaySeries(null)}
+              onClose={() => setActivePlaySeries(null)}
+              user={resolvedUser}
+              activeProfile={resolvedProfile}
+              currentProfile={resolvedProfile}
+              activeProfileId={resolvedProfileId}
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* TOP-MOST FULLSCREEN IMMERSIVE PLAYER MODAL */}
+      <Modal
+        visible={Boolean(topLevelPlayback)}
+        animationType="fade"
+        transparent={false}
+        hardwareAccelerated={true}
+        statusBarTranslucent={true}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
+        onRequestClose={handleCloseTopPlayer}
       >
         <View style={styles.topPlayerModalContainer}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1881,102 +2029,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  settingsModalContainer: {
-    flex: 1,
-    backgroundColor: BLACK,
-  },
-  settingsHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 36,
-    paddingBottom: 14,
-    paddingHorizontal: 18,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_GREY,
-  },
-  settingsScrollContent: {
-    padding: 20,
-    paddingBottom: 60,
-  },
-  settingsSectionCard: {
-    backgroundColor: CARD_BG,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  settingsSectionTitle: {
-    color: WHITE,
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  settingsSectionSub: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    marginBottom: 14,
-  },
-  settingsRadioRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  settingsRadioRowActive: {
-    backgroundColor: '#141418',
-    borderColor: '#33333D',
-  },
-  radioOuterCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: WHITE,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  radioInnerDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: WHITE,
-  },
-  settingsRadioTitle: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  settingsRadioDesc: {
-    color: TEXT_GREY,
-    fontSize: 11,
-    marginTop: 2,
-  },
-  storageStatsBox: {
-    alignItems: 'center',
-    backgroundColor: '#121216',
-    borderRadius: 10,
-    paddingVertical: 20,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#22222A',
-  },
-  storageNumberText: {
-    color: WHITE,
-    fontSize: 26,
-    fontWeight: '900',
-  },
-  storageLabelText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    marginTop: 4,
-  },
-
-  // Header
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1988,6 +2040,10 @@ const styles = StyleSheet.create({
     paddingRight: 12,
     paddingVertical: 4,
   },
+  settingsIconTouch: {
+    paddingLeft: 12,
+    paddingVertical: 4,
+  },
   headerTitleText: {
     color: WHITE,
     fontSize: 21,
@@ -1995,15 +2051,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
     flex: 1,
   },
-  settingsHeaderBtn: {
-    padding: 6,
-    backgroundColor: '#16161C',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-
-  // Stats Strip
   statsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2036,8 +2083,6 @@ const styles = StyleSheet.create({
     height: 28,
     backgroundColor: '#26262E',
   },
-
-  // Tabs Bar
   tabsBarContainer: {
     flexDirection: 'row',
     marginHorizontal: 16,
@@ -2056,7 +2101,7 @@ const styles = StyleSheet.create({
     borderRadius: 7,
   },
   tabPillBtnActive: {
-    backgroundColor: PURE_RED,
+    backgroundColor: BRAND_RED,
   },
   tabPillText: {
     color: TEXT_GREY,
@@ -2067,13 +2112,11 @@ const styles = StyleSheet.create({
     color: WHITE,
     fontWeight: '900',
   },
-
   fullDividerLine: {
     height: 1,
     backgroundColor: '#141418',
     marginTop: 14,
   },
-
   bulkActionBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2103,31 +2146,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-  bulkDeleteActionBtn: {
+  deleteAllDownloadedBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: PURE_RED,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 8,
-  },
-  bulkDeleteActionText: {
-    color: WHITE,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  bulkCancelActionBtn: {
-    backgroundColor: '#1C1C24',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    backgroundColor: 'rgba(255,0,0,0.12)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#33333E',
+    borderColor: PURE_RED,
   },
-  bulkCancelActionText: {
-    color: WHITE,
-    fontSize: 11,
+  deleteAllDownloadedText: {
+    color: PURE_RED,
+    fontSize: 12,
     fontWeight: '800',
   },
   backToSeriesPill: {
@@ -2146,14 +2178,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
-
   scrollPadding: {
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 110,
   },
-
-  // Main Card Styling
   mainCard: {
     flexDirection: 'row',
     backgroundColor: CARD_BG,
@@ -2161,31 +2190,6 @@ const styles = StyleSheet.create({
     padding: 12,
     borderWidth: 1,
     borderColor: BORDER_GREY,
-    position: 'relative',
-  },
-  cardSelectedBulk: {
-    backgroundColor: 'rgba(255,255,255,0.05)',
-    borderColor: WHITE, 
-  },
-  bulkCheckboxIndicator: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    zIndex: 10,
-  },
-  bulkCheckboxBox: {
-    width: 26,
-    height: 26,
-    borderRadius: 13, 
-    borderWidth: 2,
-    borderColor: '#666677',
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bulkCheckboxBoxActive: {
-    backgroundColor: PURE_RED,
-    borderColor: PURE_RED,
   },
   posterContainer: {
     width: 105,
@@ -2198,7 +2202,6 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-
   cardRightCol: {
     flex: 1,
     marginLeft: 14,
@@ -2226,7 +2229,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
   },
-
   outlinedPillsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -2238,7 +2240,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#262630',
+    borderColor: '#2E2E36',
     backgroundColor: '#121216',
   },
   outlinedPillText: {
@@ -2246,7 +2248,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
   },
-
   progressSection: {
     marginTop: 8,
   },
@@ -2257,7 +2258,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   statusMiniText: {
-    color: WHITE,
+    color: PURE_RED,
     fontSize: 10,
     fontWeight: '800',
   },
@@ -2275,9 +2276,8 @@ const styles = StyleSheet.create({
   },
   thinProgressFill: {
     height: '100%',
-    backgroundColor: WHITE,
+    backgroundColor: PURE_RED,
   },
-
   whiteBtnsRow: {
     flexDirection: 'row',
     gap: 10,
@@ -2297,33 +2297,29 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
-
   seriesSynopsisText: {
     color: TEXT_GREY,
     fontSize: 11.5,
     lineHeight: 16,
     fontWeight: '500',
-    marginTop: 6,
-  },
-  episodeCountFooterText: {
-    color: WHITE,
-    fontSize: 11.5,
-    fontWeight: '800',
     marginTop: 8,
   },
   viewEpisodesFooterRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'flex-end',
     gap: 4,
-    marginTop: 4,
+    marginTop: 6,
+  },
+  episodesCountBottomText: {
+    color: WHITE,
+    fontSize: 12,
+    fontWeight: '800',
   },
   viewEpisodesHintText: {
     color: TEXT_GREY,
     fontSize: 11,
     fontWeight: '700',
   },
-
   episodeItemCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2370,7 +2366,7 @@ const styles = StyleSheet.create({
   },
   epBottomProgressFill: {
     height: '100%',
-    backgroundColor: WHITE,
+    backgroundColor: PURE_RED,
   },
   epRowRightCol: {
     flex: 1,
@@ -2396,7 +2392,6 @@ const styles = StyleSheet.create({
     marginTop: 3,
     fontWeight: '500',
   },
-
   emptyWrap: {
     paddingVertical: 70,
     alignItems: 'center',
@@ -2406,7 +2401,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.8)',
@@ -2420,7 +2414,7 @@ const styles = StyleSheet.create({
     paddingTop: 18,
     paddingBottom: 28,
     borderTopWidth: 1,
-    borderTopColor: '#26262C',
+    borderTopColor: BORDER_GREY,
   },
   sheetTitle: {
     color: WHITE,
@@ -2441,7 +2435,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
   },
-
   confirmModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.84)',
@@ -2469,9 +2462,9 @@ const styles = StyleSheet.create({
     width: 46,
     height: 46,
     borderRadius: 23,
-    backgroundColor: '#1D1D26',
+    backgroundColor: 'rgba(229,9,20,0.14)',
     borderWidth: 1,
-    borderColor: '#333342',
+    borderColor: 'rgba(229,9,20,0.38)',
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
@@ -2516,13 +2509,64 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 11,
     borderRadius: 9,
-    backgroundColor: WHITE,
+    backgroundColor: BRAND_RED,
     alignItems: 'center',
     justifyContent: 'center',
   },
   confirmDangerBtnText: {
-    color: BLACK,
+    color: WHITE,
     fontSize: 13,
+    fontWeight: '800',
+  },
+  settingsModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  settingsCard: {
+    width: '100%',
+    backgroundColor: '#121216',
+    borderRadius: 16,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: '#26262C',
+  },
+  settingsTitle: {
+    color: WHITE,
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 20,
+  },
+  settingsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E1E24',
+  },
+  settingsLabel: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  settingsValue: {
+    color: TEXT_GREY,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  settingsCloseBtn: {
+    marginTop: 24,
+    backgroundColor: BRAND_RED,
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  settingsCloseBtnText: {
+    color: WHITE,
+    fontSize: 14,
     fontWeight: '800',
   },
 });
