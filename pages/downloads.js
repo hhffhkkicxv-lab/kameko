@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
-  FlatList, StatusBar, DeviceEventEmitter, Platform, ScrollView, BackHandler
+  FlatList, StatusBar, Modal, DeviceEventEmitter, Platform, ScrollView
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -12,10 +12,9 @@ import Svg, { Path, Circle, Polyline, Rect } from 'react-native-svg';
 
 import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
-import PlayScreen from './play';
 import * as NotificationEngine from '../components/NotificationEngine';
 
-// --- STRICT NETFLIX PALETTE ---
+// --- STRICT NETFLIX PALETTE (BLACK, PURE WHITE, GREY) ---
 const BLACK = '#000000';
 const CARD_BG = '#0B0B0E';
 const DARK_GREY = '#18181C';
@@ -23,7 +22,6 @@ const BORDER_GREY = '#222228';
 const TEXT_GREY = '#8E8E93';
 const WHITE = '#FFFFFF';
 const PURE_RED = '#FF0000';
-const BRAND_RED = '#E50914';
 
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
@@ -782,12 +780,6 @@ const IconCheck = ({ size = 14, color = WHITE }) => (
   </Svg>
 );
 
-const IconClose = ({ size = 24, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
-    <Path d="M18 6L6 18M6 6l12 12" />
-  </Svg>
-);
-
 const IconGear = ({ size = 20, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <Path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
@@ -818,82 +810,43 @@ export default function Downloads({
   const prevActiveDlCountRef = useRef(0);
 
   const [selectedDownloadedAnimeId, setSelectedDownloadedAnimeId] = useState(null);
-  
-  // Full-screen View States (Replacing Modals to fix Android Navigation Bug)
-  const [activePlaySeries, setActivePlaySeries] = useState(null);
-  const [topLevelPlayback, setTopLevelPlayback] = useState(null);
-  const [settingsModalVisible, setSettingsModalVisible] = useState(false);
 
   // Bulk Deletion / Long Press Selection States
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkSelectedSeriesMap, setBulkSelectedSeriesMap] = useState({});
 
   // Download Settings State
-  const [downloadNetworkMode, setDownloadNetworkMode] = useState('wifi');
+  const [settingsModalVisible, setSettingsModalVisible] = useState(false);
+  const [downloadNetworkMode, setDownloadNetworkMode] = useState('wifi'); 
   const [totalStorageBytes, setTotalStorageBytes] = useState(0);
 
   const [watchlistMap, setWatchlistMap] = useState({});
   const [watchHistoryMap, setWatchHistoryMap] = useState({});
   const [menuTarget, setMenuTarget] = useState(null);
-  
-  // Custom CSS Confirmation Popup State
+  const [topLevelPlayback, setTopLevelPlayback] = useState(null);
   const [confirmDialog, setConfirmDialog] = useState(null);
 
   useEffect(() => {
     initBackgroundDaemon();
   }, []);
 
-  // Hardware Back Handler for Absolute Views
-  useEffect(() => {
-    const onBackPress = () => {
-      if (topLevelPlayback) {
-        setTopLevelPlayback(null);
-        return true;
-      }
-      if (activePlaySeries) {
-        setActivePlaySeries(null);
-        return true;
-      }
-      if (settingsModalVisible) {
-        setSettingsModalVisible(false);
-        return true;
-      }
-      if (isBulkDeleteMode) {
-        setIsBulkDeleteMode(false);
-        setBulkSelectedSeriesMap({});
-        return true;
-      }
-      if (selectedDownloadedAnimeId) {
-        setSelectedDownloadedAnimeId(null);
-        return true;
-      }
-      return false;
-    };
-    BackHandler.addEventListener('hardwareBackPress', onBackPress);
-    return () => BackHandler.removeEventListener('hardwareBackPress', onBackPress);
-  }, [topLevelPlayback, activePlaySeries, settingsModalVisible, isBulkDeleteMode, selectedDownloadedAnimeId]);
-
-  // Aggressive Enforce Immersive UI Lock for Fullscreen Components
+  // System UI sync for normal download page vs fullscreen components
   useEffect(() => {
     const syncBars = async () => {
       try {
-        if (activePlaySeries || topLevelPlayback || settingsModalVisible) {
-          StatusBar.setHidden(true, 'none');
-          if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        StatusBar.setHidden(true, 'none');
+        if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+          if (topLevelPlayback || settingsModalVisible) {
             await NavigationBar.setVisibilityAsync('hidden');
             await NavigationBar.setBehaviorAsync('overlay-swipe');
-          }
-        } else {
-          // Normal downloads page
-          StatusBar.setHidden(true, 'none');
-          if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+          } else {
             await NavigationBar.setVisibilityAsync('visible');
           }
         }
       } catch (_) {}
     };
     syncBars();
-  }, [topLevelPlayback, activePlaySeries, settingsModalVisible]);
+  }, [topLevelPlayback, settingsModalVisible]);
 
   // Load Settings and Total Storage
   useEffect(() => {
@@ -1091,6 +1044,7 @@ export default function Downloads({
     );
   }, [downloadedSeriesGroups, selectedDownloadedAnimeId]);
 
+  // DIRECT REDIRECT VIA REACT NAVIGATION (Replaces Modals/Mounting)
   const handleOpenSeriesPlayScreen = (series) => {
     if (!series) return;
     setMenuTarget(null);
@@ -1115,15 +1069,13 @@ export default function Downloads({
       isOffline: true,
     };
 
-    if (typeof onOpenPlay === 'function') {
+    if (navigation && navigation.navigate) {
+      navigation.navigate('Play', { anime: animePayload });
+    } else if (typeof onOpenPlay === 'function') {
       onOpenPlay(animePayload);
-      return;
-    }
-    if (typeof onSelectAnime === 'function') {
+    } else if (typeof onSelectAnime === 'function') {
       onSelectAnime(animePayload);
-      return;
     }
-    setActivePlaySeries(animePayload);
   };
 
   const handlePauseOrResumeAllDownloading = async () => {
@@ -1261,9 +1213,22 @@ export default function Downloads({
     });
   };
 
+  const handleCloseTopPlayer = async () => {
+    setTopLevelPlayback(null);
+    try {
+      StatusBar.setHidden(true, 'none');
+      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        await NavigationBar.setVisibilityAsync('visible');
+      }
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    } catch (_) {}
+  };
+
   return (
     <View style={styles.container}>
-      {/* 1. HEADER */}
+      <StatusBar hidden={true} />
+
+      {/* 1. HEADER: "< Downloads" + Gear Settings Icon */}
       <View style={styles.headerRow}>
         <TouchableOpacity
           style={styles.backTouch}
@@ -1347,6 +1312,7 @@ export default function Downloads({
               <Text style={styles.bulkActionInfoText}>
                 {activeDownloadList.length} {activeDownloadList.length === 1 ? 'Episode' : 'Episodes'} Active
               </Text>
+
               <TouchableOpacity
                 style={styles.pauseAllBtn}
                 activeOpacity={0.85}
@@ -1392,6 +1358,7 @@ export default function Downloads({
                         <IconDotsVertical size={18} color={WHITE} />
                       </TouchableOpacity>
                     </View>
+
                     <Text style={styles.episodeSubLabel} numberOfLines={1}>
                       Episode {dlItem.episodeNum} : {dlItem.episodeTitle || `Episode ${dlItem.episodeNum}`}
                     </Text>
@@ -1413,10 +1380,19 @@ export default function Downloads({
                     </View>
 
                     <View style={styles.whiteBtnsRow}>
-                      <TouchableOpacity style={styles.whiteActionBtn} activeOpacity={0.85} onPress={() => handleTogglePauseJob(dlItem.id)}>
+                      <TouchableOpacity
+                        style={styles.whiteActionBtn}
+                        activeOpacity={0.85}
+                        onPress={() => handleTogglePauseJob(dlItem.id)}
+                      >
                         <Text style={styles.whiteActionBtnText}>{isItemPaused ? 'resume' : 'pause'}</Text>
                       </TouchableOpacity>
-                      <TouchableOpacity style={styles.whiteActionBtn} activeOpacity={0.85} onPress={() => handleDeleteEpisode(dlItem)}>
+
+                      <TouchableOpacity
+                        style={styles.whiteActionBtn}
+                        activeOpacity={0.85}
+                        onPress={() => handleDeleteEpisode(dlItem)}
+                      >
                         <Text style={styles.whiteActionBtnText}>Cancel</Text>
                       </TouchableOpacity>
                     </View>
@@ -1433,7 +1409,7 @@ export default function Downloads({
       {/* ============================================================================ */}
       {activeTab === 'downloaded' && (
         <View style={{ flex: 1 }}>
-          {downloadedSeriesGroups.length > 0 && !isBulkDeleteMode && (
+          {downloadedSeriesGroups.length > 0 && (
             <View style={styles.bulkActionBar}>
               {selectedSeriesObj ? (
                 <TouchableOpacity
@@ -1448,6 +1424,30 @@ export default function Downloads({
                 <Text style={styles.bulkActionInfoText}>
                   {downloadedSeriesGroups.length} {downloadedSeriesGroups.length === 1 ? 'Series' : 'Series'} • {readyCount} {readyCount === 1 ? 'Episode' : 'Episodes'}
                 </Text>
+              )}
+
+              {/* Only show bulk delete actions when in selection mode */}
+              {isBulkDeleteMode && !selectedSeriesObj && (
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity
+                    style={styles.bulkDeleteActionBtn}
+                    activeOpacity={0.8}
+                    onPress={handleExecuteBulkSeriesDelete}
+                  >
+                    <IconTrash size={14} color={WHITE} />
+                    <Text style={styles.bulkDeleteActionText}>Delete ({Object.keys(bulkSelectedSeriesMap).filter(k => bulkSelectedSeriesMap[k]).length})</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.bulkCancelActionBtn}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      setIsBulkDeleteMode(false);
+                      setBulkSelectedSeriesMap({});
+                    }}
+                  >
+                    <Text style={styles.bulkCancelActionText}>Cancel</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
           )}
@@ -1469,7 +1469,11 @@ export default function Downloads({
 
                 return (
                   <TouchableOpacity
-                    style={[styles.mainCard, { marginBottom: 14 }, isSelectedForBulk && styles.cardSelectedBulk]}
+                    style={[
+                      styles.mainCard, 
+                      { marginBottom: 14 }, 
+                      isSelectedForBulk && styles.cardSelectedBulk
+                    ]}
                     activeOpacity={0.88}
                     delayLongPress={400}
                     onLongPress={() => {
@@ -1487,7 +1491,7 @@ export default function Downloads({
                     {isBulkDeleteMode && (
                       <View style={styles.bulkCheckboxIndicator}>
                         <View style={[styles.bulkCheckboxBox, isSelectedForBulk && styles.bulkCheckboxBoxActive]}>
-                          {isSelectedForBulk && <IconCheck size={12} color={WHITE} />}
+                          {isSelectedForBulk && <IconCheck size={14} color={WHITE} />}
                         </View>
                       </View>
                     )}
@@ -1526,6 +1530,7 @@ export default function Downloads({
                         {series.synopsis}
                       </Text>
 
+                      {/* Explicit Episode Count Displayed Below Synopsis */}
                       <Text style={styles.episodeCountFooterText}>
                         {series.episodes.length} {series.episodes.length === 1 ? 'Episode Downloaded' : 'Episodes Downloaded'}
                       </Text>
@@ -1619,9 +1624,11 @@ export default function Downloads({
                           <IconDotsVertical size={16} color={TEXT_GREY} />
                         </TouchableOpacity>
                       </View>
+
                       <Text style={styles.epRowSynopsis} numberOfLines={2}>
                         {ep.episodeSynopsis || ep.episodeTitle || selectedSeriesObj.synopsis}
                       </Text>
+
                       <View style={[styles.outlinedPillsRow, { marginTop: 6 }]}>
                         <View style={styles.outlinedPill}><Text style={styles.outlinedPillText}>{ep.quality || '1080p'}</Text></View>
                         <View style={styles.outlinedPill}><Text style={styles.outlinedPillText}>{ep.audioType === 'dub' ? 'Dub' : 'Sub'}</Text></View>
@@ -1632,21 +1639,6 @@ export default function Downloads({
               }}
             />
           )}
-        </View>
-      )}
-
-      {/* FLOATING BULK DELETE BAR (Netflix Style) */}
-      {isBulkDeleteMode && !selectedSeriesObj && (
-        <View style={styles.floatingBulkDeleteBar}>
-          <TouchableOpacity style={styles.floatingBulkCloseBtn} onPress={() => { setIsBulkDeleteMode(false); setBulkSelectedSeriesMap({}); }}>
-            <IconClose size={22} color={WHITE} />
-          </TouchableOpacity>
-          <Text style={styles.floatingBulkCountText}>
-            {Object.keys(bulkSelectedSeriesMap).filter(k => bulkSelectedSeriesMap[k]).length} Selected
-          </Text>
-          <TouchableOpacity style={styles.floatingBulkDeleteBtn} onPress={handleExecuteBulkSeriesDelete}>
-            <IconTrash size={22} color={PURE_RED} />
-          </TouchableOpacity>
         </View>
       )}
 
@@ -1668,7 +1660,11 @@ export default function Downloads({
 
               {Array.isArray(menuTarget.episodes) && (
                 <>
-                  <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleOpenSeriesPlayScreen(menuTarget)}>
+                  <TouchableOpacity
+                    style={styles.sheetOptionRow}
+                    activeOpacity={0.8}
+                    onPress={() => handleOpenSeriesPlayScreen(menuTarget)}
+                  >
                     <IconPlay size={18} color={WHITE} />
                     <Text style={styles.sheetOptionText}>Open Series Page</Text>
                   </TouchableOpacity>
@@ -1689,20 +1685,32 @@ export default function Downloads({
               )}
 
               {menuTarget.status === 'completed' && !Array.isArray(menuTarget.episodes) && (
-                <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleOpenPlayerOnTop(menuTarget)}>
+                <TouchableOpacity
+                  style={styles.sheetOptionRow}
+                  activeOpacity={0.8}
+                  onPress={() => handleOpenPlayerOnTop(menuTarget)}
+                >
                   <IconPlay size={18} color={WHITE} />
                   <Text style={styles.sheetOptionText}>Play Episode</Text>
                 </TouchableOpacity>
               )}
 
-              <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => toggleBookmarkWatchlist(menuTarget)}>
+              <TouchableOpacity
+                style={styles.sheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => toggleBookmarkWatchlist(menuTarget)}
+              >
                 <IconBookmark size={18} color={WHITE} filled={Boolean(watchlistMap[String(menuTarget.animeId)])} />
                 <Text style={styles.sheetOptionText}>
                   {watchlistMap[String(menuTarget.animeId)] ? 'Remove from User List' : 'Add to User List'}
                 </Text>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleDeleteEpisode(menuTarget)}>
+              <TouchableOpacity
+                style={styles.sheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => handleDeleteEpisode(menuTarget)}
+              >
                 <IconTrash size={18} color={WHITE} />
                 <Text style={[styles.sheetOptionText, { color: WHITE }]}>
                   {Array.isArray(menuTarget.episodes) ? 'Delete Entire Series' : 'Delete Download'}
@@ -1710,6 +1718,81 @@ export default function Downloads({
               </TouchableOpacity>
             </View>
           )}
+        </View>
+      </Modal>
+
+      {/* DOWNLOAD SETTINGS FULL SCREEN MODAL */}
+      <Modal
+        visible={settingsModalVisible}
+        animationType="slide"
+        transparent={false}
+        hardwareAccelerated={true}
+        statusBarTranslucent={true}
+        onRequestClose={() => setSettingsModalVisible(false)}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
+      >
+        <View style={styles.settingsModalContainer}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          
+          <View style={styles.settingsHeaderRow}>
+            <TouchableOpacity style={styles.backTouch} onPress={() => setSettingsModalVisible(false)}>
+              <IconChevronLeft size={22} color={WHITE} />
+            </TouchableOpacity>
+            <Text style={styles.headerTitleText}>Download Settings</Text>
+          </View>
+
+          <ScrollView contentContainerStyle={styles.settingsScrollContent}>
+            <View style={styles.settingsSectionCard}>
+              <Text style={styles.settingsSectionTitle}>Network Preference</Text>
+              <Text style={styles.settingsSectionSub}>Choose when downloads are permitted to run.</Text>
+
+              <TouchableOpacity
+                style={[styles.settingsRadioRow, downloadNetworkMode === 'wifi' && styles.settingsRadioRowActive]}
+                activeOpacity={0.8}
+                onPress={() => saveSettings('wifi')}
+              >
+                <View style={styles.radioOuterCircle}>
+                  {downloadNetworkMode === 'wifi' && <View style={styles.radioInnerDot} />}
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingsRadioTitle}>Wi-Fi Only</Text>
+                  <Text style={styles.settingsRadioDesc}>Download episodes only when connected to a Wi-Fi network.</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.settingsRadioRow, downloadNetworkMode === 'any' && styles.settingsRadioRowActive]}
+                activeOpacity={0.8}
+                onPress={() => saveSettings('any')}
+              >
+                <View style={styles.radioOuterCircle}>
+                  {downloadNetworkMode === 'any' && <View style={styles.radioInnerDot} />}
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.settingsRadioTitle}>Wi-Fi or Cellular Data</Text>
+                  <Text style={styles.settingsRadioDesc}>Permit downloads over mobile cellular data and Wi-Fi.</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.settingsSectionCard}>
+              <Text style={styles.settingsSectionTitle}>Storage Usage</Text>
+              <Text style={styles.settingsSectionSub}>Total space occupied by offline anime vault.</Text>
+
+              <View style={styles.storageStatsBox}>
+                <Text style={styles.storageNumberText}>{formatBytesToMbOrGb(totalStorageBytes)}</Text>
+                <Text style={styles.storageLabelText}>Used in Kameko Vault</Text>
+              </View>
+            </View>
+          </ScrollView>
         </View>
       </Modal>
 
@@ -1731,11 +1814,19 @@ export default function Downloads({
               <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
 
               <View style={styles.confirmBtnsRow}>
-                <TouchableOpacity style={styles.confirmCancelBtn} activeOpacity={0.85} onPress={() => setConfirmDialog(null)}>
+                <TouchableOpacity
+                  style={styles.confirmCancelBtn}
+                  activeOpacity={0.85}
+                  onPress={() => setConfirmDialog(null)}
+                >
                   <Text style={styles.confirmCancelBtnText}>Cancel</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.confirmDangerBtn} activeOpacity={0.85} onPress={confirmDialog.onConfirm}>
+                <TouchableOpacity
+                  style={styles.confirmDangerBtn}
+                  activeOpacity={0.85}
+                  onPress={confirmDialog.onConfirm}
+                >
                   <Text style={styles.confirmDangerBtnText}>{confirmDialog.confirmText || 'Delete'}</Text>
                 </TouchableOpacity>
               </View>
@@ -1744,93 +1835,37 @@ export default function Downloads({
         </View>
       </Modal>
 
-      {/* 
-        ======================================================================================== 
-        FULL SCREEN OVERLAYS VIA ABSOLUTE VIEW
-        This avoids the Android Modal bug that resets the system navigation bar!
-        ======================================================================================== 
-      */}
-
-      {settingsModalVisible && (
-        <View style={styles.absoluteFullScreenContainer}>
-          <View style={styles.settingsHeaderRow}>
-            <TouchableOpacity style={styles.backTouch} onPress={() => setSettingsModalVisible(false)}>
-              <IconChevronLeft size={22} color={WHITE} />
-            </TouchableOpacity>
-            <Text style={styles.headerTitleText}>Download Settings</Text>
-          </View>
-          <ScrollView contentContainerStyle={styles.settingsScrollContent}>
-            <View style={styles.settingsSectionCard}>
-              <Text style={styles.settingsSectionTitle}>Network Preference</Text>
-              <Text style={styles.settingsSectionSub}>Choose when downloads are permitted to run.</Text>
-              <TouchableOpacity
-                style={[styles.settingsRadioRow, downloadNetworkMode === 'wifi' && styles.settingsRadioRowActive]}
-                activeOpacity={0.8}
-                onPress={() => saveSettings('wifi')}
-              >
-                <View style={styles.radioOuterCircle}>
-                  {downloadNetworkMode === 'wifi' && <View style={styles.radioInnerDot} />}
-                </View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.settingsRadioTitle}>Wi-Fi Only</Text>
-                  <Text style={styles.settingsRadioDesc}>Download episodes only when connected to a Wi-Fi network.</Text>
-                </View>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.settingsRadioRow, downloadNetworkMode === 'any' && styles.settingsRadioRowActive]}
-                activeOpacity={0.8}
-                onPress={() => saveSettings('any')}
-              >
-                <View style={styles.radioOuterCircle}>
-                  {downloadNetworkMode === 'any' && <View style={styles.radioInnerDot} />}
-                </View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.settingsRadioTitle}>Wi-Fi or Cellular Data</Text>
-                  <Text style={styles.settingsRadioDesc}>Permit downloads over mobile cellular data and Wi-Fi.</Text>
-                </View>
-              </TouchableOpacity>
-            </View>
-            <View style={styles.settingsSectionCard}>
-              <Text style={styles.settingsSectionTitle}>Storage Usage</Text>
-              <Text style={styles.settingsSectionSub}>Total space occupied by offline anime vault.</Text>
-              <View style={styles.storageStatsBox}>
-                <Text style={styles.storageNumberText}>{formatBytesToMbOrGb(totalStorageBytes)}</Text>
-                <Text style={styles.storageLabelText}>Used in Kameko Vault</Text>
-              </View>
-            </View>
-          </ScrollView>
+      {/* PLAYER MODAL (IMMERSIVE FULL SCREEN) */}
+      <Modal
+        visible={Boolean(topLevelPlayback)}
+        animationType="fade"
+        transparent={false}
+        hardwareAccelerated={true}
+        statusBarTranslucent={true}
+        onRequestClose={handleCloseTopPlayer}
+        onShow={async () => {
+          try {
+            StatusBar.setHidden(true, 'none');
+            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+              await NavigationBar.setVisibilityAsync('hidden');
+              await NavigationBar.setBehaviorAsync('overlay-swipe');
+            }
+          } catch (_) {}
+        }}
+      >
+        <View style={styles.topPlayerModalContainer}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          {topLevelPlayback && (
+            <Player
+              route={{ params: topLevelPlayback }}
+              navigation={{ goBack: handleCloseTopPlayer }}
+              user={resolvedUser}
+              activeProfile={resolvedProfile}
+              activeProfileId={resolvedProfileId}
+            />
+          )}
         </View>
-      )}
-
-      {activePlaySeries && (
-        <View style={styles.absoluteFullScreenContainer}>
-          <PlayScreen
-            anime={activePlaySeries}
-            selectedAnime={activePlaySeries}
-            item={activePlaySeries}
-            route={{ params: { anime: activePlaySeries, ...activePlaySeries } }}
-            navigation={{ ...(navigation || {}), goBack: () => setActivePlaySeries(null) }}
-            onBack={() => setActivePlaySeries(null)}
-            onClose={() => setActivePlaySeries(null)}
-            user={resolvedUser}
-            activeProfile={resolvedProfile}
-            currentProfile={resolvedProfile}
-            activeProfileId={resolvedProfileId}
-          />
-        </View>
-      )}
-
-      {topLevelPlayback && (
-        <View style={styles.absoluteFullScreenContainer}>
-          <Player
-            route={{ params: topLevelPlayback }}
-            navigation={{ goBack: handleCloseTopPlayer }}
-            user={resolvedUser}
-            activeProfile={resolvedProfile}
-            activeProfileId={resolvedProfileId}
-          />
-        </View>
-      )}
+      </Modal>
     </View>
   );
 }
@@ -1840,12 +1875,107 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: BLACK,
   },
-  absoluteFullScreenContainer: {
-    ...StyleSheet.absoluteFillObject,
+  topPlayerModalContainer: {
+    flex: 1,
     backgroundColor: BLACK,
-    zIndex: 9999,
+    width: '100%',
+    height: '100%',
   },
-  
+  settingsModalContainer: {
+    flex: 1,
+    backgroundColor: BLACK,
+  },
+  settingsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingTop: 36,
+    paddingBottom: 14,
+    paddingHorizontal: 18,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER_GREY,
+  },
+  settingsScrollContent: {
+    padding: 20,
+    paddingBottom: 60,
+  },
+  settingsSectionCard: {
+    backgroundColor: CARD_BG,
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: BORDER_GREY,
+  },
+  settingsSectionTitle: {
+    color: WHITE,
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  settingsSectionSub: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    marginBottom: 14,
+  },
+  settingsRadioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  settingsRadioRowActive: {
+    backgroundColor: '#141418',
+    borderColor: '#33333D',
+  },
+  radioOuterCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: WHITE,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioInnerDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: WHITE,
+  },
+  settingsRadioTitle: {
+    color: WHITE,
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  settingsRadioDesc: {
+    color: TEXT_GREY,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  storageStatsBox: {
+    alignItems: 'center',
+    backgroundColor: '#121216',
+    borderRadius: 10,
+    paddingVertical: 20,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#22222A',
+  },
+  storageNumberText: {
+    color: WHITE,
+    fontSize: 26,
+    fontWeight: '900',
+  },
+  storageLabelText: {
+    color: TEXT_GREY,
+    fontSize: 12,
+    marginTop: 4,
+  },
+
   // Header
   headerRow: {
     flexDirection: 'row',
@@ -1926,7 +2056,7 @@ const styles = StyleSheet.create({
     borderRadius: 7,
   },
   tabPillBtnActive: {
-    backgroundColor: BRAND_RED, // Netflix Red selected state
+    backgroundColor: PURE_RED,
   },
   tabPillText: {
     color: TEXT_GREY,
@@ -1973,6 +2103,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
+  bulkDeleteActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: PURE_RED,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  bulkDeleteActionText: {
+    color: WHITE,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  bulkCancelActionBtn: {
+    backgroundColor: '#1C1C24',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#33333E',
+  },
+  bulkCancelActionText: {
+    color: WHITE,
+    fontSize: 11,
+    fontWeight: '800',
+  },
   backToSeriesPill: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1988,40 +2145,6 @@ const styles = StyleSheet.create({
     color: WHITE,
     fontSize: 12,
     fontWeight: '800',
-  },
-
-  // Floating Bulk Deletion Bar
-  floatingBulkDeleteBar: {
-    position: 'absolute',
-    bottom: 24,
-    left: 20,
-    right: 20,
-    height: 60,
-    backgroundColor: '#121216',
-    borderRadius: 30,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    borderWidth: 1,
-    borderColor: '#33333E',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.8,
-    shadowRadius: 15,
-    elevation: 20,
-    zIndex: 100,
-  },
-  floatingBulkCloseBtn: {
-    padding: 4,
-  },
-  floatingBulkCountText: {
-    color: WHITE,
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  floatingBulkDeleteBtn: {
-    padding: 4,
   },
 
   scrollPadding: {
@@ -2041,7 +2164,7 @@ const styles = StyleSheet.create({
     position: 'relative',
   },
   cardSelectedBulk: {
-    backgroundColor: '#1A1A24',
+    backgroundColor: 'rgba(255,255,255,0.05)',
     borderColor: WHITE, 
   },
   bulkCheckboxIndicator: {
@@ -2051,12 +2174,12 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   bulkCheckboxBox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12, // Fully circular matching Netflix style
+    width: 26,
+    height: 26,
+    borderRadius: 13, 
     borderWidth: 2,
-    borderColor: '#555566',
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    borderColor: '#666677',
+    backgroundColor: 'rgba(0,0,0,0.6)',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -2401,97 +2524,5 @@ const styles = StyleSheet.create({
     color: BLACK,
     fontSize: 13,
     fontWeight: '800',
-  },
-
-  // Settings
-  settingsHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 36,
-    paddingBottom: 14,
-    paddingHorizontal: 18,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_GREY,
-  },
-  settingsScrollContent: {
-    padding: 20,
-    paddingBottom: 60,
-  },
-  settingsSectionCard: {
-    backgroundColor: CARD_BG,
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  settingsSectionTitle: {
-    color: WHITE,
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  settingsSectionSub: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    marginBottom: 14,
-  },
-  settingsRadioRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  settingsRadioRowActive: {
-    backgroundColor: '#141418',
-    borderColor: '#33333D',
-  },
-  radioOuterCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-    borderColor: WHITE,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  radioInnerDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: WHITE,
-  },
-  settingsRadioTitle: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  settingsRadioDesc: {
-    color: TEXT_GREY,
-    fontSize: 11,
-    marginTop: 2,
-  },
-  storageStatsBox: {
-    alignItems: 'center',
-    backgroundColor: '#121216',
-    borderRadius: 10,
-    paddingVertical: 20,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#22222A',
-  },
-  storageNumberText: {
-    color: WHITE,
-    fontSize: 26,
-    fontWeight: '900',
-  },
-  storageLabelText: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    marginTop: 4,
   },
 });
