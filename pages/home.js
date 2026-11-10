@@ -40,149 +40,68 @@ export default function Home({
 }) {
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedAnime, setSelectedAnime] = useState(null);
+  
+  // NEW: State to dynamically hide the BottomNav from child screens
+  const [hideBottomNav, setHideBottomNav] = useState(false);
 
-  // Resolve User and Active Profile from props or navigation route params
   const resolvedUser = propUser || route?.params?.user || auth().currentUser || null;
-  const incomingProfile =
-    propActiveProfile ||
-    propCurrentProfile ||
-    route?.params?.activeProfile ||
-    route?.params?.currentProfile ||
-    null;
-
+  const incomingProfile = propActiveProfile || propCurrentProfile || route?.params?.activeProfile || route?.params?.currentProfile || null;
   const [currentProfile, setCurrentProfile] = useState(incomingProfile);
 
-  // Keep local profile state synced whenever parent or route updates activeProfile
   useEffect(() => {
-    if (incomingProfile?.id) {
-      setCurrentProfile(incomingProfile);
-    }
+    if (incomingProfile?.id) setCurrentProfile(incomingProfile);
   }, [incomingProfile?.id, incomingProfile?.name, incomingProfile?.avatar]);
 
-  // Fallback: If Home mounts without an activeProfile prop, load the active profile from Firestore
   useEffect(() => {
     if (currentProfile?.id || !resolvedUser?.uid) return;
     let isMounted = true;
-
     const loadFallbackProfile = async () => {
       try {
         const userDoc = await firestore().collection('users').doc(String(resolvedUser.uid)).get();
         if (userDoc.exists) {
           const uData = userDoc.data();
-          if (uData?.activeProfile?.id && isMounted) {
-            setCurrentProfile(uData.activeProfile);
-            return;
-          }
+          if (uData?.activeProfile?.id && isMounted) { setCurrentProfile(uData.activeProfile); return; }
           if (uData?.activeProfileId) {
-            const profDoc = await firestore()
-              .collection('users')
-              .doc(String(resolvedUser.uid))
-              .collection('profiles')
-              .doc(String(uData.activeProfileId))
-              .get();
-            if (profDoc.exists && isMounted) {
-              setCurrentProfile({ id: profDoc.id, ...profDoc.data() });
-              return;
-            }
+            const profDoc = await firestore().collection('users').doc(String(resolvedUser.uid)).collection('profiles').doc(String(uData.activeProfileId)).get();
+            if (profDoc.exists && isMounted) { setCurrentProfile({ id: profDoc.id, ...profDoc.data() }); return; }
           }
         }
-
-        const snap = await firestore()
-          .collection('users')
-          .doc(String(resolvedUser.uid))
-          .collection('profiles')
-          .limit(1)
-          .get();
-
-        if (!snap.empty && isMounted) {
-          const firstDoc = snap.docs[0];
-          setCurrentProfile({ id: firstDoc.id, ...firstDoc.data() });
-        }
-      } catch (err) {
-        console.warn('Home profile fallback error:', err);
-      }
+        const snap = await firestore().collection('users').doc(String(resolvedUser.uid)).collection('profiles').limit(1).get();
+        if (!snap.empty && isMounted) { const firstDoc = snap.docs[0]; setCurrentProfile({ id: firstDoc.id, ...firstDoc.data() }); }
+      } catch (err) { console.warn('Home profile fallback error:', err); }
     };
-
     loadFallbackProfile();
     return () => { isMounted = false; };
   }, [resolvedUser?.uid, currentProfile?.id]);
 
   const activeProfileId = currentProfile?.id ? String(currentProfile.id) : null;
 
-  // Attach user & profile context to any selected anime object before opening Play.js
   const handleSelectAnime = (anime) => {
-    if (!anime) {
-      setSelectedAnime(null);
-      return;
-    }
+    if (!anime) { setSelectedAnime(null); return; }
     setSelectedAnime({
-      ...anime,
-      userUid: resolvedUser?.uid || null,
-      activeProfileId: activeProfileId,
-      activeProfile: currentProfile,
-      currentProfile: currentProfile,
+      ...anime, userUid: resolvedUser?.uid || null, activeProfileId: activeProfileId,
+      activeProfile: currentProfile, currentProfile: currentProfile,
     });
   };
 
-  // Hidden overlay detection includes the Downloads tab
-  const isOverlayActive =
-    selectedAnime !== null ||
-    activeTab === 'Search' ||
-    activeTab === 'Settings' ||
-    activeTab === 'Downloads';
+  const isOverlayActive = selectedAnime !== null || activeTab === 'Search' || activeTab === 'Settings' || activeTab === 'Downloads';
 
   return (
     <View style={styles.masterContainer}>
-      {/* 1. Hides the top notification bar globally for this screen */}
       <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
 
       {/* HOME SCREEN LAYER */}
       <View style={[styles.container, isOverlayActive && { display: 'none' }]}>
-        <ScrollView 
-          showsVerticalScrollIndicator={false} 
-          style={styles.scroll}
-          overScrollMode="never" 
-          bounces={false}
-        >
-          {/* Main Hero Slider */}
-          <Carousel 
-            user={resolvedUser} 
-            activeProfile={currentProfile}
-            currentProfile={currentProfile}
-            activeProfileId={activeProfileId}
-            onSelectAnime={handleSelectAnime} 
-          />
-          
-          {/* Continue Watching Row (now receives activeProfile!) */}
+        <ScrollView showsVerticalScrollIndicator={false} style={styles.scroll} overScrollMode="never" bounces={false}>
+          <Carousel user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           <View style={styles.contentPadding}>
-            <ContinueWatching 
-              user={resolvedUser} 
-              activeProfile={currentProfile}
-              currentProfile={currentProfile}
-              activeProfileId={activeProfileId}
-              onSelectAnime={handleSelectAnime} 
-            />
+            <ContinueWatching user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           </View>
-          
-          <RecentSlider 
-            user={resolvedUser} 
-            activeProfile={currentProfile}
-            currentProfile={currentProfile}
-            activeProfileId={activeProfileId}
-            onSelectAnime={handleSelectAnime} 
-          />
-          <TrendingSlider 
-            user={resolvedUser} 
-            activeProfile={currentProfile}
-            currentProfile={currentProfile}
-            activeProfileId={activeProfileId}
-            onSelectAnime={handleSelectAnime} 
-          />
-
+          <RecentSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+          <TrendingSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           <View style={{ height: 40 }} />
         </ScrollView>
 
-        {/* 2. FLOATING HEADER WITH ENHANCED GRADIENT */}
         <View style={styles.floatingHeader} pointerEvents="box-none">
           <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
             <Defs>
@@ -194,36 +113,22 @@ export default function Home({
             </Defs>
             <Rect width="100%" height="100%" fill="url(#headerGrad)" />
           </Svg>
-
           <View style={styles.headerContent}>
-            <Image 
-              source={require('../assets/kameko_header.png')} 
-              style={styles.headerLogoImage}
-              resizeMode="contain"
-            />
-
+            <Image source={require('../assets/kameko_header.png')} style={styles.headerLogoImage} resizeMode="contain" />
             <View style={styles.headerActions}>
-              <TouchableOpacity onPress={() => setActiveTab('Search')} activeOpacity={0.7} style={styles.searchBtn}>
-                <IconSearch />
-              </TouchableOpacity>
-
-              <TouchableOpacity onPress={onSwitchProfile} style={styles.profileSwitcher} activeOpacity={0.8}>
-                <Image 
-                  source={AVATARS[currentProfile?.avatar] || AVATARS['pfp1.jpg']} 
-                  style={styles.headerAvatar} 
-                />
-              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setActiveTab('Search')} activeOpacity={0.7} style={styles.searchBtn}><IconSearch /></TouchableOpacity>
+              <TouchableOpacity onPress={onSwitchProfile} style={styles.profileSwitcher} activeOpacity={0.8}><Image source={AVATARS[currentProfile?.avatar] || AVATARS['pfp1.jpg']} style={styles.headerAvatar} /></TouchableOpacity>
             </View>
           </View>
         </View>
 
-        {/* Render Modular BottomNav */}
-        <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
+        {!hideBottomNav && <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />}
       </View>
 
       {/* --- OVERLAY SCREENS --- */}
 
-      {selectedAnime && (
+      {/* Play.js takes exclusive full screen - entirely unmounts tabs and BottomNav when active */}
+      {selectedAnime ? (
         <Play 
           anime={selectedAnime} 
           user={resolvedUser} 
@@ -233,55 +138,41 @@ export default function Home({
           onBack={() => setSelectedAnime(null)} 
           navigation={navigation}
         />
-      )}
+      ) : (
+        <>
+          {activeTab === 'Search' && (
+            <View style={styles.overlayScreen}>
+              <Search user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onBack={() => setActiveTab('Home')} onSelectAnime={(anime) => { setActiveTab('Home'); handleSelectAnime(anime); }} />
+              {!hideBottomNav && <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />}
+            </View>
+          )}
 
-      {activeTab === 'Search' && (
-        <View style={styles.overlayScreen}>
-          <Search 
-            user={resolvedUser} 
-            activeProfile={currentProfile}
-            currentProfile={currentProfile}
-            activeProfileId={activeProfileId}
-            onBack={() => setActiveTab('Home')} 
-            onSelectAnime={(anime) => {
-              setActiveTab('Home');
-              handleSelectAnime(anime);
-            }} 
-          />
-          <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
-        </View>
-      )}
+          {activeTab === 'Downloads' && (
+            <View style={styles.overlayScreen}>
+              <Downloads 
+                user={resolvedUser} 
+                activeProfile={currentProfile}
+                currentProfile={currentProfile}
+                activeProfileId={activeProfileId}
+                navigation={navigation} 
+                onBack={() => setActiveTab('Home')} 
+                // CRITICAL FIX: Pass the onSelectAnime prop so Downloads routes Play.js directly to Home.js
+                onSelectAnime={handleSelectAnime}
+                // CRITICAL FIX: Receive hook from Downloads to hide the BottomNav for its own popups/players
+                onToggleFullscreen={(isHidden) => setHideBottomNav(isHidden)} 
+              />
+              {!hideBottomNav && <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />}
+            </View>
+          )}
 
-      {/* Downloads Overlay Screen */}
-      {activeTab === 'Downloads' && (
-        <View style={styles.overlayScreen}>
-          <Downloads 
-            user={resolvedUser} 
-            activeProfile={currentProfile}
-            currentProfile={currentProfile}
-            activeProfileId={activeProfileId}
-            navigation={navigation} 
-            onBack={() => setActiveTab('Home')} 
-          />
-          <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
-        </View>
+          {activeTab === 'Settings' && (
+            <View style={styles.overlayScreen}>
+              <ProfileSettings user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSwitchProfile={onSwitchProfile} setLoggedInUser={() => {}} onHardwareBack={() => setActiveTab('Home')} /> 
+              {!hideBottomNav && <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />}
+            </View>
+          )}
+        </>
       )}
-
-      {activeTab === 'Settings' && (
-        <View style={styles.overlayScreen}>
-          <ProfileSettings 
-            user={resolvedUser} 
-            activeProfile={currentProfile}
-            currentProfile={currentProfile}
-            activeProfileId={activeProfileId}
-            onSwitchProfile={onSwitchProfile}
-            setLoggedInUser={() => {}} 
-            onHardwareBack={() => setActiveTab('Home')} 
-          /> 
-          <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
-        </View>
-      )}
-
     </View>
   );
 }
@@ -290,48 +181,13 @@ const styles = StyleSheet.create({
   masterContainer: { flex: 1, backgroundColor: '#000000' },
   container: { flex: 1, backgroundColor: '#000000' },
   overlayScreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000', zIndex: 50 },
-
-  // Header Styling Updates (Moved up to sit exactly beneath the notch with a smoother fade)
-  floatingHeader: { 
-    position: 'absolute',
-    top: 0, left: 0, right: 0,
-    height: 110, 
-    zIndex: 100,
-  },
-  headerContent: {
-    flexDirection: 'row', 
-    justifyContent: 'space-between', 
-    alignItems: 'center', 
-    paddingHorizontal: 20, 
-    paddingTop: 32,
-  },
-  headerLogoImage: { 
-    width: 175, 
-    height: 48, 
-    tintColor: '#E50914'
-  },
-  headerActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16
-  },
-  searchBtn: {
-    padding: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.8,
-    shadowRadius: 4,
-  },
-  profileSwitcher: { 
-    borderWidth: 1.5, 
-    borderColor: 'rgba(255,255,255,0.3)', 
-    borderRadius: 6, 
-    overflow: 'hidden',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    elevation: 5
-  },
+  floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, height: 110, zIndex: 100 },
+  headerContent: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 32 },
+  headerLogoImage: { width: 175, height: 48, tintColor: '#E50914' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  searchBtn: { padding: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 4 },
+  profileSwitcher: { borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.3)', borderRadius: 6, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', elevation: 5 },
   headerAvatar: { width: 38, height: 38, borderRadius: 5 },
-
   scroll: { flex: 1 },
   contentPadding: { paddingTop: 10 },
 });
