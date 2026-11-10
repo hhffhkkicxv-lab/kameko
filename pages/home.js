@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar, Platform } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Defs, LinearGradient, Stop, Rect, Path, Circle } from 'react-native-svg';
+import * as NavigationBar from 'expo-navigation-bar';
 
 import Carousel from './home/carousel';
 import ContinueWatching from './home/continue_watching'; 
@@ -107,6 +108,21 @@ export default function Home({
     return () => { isMounted = false; };
   }, [resolvedUser?.uid, currentProfile?.id]);
 
+  // Enforce Immersive Mode (hide system nav bars) when Play opens from the Home tab
+  useEffect(() => {
+    const manageImmersive = async () => {
+      try {
+        if (selectedAnime) {
+          if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+            await NavigationBar.setVisibilityAsync('hidden');
+            await NavigationBar.setBehaviorAsync('overlay-swipe');
+          }
+        }
+      } catch (_) {}
+    };
+    manageImmersive();
+  }, [selectedAnime]);
+
   const activeProfileId = currentProfile?.id ? String(currentProfile.id) : null;
 
   // Attach user & profile context to any selected anime object before opening Play.js
@@ -153,7 +169,7 @@ export default function Home({
             onSelectAnime={handleSelectAnime} 
           />
           
-          {/* Continue Watching Row (now receives activeProfile!) */}
+          {/* Continue Watching Row */}
           <View style={styles.contentPadding}>
             <ContinueWatching 
               user={resolvedUser} 
@@ -182,7 +198,7 @@ export default function Home({
           <View style={{ height: 40 }} />
         </ScrollView>
 
-        {/* 2. FLOATING HEADER WITH ENHANCED GRADIENT */}
+        {/* FLOATING HEADER WITH ENHANCED GRADIENT */}
         <View style={styles.floatingHeader} pointerEvents="box-none">
           <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
             <Defs>
@@ -216,23 +232,22 @@ export default function Home({
             </View>
           </View>
         </View>
-
-        {/* Render Modular BottomNav */}
-        <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
       </View>
 
       {/* --- OVERLAY SCREENS --- */}
 
       {selectedAnime && (
-        <Play 
-          anime={selectedAnime} 
-          user={resolvedUser} 
-          activeProfile={currentProfile}
-          currentProfile={currentProfile}
-          activeProfileId={activeProfileId}
-          onBack={() => setSelectedAnime(null)} 
-          navigation={navigation}
-        />
+        <View style={styles.overlayScreen}>
+          <Play 
+            anime={selectedAnime} 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onBack={() => setSelectedAnime(null)} 
+            navigation={navigation}
+          />
+        </View>
       )}
 
       {activeTab === 'Search' && (
@@ -248,7 +263,6 @@ export default function Home({
               handleSelectAnime(anime);
             }} 
           />
-          <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
         </View>
       )}
 
@@ -263,7 +277,6 @@ export default function Home({
             navigation={navigation} 
             onBack={() => setActiveTab('Home')} 
           />
-          <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
         </View>
       )}
 
@@ -278,6 +291,16 @@ export default function Home({
             setLoggedInUser={() => {}} 
             onHardwareBack={() => setActiveTab('Home')} 
           /> 
+        </View>
+      )}
+
+      {/* 
+        SINGLE, GLOBAL BOTTOM NAV 
+        Rendered exactly once. It will hide itself automatically via the DeviceEventEmitter 
+        when popups open in Download.js, and we hide it completely when Play.js is active.
+      */}
+      {!selectedAnime && (
+        <View style={styles.bottomNavWrapper}>
           <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
         </View>
       )}
@@ -290,6 +313,16 @@ const styles = StyleSheet.create({
   masterContainer: { flex: 1, backgroundColor: '#000000' },
   container: { flex: 1, backgroundColor: '#000000' },
   overlayScreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000', zIndex: 50 },
+  
+  // Wraps the single BottomNav so it perfectly hovers over overlays (except Play.js)
+  bottomNavWrapper: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    zIndex: 100, 
+    elevation: 100
+  },
 
   // Header Styling Updates (Moved up to sit exactly beneath the notch with a smoother fade)
   floatingHeader: { 
