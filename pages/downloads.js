@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, 
   FlatList, StatusBar, DeviceEventEmitter, Platform, Switch,
-  Dimensions, BackHandler
+  BackHandler
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -15,8 +15,6 @@ import ProxyImage from '../components/ProxyImage';
 import Player from './play/player';
 import PlayScreen from './play';
 import * as NotificationEngine from '../components/NotificationEngine';
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('screen');
 
 // --- STRICT PALETTE ---
 const BLACK = '#000000';
@@ -504,7 +502,7 @@ const IconDotsVertical = ({ size = 18, color = WHITE }) => (<Svg width={size} he
 const IconPlay = ({ size = 16, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Path d="M8 5v14l11-7z" /></Svg>);
 const IconPause = ({ size = 15, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Rect x="6" y="4" width="4" height="16" rx="1" /><Rect x="14" y="4" width="4" height="16" rx="1" /></Svg>);
 const IconTrash = ({ size = 16, color = PURE_RED }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><Polyline points="3 6 5 6 21 6" /><Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Svg>);
-const IconSettings = ({ size = 22, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><Circle cx="12" cy="12" r="3" /><Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></Svg>);
+const IconSettings = ({ size = 22, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><Circle cx="12" cy="12" r="3" /><Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></Svg>);
 
 export default function Downloads({
   user: propUser,
@@ -536,11 +534,14 @@ export default function Downloads({
   const [showSettings, setShowSettings] = useState(false);
   const [wifiOnly, setWifiOnly] = useState(true);
 
-  // RIGOROUS TAB BAR HIDER & IMMERSIVE ENFORCEMENT
+  // --- RIGOROUS TAB BAR HIDER & EVENT EMITTER ---
   useEffect(() => {
     const isOverlayActive = showSettings || menuTarget || confirmDialog || activePlaySeries || topLevelPlayback;
     
-    // Hide native android bars
+    // Broadcast event so BottomNav.js unmounts completely
+    DeviceEventEmitter.emit('TOGGLE_BOTTOM_NAV', !isOverlayActive);
+    
+    // Attempt system bar hide
     const enforceImmersive = async () => {
       try {
         StatusBar.setHidden(true, 'none');
@@ -551,19 +552,16 @@ export default function Downloads({
       } catch (_) {}
     };
     enforceImmersive();
+  }, [showSettings, menuTarget, confirmDialog, activePlaySeries, topLevelPlayback]);
 
-    // Dynamically hide the React Navigation Bottom Tab Bar (if it exists)
-    try {
-      const parentNav = navigation?.getParent ? navigation.getParent() : navigation;
-      if (isOverlayActive) {
-        parentNav?.setOptions({ tabBarStyle: { display: 'none' } });
-      } else {
-        parentNav?.setOptions({ tabBarStyle: { display: 'flex', backgroundColor: BLACK, borderTopWidth: 0 } });
-      }
-    } catch (_) {}
-  }, [showSettings, menuTarget, confirmDialog, activePlaySeries, topLevelPlayback, navigation]);
+  // Ensure bottom nav comes back when component unmounts
+  useEffect(() => {
+    return () => {
+      DeviceEventEmitter.emit('TOGGLE_BOTTOM_NAV', true);
+    };
+  }, []);
 
-  // HARDWARE BACK BUTTON INTERCEPTOR
+  // --- HARDWARE BACK BUTTON INTERCEPTOR ---
   useEffect(() => {
     const onHardwareBack = () => {
       if (topLevelPlayback) { handleCloseTopPlayer(); return true; }
@@ -642,9 +640,8 @@ export default function Downloads({
     if (hasSetInitialTab.current && activeDownloadList.length === 0 && activeTab === 'downloading') setActiveTab('downloaded');
   }, [activeDownloadList.length]);
 
-
   // =========================================================
-  // NAVIGATION: BYPASS TAB BAR BY PUSHING TO APP STACK
+  // APP-STACK NAVIGATION (BREAKS OUT OF BOTTOM NAV)
   // =========================================================
   const handleOpenSeriesPlayScreen = (series) => {
     if (!series) return;
@@ -657,7 +654,6 @@ export default function Downloads({
       description: series.synopsis, genres: series.genres, totalEpisodes: series.totalEpisodes, offlineEpisodes: series.episodes, isOffline: true,
     };
 
-    // Natively push Play screen to break out of BottomNav
     if (navigation && navigation.navigate) {
       navigation.navigate('Play', { anime: animePayload, user: resolvedUser, activeProfile: resolvedProfile, activeProfileId: resolvedProfileId });
     } else if (typeof onOpenPlay === 'function') { 
@@ -665,7 +661,7 @@ export default function Downloads({
     } else if (typeof onSelectAnime === 'function') { 
       onSelectAnime(animePayload); 
     } else {
-      setActivePlaySeries(animePayload); // Absolute View fallback
+      setActivePlaySeries(animePayload);
     }
   };
 
@@ -692,14 +688,12 @@ export default function Downloads({
       targetType: epItem.audioType || 'sub', isOffline: Boolean(epItem.localUri),
     };
 
-    // Natively push Player screen to break out of BottomNav
     if (navigation && navigation.navigate) {
       navigation.navigate('Player', playbackPayload);
     } else {
-      setTopLevelPlayback(playbackPayload); // Absolute View fallback
+      setTopLevelPlayback(playbackPayload); 
     }
   };
-  // =========================================================
 
   const handleCloseTopPlayer = async () => {
     setTopLevelPlayback(null);
@@ -878,7 +872,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- DOWNLOADED SERIES LIST ONLY (No Internal List Expansion) --- */}
+      {/* --- DOWNLOADED SERIES LIST --- */}
       {activeTab === 'downloaded' && (
         <View style={{ flex: 1 }}>
           {downloadedSeriesGroups.length > 0 && (
@@ -928,7 +922,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- SETTINGS BOTTOM SHEET (Absolute View) --- */}
+      {/* --- SETTINGS BOTTOM SHEET --- */}
       {showSettings && (
         <View style={styles.absoluteOverlay}>
           <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setShowSettings(false)} />
@@ -951,7 +945,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- "⋮" MENU ACTION SHEET (Absolute View) --- */}
+      {/* --- ACTION SHEET --- */}
       {Boolean(menuTarget) && (
         <View style={styles.absoluteOverlay}>
           <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setMenuTarget(null)} />
@@ -989,7 +983,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- CONFIRMATION POPUP (Absolute View Bottom Sheet) --- */}
+      {/* --- CONFIRMATION POPUP --- */}
       {Boolean(confirmDialog) && (
         <View style={styles.absoluteOverlay}>
           <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setConfirmDialog(null)} />
@@ -1013,27 +1007,22 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- PLAY.JS SERIES PAGE (Fallback Absolute Fullscreen View) --- */}
+      {/* --- FALLBACK PLAY.JS --- */}
       {Boolean(activePlaySeries) && (
         <View style={styles.fullScreenPlayerOverlay}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
           <PlayScreen
             anime={activePlaySeries}
-            selectedAnime={activePlaySeries}
-            item={activePlaySeries}
             route={{ params: { anime: activePlaySeries, ...activePlaySeries } }}
             navigation={{ ...(navigation || {}), goBack: () => setActivePlaySeries(null) }}
-            onBack={() => setActivePlaySeries(null)}
-            onClose={() => setActivePlaySeries(null)}
             user={resolvedUser}
             activeProfile={resolvedProfile}
-            currentProfile={resolvedProfile}
             activeProfileId={resolvedProfileId}
           />
         </View>
       )}
 
-      {/* --- FULLSCREEN VIDEO PLAYER (Fallback Absolute Fullscreen View) --- */}
+      {/* --- FALLBACK VIDEO PLAYER --- */}
       {Boolean(topLevelPlayback) && (
         <View style={styles.fullScreenPlayerOverlay}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1055,8 +1044,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: BLACK,
   },
-  
-  // --- FULL SCREEN / MODAL REPLACEMENTS ---
   absoluteOverlay: {
     position: 'absolute',
     top: -1000, 
@@ -1101,47 +1088,28 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: BORDER_GREY,
   },
-
-  // --- HEADER & STATS ---
-  headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: 36,
-    paddingBottom: 14,
-    paddingHorizontal: 18,
-  },
+  headerRow: { flexDirection: 'row', alignItems: 'center', paddingTop: 36, paddingBottom: 14, paddingHorizontal: 18 },
   backTouch: { paddingRight: 12, paddingVertical: 4 },
   settingsIconTouch: { paddingLeft: 12, paddingVertical: 4 },
   headerTitleText: { color: WHITE, fontSize: 21, fontWeight: '800', letterSpacing: 0.3, flex: 1 },
-  statsContainer: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: DARK_GREY, marginHorizontal: 16,
-    borderRadius: 12, paddingVertical: 13, borderWidth: 1, borderColor: BORDER_GREY,
-  },
+  statsContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: DARK_GREY, marginHorizontal: 16, borderRadius: 12, paddingVertical: 13, borderWidth: 1, borderColor: BORDER_GREY },
   statColumn: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   statNumber: { color: WHITE, fontSize: 16, fontWeight: '800', marginBottom: 4 },
   statLabel: { color: TEXT_GREY, fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
   statDivider: { width: 1, height: 28, backgroundColor: BORDER_GREY },
-  tabsBarContainer: {
-    flexDirection: 'row', marginHorizontal: 16, marginTop: 14, backgroundColor: DARK_GREY,
-    borderRadius: 10, padding: 4, borderWidth: 1, borderColor: BORDER_GREY,
-  },
+  tabsBarContainer: { flexDirection: 'row', marginHorizontal: 16, marginTop: 14, backgroundColor: DARK_GREY, borderRadius: 10, padding: 4, borderWidth: 1, borderColor: BORDER_GREY },
   tabPillBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', justifyContent: 'center', borderRadius: 7 },
   tabPillBtnActive: { backgroundColor: PURE_RED },
   tabPillText: { color: TEXT_GREY, fontSize: 13, fontWeight: '800' },
   tabPillTextActive: { color: WHITE, fontWeight: '900' },
   fullDividerLine: { height: 1, backgroundColor: DARK_GREY, marginTop: 14 },
-  
-  // --- BULK ACTION BAR ---
   bulkActionBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
   bulkActionInfoText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
   pauseAllBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: DARK_GREY, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY },
   pauseAllBtnText: { color: WHITE, fontSize: 12, fontWeight: '800' },
   deleteAllDownloadedBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: DARK_GREY, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY },
   deleteAllDownloadedText: { color: PURE_RED, fontSize: 12, fontWeight: '800' },
-  
   scrollPadding: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 110 },
-  
-  // --- MAIN CARD (DOWNLOADING & SERIES) ---
   mainCard: { flexDirection: 'row', backgroundColor: BLACK, borderRadius: 14, padding: 12, borderWidth: 1, borderColor: BORDER_GREY },
   posterContainer: { width: 105, height: 152, borderRadius: 10, overflow: 'hidden', backgroundColor: DARK_GREY },
   posterImage: { width: '100%', height: '100%' },
@@ -1153,36 +1121,29 @@ const styles = StyleSheet.create({
   outlinedPillsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
   outlinedPill: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY, backgroundColor: DARK_GREY },
   outlinedPillText: { color: TEXT_GREY, fontSize: 11, fontWeight: '600' },
-  
   progressSection: { marginTop: 8 },
   progressLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   statusMiniText: { color: PURE_RED, fontSize: 10, fontWeight: '800' },
   mbRatioText: { color: TEXT_GREY, fontSize: 10, fontWeight: '600' },
   thinProgressBg: { width: '100%', height: 3, backgroundColor: DARK_GREY, borderRadius: 2, overflow: 'hidden' },
   thinProgressFill: { height: '100%', backgroundColor: PURE_RED },
-  
   whiteBtnsRow: { flexDirection: 'row', gap: 10, marginTop: 10 },
   whiteActionBtn: { backgroundColor: WHITE, paddingVertical: 6, paddingHorizontal: 18, borderRadius: 5, minWidth: 78, alignItems: 'center', justifyContent: 'center' },
   whiteActionBtnText: { color: BLACK, fontSize: 13, fontWeight: '700' },
   seriesSynopsisText: { color: TEXT_GREY, fontSize: 11.5, lineHeight: 16, fontWeight: '500', marginTop: 8 },
   viewEpisodesFooterRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 6 },
   episodesCountBottomText: { color: WHITE, fontSize: 12, fontWeight: '800' },
-
   emptyWrap: { paddingVertical: 70, alignItems: 'center' },
   emptyText: { color: TEXT_GREY, fontSize: 14, fontWeight: '600' },
-
-  // --- POPUP: ACTION SHEET & SETTINGS & CONFIRM ---
   sheetTitle: { color: WHITE, fontSize: 16, fontWeight: '800', marginBottom: 20 },
   sheetOptionRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderTopWidth: 1, borderTopColor: BORDER_GREY },
   sheetOptionText: { color: WHITE, fontSize: 14, fontWeight: '700' },
   binIconWrap: { width: 34, height: 34, borderRadius: 17, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center' },
-  
   settingsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: BORDER_GREY },
   settingsLabel: { color: WHITE, fontSize: 14, fontWeight: '600' },
   settingsValue: { color: TEXT_GREY, fontSize: 14, fontWeight: '700' },
   settingsCloseBtn: { marginTop: 24, backgroundColor: PURE_RED, paddingVertical: 14, borderRadius: 8, alignItems: 'center' },
   settingsCloseBtnText: { color: WHITE, fontSize: 14, fontWeight: '800' },
-
   confirmIconWrap: { width: 52, height: 52, borderRadius: 26, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
   confirmPopupTitle: { color: WHITE, fontSize: 18, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
   confirmPopupMessage: { color: TEXT_GREY, fontSize: 13, lineHeight: 20, fontWeight: '500', textAlign: 'center', marginTop: 10, marginBottom: 24 },
