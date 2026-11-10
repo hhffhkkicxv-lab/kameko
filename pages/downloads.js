@@ -37,9 +37,7 @@ const VAULT_ROOT_DIR = FileSystem.documentDirectory
 // --- HELPERS ---
 const buildProxyUrl = (targetUrl, referer = 'https://vidwish.live/') => {
   if (!targetUrl) return '';
-  if (targetUrl.startsWith('https://icy-wave-30d8.prashant-yash69.workers.dev')) {
-    return targetUrl;
-  }
+  if (targetUrl.startsWith('https://icy-wave-30d8.prashant-yash69.workers.dev')) return targetUrl;
   return `${PROXY_URL}${encodeURIComponent(targetUrl)}&referer=${encodeURIComponent(referer)}`;
 };
 
@@ -65,10 +63,7 @@ const formatMbRatio = (downloadedBytes, totalEstimatedBytes) => {
   return `${dlMb}mb/${totMb}mb`;
 };
 
-const stripNonAscii = (str) =>
-  String(str || '')
-    .replace(/[^\x20-\x7E]/g, '')
-    .trim();
+const stripNonAscii = (str) => String(str || '').replace(/[^\x20-\x7E]/g, '').trim();
 
 // --- ATOMIC SERIALIZED LOCAL STORAGE ---
 let storageLockPromise = Promise.resolve();
@@ -525,10 +520,10 @@ export default function Downloads({
   const hasSetInitialTab = useRef(false);
   const prevActiveDlCountRef = useRef(0);
 
-  const [activePlaySeries, setActivePlaySeries] = useState(null); // Fallback only
+  const [activePlaySeries, setActivePlaySeries] = useState(null); 
   const [watchlistMap, setWatchlistMap] = useState({});
   const [menuTarget, setMenuTarget] = useState(null);
-  const [topLevelPlayback, setTopLevelPlayback] = useState(null); // Fallback only
+  const [topLevelPlayback, setTopLevelPlayback] = useState(null); 
 
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -872,7 +867,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- DOWNLOADED SERIES LIST --- */}
+      {/* --- DOWNLOADED SERIES LIST ONLY --- */}
       {activeTab === 'downloaded' && (
         <View style={{ flex: 1 }}>
           {downloadedSeriesGroups.length > 0 && (
@@ -945,7 +940,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- ACTION SHEET --- */}
+      {/* --- "⋮" MENU ACTION SHEET --- */}
       {Boolean(menuTarget) && (
         <View style={styles.absoluteOverlay}>
           <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setMenuTarget(null)} />
@@ -1045,34 +1040,20 @@ const styles = StyleSheet.create({
     backgroundColor: BLACK,
   },
   absoluteOverlay: {
-    position: 'absolute',
-    top: -1000, 
-    left: -1000,
-    right: -1000,
-    bottom: -1000,
+    ...StyleSheet.absoluteFillObject,
     zIndex: 9999,
     elevation: 9999,
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: 'flex-end',
   },
   overlayBackground: {
-    position: 'absolute',
-    width: SCREEN_WIDTH * 3,
-    height: SCREEN_HEIGHT * 3,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0,0,0,0.85)',
   },
   bottomSheetWrapper: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    width: SCREEN_WIDTH,
+    width: '100%',
   },
   fullScreenPlayerOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    ...StyleSheet.absoluteFillObject,
     zIndex: 10000,
     elevation: 10000,
     backgroundColor: BLACK,
