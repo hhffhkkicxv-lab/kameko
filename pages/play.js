@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { 
   View, Text, StyleSheet, Dimensions, 
   TouchableOpacity, Share, StatusBar, 
-  ActivityIndicator, FlatList, Modal, ScrollView, BackHandler, Platform
+  ActivityIndicator, FlatList, ScrollView, BackHandler, Platform
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -16,8 +16,15 @@ import * as ShareSheetModule from '../components/ShareSheet';
 import * as RoomModule from '../components/room';
 
 const { width, height } = Dimensions.get('window');
-const BRAND_RED = '#E50914';
+
+// --- STRICT PALETTE ---
+const BLACK = '#000000';
+const WHITE = '#FFFFFF';
 const PURE_RED = '#FF0000';
+const DARK_GREY = '#18181C';
+const TEXT_GREY = '#8E8E93';
+const BORDER_GREY = '#26262C';
+
 const TMDB_API_KEY = 'f39f02a34ded84924626dd5ec7de1f29';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const EPISODE_CHUNK_SIZE = 50;
@@ -83,48 +90,48 @@ const writeLocalJson = async (fileUri, data) => {
   } catch (_) {}
 };
 
-// --- SVG ICONS (STRICTLY WHITE) ---
+// --- SVG ICONS (STRICTLY WHITE/PURE RED) ---
 const IconBack = ({ size = 20 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={WHITE} strokeWidth="2.5">
     <Path d="M15 18l-6-6 6-6" />
   </Svg>
 );
-const IconPlay = ({ size = 18, color = "#FFF" }) => (
+const IconPlay = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
     <Path d="M8 5v14l11-7z" />
   </Svg>
 );
-const IconPlus = ({ size = 24, color = "#FFF" }) => (
+const IconPlus = ({ size = 24, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
     <Path d="M12 5v14M5 12h14" />
   </Svg>
 );
-const IconCheck = ({ size = 24, color = "#FFF" }) => (
+const IconCheck = ({ size = 24, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3">
     <Path d="M20 6L9 17l-5-5" />
   </Svg>
 );
-const IconShare = ({ size = 22, color = "#FFF" }) => (
+const IconShare = ({ size = 22, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
     <Path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13" />
   </Svg>
 );
-const IconDownload = ({ size = 22, color = "#FFF" }) => (
+const IconDownload = ({ size = 22, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
     <Path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
   </Svg>
 );
-const IconTrash = ({ size = 20, color = "#FFF" }) => (
+const IconTrash = ({ size = 20, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
     <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6" />
   </Svg>
 );
-const IconClose = ({ size = 18, color = "#FFF" }) => (
+const IconClose = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
     <Path d="M18 6L6 18M6 6l12 12" />
   </Svg>
 );
-const IconVerticalDots = ({ size = 22, color = "#FFF" }) => (
+const IconVerticalDots = ({ size = 22, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
     <Circle cx="12" cy="5" r="2" />
     <Circle cx="12" cy="12" r="2" />
@@ -132,7 +139,7 @@ const IconVerticalDots = ({ size = 22, color = "#FFF" }) => (
   </Svg>
 );
 const BookmarkIcon = ({ filled }) => (
-  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke="#FFFFFF" strokeWidth="2.5">
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? PURE_RED : "none"} stroke={WHITE} strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -289,7 +296,7 @@ export default function Play({
   const [loadingEpisode, setLoadingEpisode] = useState(null);
   const [activePlayback, setActivePlayback] = useState(null);
 
-  // Settings Menu Modal & Overlays
+  // Settings Overlays
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
@@ -299,7 +306,7 @@ export default function Play({
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
 
-  // Custom CSS Confirmation Popup State (Replacing Alert.alert)
+  // Confirmation Popup State
   const [confirmDialog, setConfirmDialog] = useState(null);
 
   // Download Sheet States
@@ -318,10 +325,36 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
+  // Enforce Immersive Mode rigorously whenever overlays toggle
+  useEffect(() => {
+    const enforceImmersive = async () => {
+      try {
+        StatusBar.setHidden(true, 'none');
+        if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+          await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
+        }
+      } catch (_) {}
+    };
+    enforceImmersive();
+  }, [topMenuVisible, confirmDialog, downloadModalVisible, shareModalVisible, roomModalVisible, activePlayback]);
+
   useEffect(() => {
     const onHardwareBack = () => {
       if (activePlayback) {
         setActivePlayback(null);
+        return true;
+      }
+      if (downloadModalVisible) {
+        setDownloadModalVisible(false);
+        return true;
+      }
+      if (topMenuVisible) {
+        setTopMenuVisible(false);
+        return true;
+      }
+      if (confirmDialog) {
+        setConfirmDialog(null);
         return true;
       }
       if (shareModalVisible) {
@@ -342,7 +375,7 @@ export default function Play({
 
     const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
     return () => sub.remove();
-  }, [activePlayback, shareModalVisible, roomModalVisible, isBulkDeleteMode]);
+  }, [activePlayback, downloadModalVisible, topMenuVisible, confirmDialog, shareModalVisible, roomModalVisible, isBulkDeleteMode]);
 
   const syncLocalDownloads = useCallback(async () => {
     const queue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
@@ -440,7 +473,6 @@ export default function Play({
     [animeDocId, resolvedUid, resolvedProfileId]
   );
 
-  // Trigger Custom CSS Confirmation Popup when deleting episode(s)
   const handleDeleteDownloadedEpisodes = useCallback(
     (epNumbersArray) => {
       const nums = (epNumbersArray || []).map((n) => Number(n)).filter(Boolean);
@@ -492,18 +524,6 @@ export default function Play({
       });
     } catch (_) {}
   };
-
-  useEffect(() => {
-    const syncSystemBars = async () => {
-      try {
-        StatusBar.setHidden(true, 'none');
-        if (downloadModalVisible && NavigationBar?.setVisibilityAsync) {
-          await NavigationBar.setVisibilityAsync('visible');
-        }
-      } catch (_) {}
-    };
-    syncSystemBars();
-  }, [downloadModalVisible]);
 
   const updateLocalPreferences = useCallback(async (patch) => {
     const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
@@ -587,7 +607,7 @@ export default function Play({
       .doc(String(resolvedProfileId))
       .collection(WATCH_HISTORY_COLLECTION)
       .where('animeId', '==', animeDocId);
-      
+
     const historyUnsub = historyRef.onSnapshot((snapshot) => {
       if (snapshot && !snapshot.empty) {
         const pMap = {};
@@ -1151,7 +1171,7 @@ export default function Play({
             isDub: ep.isDub ?? false,
           }));
           setEpisodes(formatted);
-          
+
           if (!hasRestoredLocalChunkRef.current) {
             const targetEpNum = latestWatched?.episodeNum || latestWatched?.lastWatchedEp || currentAnime?.episodeNum;
             if (targetEpNum) {
@@ -1398,7 +1418,7 @@ export default function Play({
                     : `Watch Episode ${targetEp?.num || 1}`
               )}
             </Text>
-            <IconPlay size={18} color="#FFF" />
+            <IconPlay size={18} color={WHITE} />
           </View>
           {resumePct > 0 && !latestWatched?.finishedEp && (
             <View style={styles.resumeProgressUnderline}>
@@ -1572,7 +1592,7 @@ export default function Play({
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.navVerticalDotsCircle} onPress={() => setTopMenuVisible(true)}>
-          <IconVerticalDots size={20} color="#FFF" />
+          <IconVerticalDots size={20} color={WHITE} />
         </TouchableOpacity>
       </View>
 
@@ -1587,7 +1607,7 @@ export default function Play({
         ListEmptyComponent={() => (
           <View style={styles.emptyContainer}>
             {episodesLoading ? (
-              <ActivityIndicator size="small" color={BRAND_RED} />
+              <ActivityIndicator size="small" color={PURE_RED} />
             ) : (
               <Text style={styles.emptyText}>
                 {isEpisodesTab ? 'No episodes found.' : 'No similar anime found.'}
@@ -1636,17 +1656,17 @@ export default function Play({
 
                   <View style={styles.cardRightGroup}>
                     {item.isFiller && (
-                      <View style={[styles.fillerTag, isFinished && { borderColor: 'rgba(255,165,0,0.5)' }]}>
-                        <Text style={[styles.fillerTagText, isFinished && { color: 'rgba(255,165,0,0.5)' }]}>FILLER</Text>
+                      <View style={[styles.fillerTag, isFinished && { borderColor: TEXT_GREY }]}>
+                        <Text style={[styles.fillerTagText, isFinished && { color: TEXT_GREY }]}>FILLER</Text>
                       </View>
                     )}
                     {isLoadingThis ? (
-                      <ActivityIndicator size="small" color="#FFF" />
+                      <ActivityIndicator size="small" color={WHITE} />
                     ) : (
-                      <IconPlay size={18} color={isFinished ? "rgba(255,255,255,0.4)" : "#FFF"} />
+                      <IconPlay size={18} color={isFinished ? "rgba(255,255,255,0.4)" : WHITE} />
                     )}
                   </View>
-                  
+
                   {epProgress && epProgress.duration > 0 && (
                     <View style={styles.epMiniProgressBg}>
                       <View style={[styles.epMiniProgressFill, { width: `${Math.min((epProgress.progress / epProgress.duration) * 100, 100)}%` }]} />
@@ -1678,10 +1698,10 @@ export default function Play({
                           isSelectedForDelete && styles.bulkCheckCircleActive,
                         ]}
                       >
-                        {isSelectedForDelete && <IconCheck size={14} color="#FFF" />}
+                        {isSelectedForDelete && <IconCheck size={14} color={WHITE} />}
                       </View>
                     ) : (
-                      <IconTrash size={20} color="#FFF" />
+                      <IconTrash size={20} color={PURE_RED} />
                     )}
                   </TouchableOpacity>
                 ) : (
@@ -1691,7 +1711,7 @@ export default function Play({
                     disabled={isBulkDeleteMode}
                     onPress={() => handleOpenSingleEpisodeDownload(item)}
                   >
-                    <IconDownload size={22} color={isFinished ? "rgba(255,255,255,0.4)" : "#FFF"} />
+                    <IconDownload size={22} color={isFinished ? "rgba(255,255,255,0.4)" : WHITE} />
                   </TouchableOpacity>
                 )}
               </View>
@@ -1792,7 +1812,7 @@ export default function Play({
             activeOpacity={0.85}
             onPress={() => handleDeleteDownloadedEpisodes(selectedBulkDeleteNums)}
           >
-            <IconTrash size={18} color="#FFF" />
+            <IconTrash size={18} color={WHITE} />
             <Text style={styles.bulkConfirmDeleteText}>
               Delete Selected ({selectedBulkDeleteNums.length})
             </Text>
@@ -1800,94 +1820,86 @@ export default function Play({
         </View>
       )}
 
-      {/* --- SETTINGS POPUP FROM BOTTOM (MATCHING DOWNLOAD PAGE) --- */}
-      <Modal
-        visible={topMenuVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setTopMenuVisible(false)}
-      >
-        <View style={styles.settingsModalOverlay}>
-          <TouchableOpacity
-            style={StyleSheet.absoluteFillObject}
-            activeOpacity={1}
-            onPress={() => setTopMenuVisible(false)}
-          />
-          <View style={styles.settingsActionSheetBox}>
-            <Text style={styles.settingsSheetTitle} numberOfLines={1}>
-              {resolvedTitle}
-            </Text>
-
+      {/* --- SETTINGS MENU POPUP FROM BOTTOM (Replaced Modal) --- */}
+      {topMenuVisible && (
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999 }]}>
+          <View style={styles.settingsModalOverlay}>
             <TouchableOpacity
-              style={styles.settingsSheetOptionRow}
-              activeOpacity={0.8}
-              onPress={() => {
-                setTopMenuVisible(false);
-                toggleLibrary();
-              }}
-            >
-              <BookmarkIcon filled={inLibrary} />
-              <Text style={styles.settingsSheetOptionText}>
-                {inLibrary ? 'Remove from User List' : 'Add to User List'}
+              style={StyleSheet.absoluteFillObject}
+              activeOpacity={1}
+              onPress={() => setTopMenuVisible(false)}
+            />
+            <View style={styles.settingsActionSheetBox}>
+              <Text style={styles.settingsSheetTitle} numberOfLines={1}>
+                {resolvedTitle}
               </Text>
-            </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.settingsSheetOptionRow}
-              activeOpacity={0.8}
-              onPress={() => {
-                setTopMenuVisible(false);
-                handleOpenMultiEpisodeDownload(targetEp);
-              }}
-            >
-              <IconDownload size={18} color="#FFF" />
-              <Text style={styles.settingsSheetOptionText}>Download</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsSheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setTopMenuVisible(false);
+                  toggleLibrary();
+                }}
+              >
+                <BookmarkIcon filled={inLibrary} />
+                <Text style={styles.settingsSheetOptionText}>
+                  {inLibrary ? 'Remove from User List' : 'Add to User List'}
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.settingsSheetOptionRow}
-              activeOpacity={0.8}
-              onPress={() => {
-                setTopMenuVisible(false);
-                handleTriggerShare();
-              }}
-            >
-              <IconShare size={18} color="#FFF" />
-              <Text style={styles.settingsSheetOptionText}>Share</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsSheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setTopMenuVisible(false);
+                  handleOpenMultiEpisodeDownload(targetEp);
+                }}
+              >
+                <IconDownload size={18} color={WHITE} />
+                <Text style={styles.settingsSheetOptionText}>Download</Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.settingsSheetOptionRow}
-              activeOpacity={0.8}
-              onPress={() => {
-                setTopMenuVisible(false);
-                setRoomModalVisible(true);
-              }}
-            >
-              <IconPlay size={18} color="#FFF" />
-              <Text style={styles.settingsSheetOptionText}>Room</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsSheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setTopMenuVisible(false);
+                  handleTriggerShare();
+                }}
+              >
+                <IconShare size={18} color={WHITE} />
+                <Text style={styles.settingsSheetOptionText}>Share</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.settingsSheetOptionRow}
+                activeOpacity={0.8}
+                onPress={() => {
+                  setTopMenuVisible(false);
+                  setRoomModalVisible(true);
+                }}
+              >
+                <IconPlay size={18} color={WHITE} />
+                <Text style={styles.settingsSheetOptionText}>Room</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-      </Modal>
+      )}
 
-      {/* --- CUSTOM CSS CONFIRMATION POPUP MODAL --- */}
-      <Modal
-        visible={Boolean(confirmDialog)}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setConfirmDialog(null)}
-      >
-        <View style={styles.confirmModalBackdrop}>
-          <TouchableOpacity
-            style={StyleSheet.absoluteFillObject}
-            activeOpacity={1}
-            onPress={() => setConfirmDialog(null)}
-          />
-          {confirmDialog && (
+      {/* --- CUSTOM CSS CONFIRMATION POPUP BOTTOM SHEET (Replaced Modal) --- */}
+      {Boolean(confirmDialog) && (
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999 }]}>
+          <View style={styles.confirmModalBackdrop}>
+            <TouchableOpacity
+              style={StyleSheet.absoluteFillObject}
+              activeOpacity={1}
+              onPress={() => setConfirmDialog(null)}
+            />
             <View style={styles.confirmPopupCard}>
               <View style={styles.confirmIconWrap}>
-                <IconTrash size={22} color="#FFF" />
+                <IconTrash size={24} color={PURE_RED} />
               </View>
               <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
               <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
@@ -1912,299 +1924,286 @@ export default function Play({
                 </TouchableOpacity>
               </View>
             </View>
-          )}
+          </View>
         </View>
-      </Modal>
+      )}
 
-      {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET --- */}
-      <Modal
-        visible={downloadModalVisible}
-        animationType="slide"
-        transparent={true}
-        statusBarTranslucent={false}
-        onShow={async () => {
-          try {
-            StatusBar.setHidden(true, 'none');
-            if (NavigationBar?.setVisibilityAsync) {
-              await NavigationBar.setVisibilityAsync('visible');
-            }
-          } catch (_) {}
-        }}
-        onRequestClose={() => setDownloadModalVisible(false)}
-      >
-        <View style={styles.bottomSheetOverlay}>
-          <StatusBar hidden={true} />
-          <TouchableOpacity
-            style={StyleSheet.absoluteFillObject}
-            activeOpacity={1}
-            onPress={() => setDownloadModalVisible(false)}
-          />
+      {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET (Replaced Modal) --- */}
+      {downloadModalVisible && (
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999 }]}>
+          <View style={styles.bottomSheetOverlay}>
+            <TouchableOpacity
+              style={StyleSheet.absoluteFillObject}
+              activeOpacity={1}
+              onPress={() => setDownloadModalVisible(false)}
+            />
 
-          <View style={styles.halfScreenSheet}>
-            <View style={styles.sheetGrabHandle} />
+            <View style={styles.halfScreenSheet}>
+              <View style={styles.sheetGrabHandle} />
 
-            <View style={styles.modalHeaderRow}>
-              <View style={{ flex: 1, paddingRight: 10 }}>
-                <Text style={styles.modalTitle} numberOfLines={1}>
-                  {isSingleEpisodeDownload
-                    ? `Download Episode ${downloadTargetEp?.num || 1}`
-                    : downloadStep === 1
-                      ? 'Select Episodes to Download'
-                      : `Download (${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'})`}
-                </Text>
-                <Text style={styles.modalSubHeader} numberOfLines={1}>
-                  {isSingleEpisodeDownload
-                    ? downloadTargetEp?.title || resolvedTitle
-                    : resolvedTitle}
-                </Text>
-              </View>
-              <TouchableOpacity onPress={() => setDownloadModalVisible(false)} style={styles.modalCloseBtn}>
-                <IconClose size={18} />
-              </TouchableOpacity>
-            </View>
-
-            {!isSingleEpisodeDownload && downloadStep === 1 && (
-              <View style={{ flex: 1 }}>
-                <View style={styles.multiEpSelectTopBar}>
-                  <Text style={styles.sheetSectionLabel}>
-                    Selected ({selectedDownloadCount}/{episodes.length})
+              <View style={styles.modalHeaderRow}>
+                <View style={{ flex: 1, paddingRight: 10 }}>
+                  <Text style={styles.modalTitle} numberOfLines={1}>
+                    {isSingleEpisodeDownload
+                      ? `Download Episode ${downloadTargetEp?.num || 1}`
+                      : downloadStep === 1
+                        ? 'Select Episodes to Download'
+                        : `Download (${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'})`}
                   </Text>
-                  <TouchableOpacity
-                    style={[styles.selectAllToggleBtn, isAllEpisodesSelected && { backgroundColor: PURE_RED }]}
-                    onPress={() => {
-                      if (isAllEpisodesSelected) {
-                        setSelectedEpNumsMap({});
-                      } else {
-                        const allMap = {};
-                        episodes.forEach((e) => { allMap[e.num] = true; });
-                        setSelectedEpNumsMap(allMap);
-                      }
-                    }}
-                  >
-                    <Text style={[styles.selectAllToggleText, isAllEpisodesSelected && { color: '#FFF' }]}>
-                      {isAllEpisodesSelected ? 'Deselect All' : 'Select All'}
-                    </Text>
-                  </TouchableOpacity>
+                  <Text style={styles.modalSubHeader} numberOfLines={1}>
+                    {isSingleEpisodeDownload
+                      ? downloadTargetEp?.title || resolvedTitle
+                      : resolvedTitle}
+                  </Text>
                 </View>
-
-                {episodeChunks.length > 1 && (
-                  <View style={{ marginBottom: 10 }}>
-                    <FlatList
-                      horizontal
-                      data={episodeChunks}
-                      showsHorizontalScrollIndicator={false}
-                      keyExtractor={(_, index) => `dl-chunk-${index}`}
-                      contentContainerStyle={{ gap: 8 }}
-                      renderItem={({ item, index }) => {
-                        const rangeLabel = `${item[0].num} - ${item[item.length - 1].num}`;
-                        const isActive = downloadChunkIndex === index;
-                        return (
-                          <TouchableOpacity
-                            style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
-                            activeOpacity={0.85}
-                            onPress={() => setDownloadChunkIndex(index)}
-                          >
-                            <Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>
-                              {rangeLabel}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      }}
-                    />
-                  </View>
-                )}
-
-                <ScrollView
-                  style={styles.sheetScrollArea}
-                  contentContainerStyle={styles.multiEpGridContainer}
-                  showsVerticalScrollIndicator={false}
-                >
-                  {currentDownloadChunkEpisodes.map((ep) => {
-                    const isSelected = Boolean(selectedEpNumsMap[ep.num]);
-                    return (
-                      <TouchableOpacity
-                        key={ep.num}
-                        style={[styles.multiEpPill, isSelected && styles.multiEpPillActive]}
-                        activeOpacity={0.8}
-                        onPress={() => {
-                          setSelectedEpNumsMap((prev) => ({
-                            ...prev,
-                            [ep.num]: !prev[ep.num],
-                          }));
-                        }}
-                      >
-                        <Text style={[styles.multiEpPillText, isSelected && styles.multiEpPillTextActive]}>
-                          Ep {ep.num}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-
-                <TouchableOpacity
-                  style={[
-                    styles.sheetDownloadSubmitBtn,
-                    selectedDownloadCount === 0 && { opacity: 0.5 },
-                  ]}
-                  activeOpacity={0.85}
-                  disabled={selectedDownloadCount === 0}
-                  onPress={() => {
-                    const nums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
-                    if (nums.length === 0) return;
-                    const firstEpObj =
-                      episodes.find((e) => String(e.num) === String(nums[0])) ||
-                      downloadTargetEp ||
-                      episodes[0];
-                    setDownloadTargetEp(firstEpObj);
-                    setDownloadStep(2);
-                    fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType);
-                  }}
-                >
-                  <IconDownload size={18} color="#FFF" />
-                  <Text style={styles.sheetDownloadSubmitText}>
-                    Choose Quality & Subtitles ({selectedDownloadCount})
-                  </Text>
+                <TouchableOpacity onPress={() => setDownloadModalVisible(false)} style={styles.modalCloseBtn}>
+                  <IconClose size={18} color={WHITE} />
                 </TouchableOpacity>
               </View>
-            )}
 
-            {(isSingleEpisodeDownload || downloadStep === 2) && (
-              <View style={{ flex: 1 }}>
-                <ScrollView
-                  style={styles.sheetScrollArea}
-                  contentContainerStyle={styles.sheetScrollContent}
-                  showsVerticalScrollIndicator={false}
-                >
-                  <Text style={styles.sheetSectionLabel}>Audio</Text>
-                  <View style={styles.sheetPillRow}>
-                    {['sub', 'dub'].map((type) => {
-                      const isSelected = selectedDownloadType === type;
+              {!isSingleEpisodeDownload && downloadStep === 1 && (
+                <View style={{ flex: 1 }}>
+                  <View style={styles.multiEpSelectTopBar}>
+                    <Text style={styles.sheetSectionLabel}>
+                      Selected ({selectedDownloadCount}/{episodes.length})
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.selectAllToggleBtn, isAllEpisodesSelected && { backgroundColor: PURE_RED }]}
+                      onPress={() => {
+                        if (isAllEpisodesSelected) {
+                          setSelectedEpNumsMap({});
+                        } else {
+                          const allMap = {};
+                          episodes.forEach((e) => { allMap[e.num] = true; });
+                          setSelectedEpNumsMap(allMap);
+                        }
+                      }}
+                    >
+                      <Text style={[styles.selectAllToggleText, isAllEpisodesSelected && { color: WHITE }]}>
+                        {isAllEpisodesSelected ? 'Deselect All' : 'Select All'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {episodeChunks.length > 1 && (
+                    <View style={{ marginBottom: 10 }}>
+                      <FlatList
+                        horizontal
+                        data={episodeChunks}
+                        showsHorizontalScrollIndicator={false}
+                        keyExtractor={(_, index) => `dl-chunk-${index}`}
+                        contentContainerStyle={{ gap: 8 }}
+                        renderItem={({ item, index }) => {
+                          const rangeLabel = `${item[0].num} - ${item[item.length - 1].num}`;
+                          const isActive = downloadChunkIndex === index;
+                          return (
+                            <TouchableOpacity
+                              style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
+                              activeOpacity={0.85}
+                              onPress={() => setDownloadChunkIndex(index)}
+                            >
+                              <Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>
+                                {rangeLabel}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        }}
+                      />
+                    </View>
+                  )}
+
+                  <ScrollView
+                    style={styles.sheetScrollArea}
+                    contentContainerStyle={styles.multiEpGridContainer}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    {currentDownloadChunkEpisodes.map((ep) => {
+                      const isSelected = Boolean(selectedEpNumsMap[ep.num]);
                       return (
                         <TouchableOpacity
-                          key={type}
-                          style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
-                          activeOpacity={0.85}
-                          onPress={() => handleSwitchDownloadAudioType(type)}
+                          key={ep.num}
+                          style={[styles.multiEpPill, isSelected && styles.multiEpPillActive]}
+                          activeOpacity={0.8}
+                          onPress={() => {
+                            setSelectedEpNumsMap((prev) => ({
+                              ...prev,
+                              [ep.num]: !prev[ep.num],
+                            }));
+                          }}
                         >
-                          <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                            {type === 'sub' ? 'SUB (Japanese)' : 'DUB (English)'}
+                          <Text style={[styles.multiEpPillText, isSelected && styles.multiEpPillTextActive]}>
+                            Ep {ep.num}
                           </Text>
                         </TouchableOpacity>
                       );
                     })}
-                  </View>
+                  </ScrollView>
 
-                  <Text style={styles.sheetSectionLabel}>Subtitles</Text>
-                  {isFetchingDownloadData ? (
-                    <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
-                  ) : (
-                    <ScrollView
-                      horizontal
-                      showsHorizontalScrollIndicator={false}
-                      contentContainerStyle={styles.sheetHorizontalPills}
-                    >
-                      {downloadSubTracks.map((sub, idx) => {
-                        const label = sub.label || sub.lang || `Subtitle ${idx + 1}`;
-                        const isSelected =
-                          selectedSubTrack?.lang !== 'none' &&
-                          (selectedSubTrack?.label || selectedSubTrack?.lang) === label;
+                  <TouchableOpacity
+                    style={[
+                      styles.sheetDownloadSubmitBtn,
+                      selectedDownloadCount === 0 && { opacity: 0.5 },
+                    ]}
+                    activeOpacity={0.85}
+                    disabled={selectedDownloadCount === 0}
+                    onPress={() => {
+                      const nums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
+                      if (nums.length === 0) return;
+                      const firstEpObj =
+                        episodes.find((e) => String(e.num) === String(nums[0])) ||
+                        downloadTargetEp ||
+                        episodes[0];
+                      setDownloadTargetEp(firstEpObj);
+                      setDownloadStep(2);
+                      fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType);
+                    }}
+                  >
+                    <IconDownload size={18} color={WHITE} />
+                    <Text style={styles.sheetDownloadSubmitText}>
+                      Choose Quality & Subtitles ({selectedDownloadCount})
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              {(isSingleEpisodeDownload || downloadStep === 2) && (
+                <View style={{ flex: 1 }}>
+                  <ScrollView
+                    style={styles.sheetScrollArea}
+                    contentContainerStyle={styles.sheetScrollContent}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <Text style={styles.sheetSectionLabel}>Audio</Text>
+                    <View style={styles.sheetPillRow}>
+                      {['sub', 'dub'].map((type) => {
+                        const isSelected = selectedDownloadType === type;
                         return (
                           <TouchableOpacity
-                            key={idx}
+                            key={type}
                             style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
                             activeOpacity={0.85}
-                            onPress={() => setSelectedSubTrack(sub)}
+                            onPress={() => handleSwitchDownloadAudioType(type)}
                           >
                             <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                              {label}
+                              {type === 'sub' ? 'SUB (Japanese)' : 'DUB (English)'}
                             </Text>
                           </TouchableOpacity>
                         );
                       })}
+                    </View>
 
-                      <TouchableOpacity
-                        style={[
-                          styles.sheetRectPill,
-                          selectedSubTrack?.lang === 'none' && styles.sheetRectPillActive,
-                        ]}
-                        activeOpacity={0.85}
-                        onPress={() =>
-                          setSelectedSubTrack({ label: 'No Subtitles / Off', file: null, lang: 'none' })
-                        }
+                    <Text style={styles.sheetSectionLabel}>Subtitles</Text>
+                    {isFetchingDownloadData ? (
+                      <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
+                    ) : (
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.sheetHorizontalPills}
                       >
-                        <Text
-                          style={[
-                            styles.sheetRectPillText,
-                            selectedSubTrack?.lang === 'none' && styles.sheetRectPillTextActive,
-                          ]}
-                        >
-                          Off
-                        </Text>
-                      </TouchableOpacity>
-                    </ScrollView>
-                  )}
-
-                  <Text style={styles.sheetSectionLabel}>Quality</Text>
-                  {isFetchingDownloadData ? (
-                    <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
-                  ) : (
-                    <View style={styles.sheetPillRow}>
-                      {downloadQualities
-                        .filter((q) => q.label && q.label.toLowerCase() !== 'auto')
-                        .map((q, idx) => {
-                          const isSelected = selectedDownloadQuality?.label === q.label;
+                        {downloadSubTracks.map((sub, idx) => {
+                          const label = sub.label || sub.lang || `Subtitle ${idx + 1}`;
+                          const isSelected =
+                            selectedSubTrack?.lang !== 'none' &&
+                            (selectedSubTrack?.label || selectedSubTrack?.lang) === label;
                           return (
                             <TouchableOpacity
                               key={idx}
                               style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
                               activeOpacity={0.85}
-                              onPress={() => setSelectedDownloadQuality(q)}
+                              onPress={() => setSelectedSubTrack(sub)}
                             >
                               <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                                {q.label}
+                                {label}
                               </Text>
                             </TouchableOpacity>
                           );
                         })}
-                    </View>
-                  )}
-                </ScrollView>
 
-                <View style={styles.step2FooterRow}>
-                  {!isSingleEpisodeDownload && (
-                    <TouchableOpacity style={styles.step2BackBtn} onPress={() => setDownloadStep(1)}>
-                      <Text style={styles.step2BackText}>← Episodes</Text>
+                        <TouchableOpacity
+                          style={[
+                            styles.sheetRectPill,
+                            selectedSubTrack?.lang === 'none' && styles.sheetRectPillActive,
+                          ]}
+                          activeOpacity={0.85}
+                          onPress={() =>
+                            setSelectedSubTrack({ label: 'No Subtitles / Off', file: null, lang: 'none' })
+                          }
+                        >
+                          <Text
+                            style={[
+                              styles.sheetRectPillText,
+                              selectedSubTrack?.lang === 'none' && styles.sheetRectPillTextActive,
+                            ]}
+                          >
+                            Off
+                          </Text>
+                        </TouchableOpacity>
+                      </ScrollView>
+                    )}
+
+                    <Text style={styles.sheetSectionLabel}>Quality</Text>
+                    {isFetchingDownloadData ? (
+                      <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
+                    ) : (
+                      <View style={styles.sheetPillRow}>
+                        {downloadQualities
+                          .filter((q) => q.label && q.label.toLowerCase() !== 'auto')
+                          .map((q, idx) => {
+                            const isSelected = selectedDownloadQuality?.label === q.label;
+                            return (
+                              <TouchableOpacity
+                                key={idx}
+                                style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
+                                activeOpacity={0.85}
+                                onPress={() => setSelectedDownloadQuality(q)}
+                              >
+                                <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
+                                  {q.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                      </View>
+                    )}
+                  </ScrollView>
+
+                  <View style={styles.step2FooterRow}>
+                    {!isSingleEpisodeDownload && (
+                      <TouchableOpacity style={styles.step2BackBtn} onPress={() => setDownloadStep(1)}>
+                        <Text style={styles.step2BackText}>← Episodes</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      style={[
+                        styles.sheetDownloadSubmitBtn,
+                        { flex: 1, marginTop: 0 },
+                        (isFetchingDownloadData || !selectedDownloadQuality) && { opacity: 0.5 },
+                      ]}
+                      activeOpacity={0.85}
+                      disabled={isFetchingDownloadData || !selectedDownloadQuality}
+                      onPress={handleConfirmDownloadFinal}
+                    >
+                      <IconDownload size={18} color={WHITE} />
+                      <Text style={styles.sheetDownloadSubmitText}>
+                        {isSingleEpisodeDownload
+                          ? 'Download Episode'
+                          : `Download ${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'}`}
+                      </Text>
                     </TouchableOpacity>
-                  )}
-                  <TouchableOpacity
-                    style={[
-                      styles.sheetDownloadSubmitBtn,
-                      { flex: 1, marginTop: 0 },
-                      (isFetchingDownloadData || !selectedDownloadQuality) && { opacity: 0.5 },
-                    ]}
-                    activeOpacity={0.85}
-                    disabled={isFetchingDownloadData || !selectedDownloadQuality}
-                    onPress={handleConfirmDownloadFinal}
-                  >
-                    <IconDownload size={18} color="#FFF" />
-                    <Text style={styles.sheetDownloadSubmitText}>
-                      {isSingleEpisodeDownload
-                        ? 'Download Episode'
-                        : `Download ${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'}`}
-                    </Text>
-                  </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            )}
+              )}
+            </View>
           </View>
         </View>
-      </Modal>
+      )}
 
-      {/* FULLSCREEN OVERLAYS */}
+      {/* FULLSCREEN OVERLAYS (Replaced Modal for NavigationBar fix) */}
       {shareModalVisible && ResolvedShareComp && (
-        <View style={styles.directFullscreenOverlay}>
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999, backgroundColor: BLACK }]}>
           <ResolvedShareComp
-            visible={shareModalVisible}
+            visible={true} // It manages its own state, but we control mounting here
             anime={currentAnime}
             user={resolvedUser}
             activeProfile={resolvedProfile}
@@ -2217,9 +2216,9 @@ export default function Play({
       )}
 
       {roomModalVisible && ResolvedRoomComp && (
-        <View style={styles.directFullscreenOverlay}>
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999, backgroundColor: BLACK }]}>
           <ResolvedRoomComp
-            visible={roomModalVisible}
+            visible={true}
             anime={currentAnime}
             user={resolvedUser}
             activeProfile={resolvedProfile}
@@ -2246,10 +2245,9 @@ export default function Play({
 }
 
 const styles = StyleSheet.create({
-  screenContainer: { flex: 1, backgroundColor: '#000000' },
-  playerFullscreenContainer: { ...StyleSheet.absoluteFillObject, zIndex: 9999, backgroundColor: '#000' },
-  directFullscreenOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 9998, backgroundColor: '#000000' },
-
+  screenContainer: { flex: 1, backgroundColor: BLACK },
+  playerFullscreenContainer: { ...StyleSheet.absoluteFillObject, zIndex: 9999, backgroundColor: BLACK },
+  
   topNavFloatContainer: {
     position: 'absolute',
     top: 38,
@@ -2264,44 +2262,44 @@ const styles = StyleSheet.create({
   navVerticalDotsCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', alignItems: 'center' },
 
   heroSection: { width: '100%', marginBottom: 15 },
-  backdropBox: { width: '100%', height: height * 0.58, position: 'absolute', top: 0, left: 0 },
+  backdropBox: { width: '100%', height: height * 0.58, position: 'absolute', top: 0, left: 0, backgroundColor: BLACK },
   backdropImg: { width: '100%', height: '100%' },
   heroForeground: { paddingTop: height * 0.36, paddingHorizontal: 16 },
   logoRow: { width: '100%', alignItems: 'center', marginBottom: 12 },
   titleLogo: { width: width * 0.8, height: 100 },
-  fallbackTitleText: { color: '#FFF', fontSize: 32, fontWeight: '900', textAlign: 'center', textShadowColor: '#000', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 },
+  fallbackTitleText: { color: WHITE, fontSize: 32, fontWeight: '900', textAlign: 'center', textShadowColor: BLACK, textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 },
   badgesRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 18 },
-  newBadge: { backgroundColor: BRAND_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3 },
-  newBadgeText: { color: '#FFF', fontSize: 11, fontWeight: '700' },
+  newBadge: { backgroundColor: PURE_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3 },
+  newBadgeText: { color: WHITE, fontSize: 11, fontWeight: '700' },
   ratingBadge: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3 },
-  ratingBadgeText: { color: '#FFF', fontSize: 11, fontWeight: '700' },
-  scoreText: { color: '#CCC', fontSize: 12, fontWeight: '700' },
-  resumeBtn: { width: '100%', backgroundColor: BRAND_RED, borderRadius: 6, paddingVertical: 14, justifyContent: 'center', marginBottom: 20, overflow: 'hidden' },
+  ratingBadgeText: { color: WHITE, fontSize: 11, fontWeight: '700' },
+  scoreText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
+  resumeBtn: { width: '100%', backgroundColor: PURE_RED, borderRadius: 6, paddingVertical: 14, justifyContent: 'center', marginBottom: 20, overflow: 'hidden' },
   resumeContentRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  resumeBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  resumeBtnText: { color: WHITE, fontSize: 16, fontWeight: '800' },
   resumeProgressUnderline: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, backgroundColor: 'rgba(0,0,0,0.2)' },
-  resumeProgressFill: { height: '100%', backgroundColor: '#FFFFFF' },
+  resumeProgressFill: { height: '100%', backgroundColor: WHITE },
   actionsBar: { flexDirection: 'row', justifyContent: 'center', gap: 48, marginBottom: 20 },
   actionTab: { alignItems: 'center', gap: 6 },
   actionTabText: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600' },
   synopsisContainer: { marginBottom: 18 },
-  synopsisBody: { color: '#D1D5DB', fontSize: 13, lineHeight: 19 },
+  synopsisBody: { color: TEXT_GREY, fontSize: 13, lineHeight: 19 },
   moreBtn: { marginTop: 4 },
-  moreBtnText: { color: BRAND_RED, fontSize: 12, fontWeight: '700' },
-  tabsHeader: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#222', gap: 24 },
+  moreBtnText: { color: PURE_RED, fontSize: 12, fontWeight: '700' },
+  tabsHeader: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: BORDER_GREY, gap: 24 },
   tabTitleBtn: { paddingVertical: 12 },
   tabTitleBtnActive: { borderBottomWidth: 3, borderBottomColor: PURE_RED },
-  tabTitleText: { color: '#777', fontSize: 15, fontWeight: '700' },
-  tabTitleTextActive: { color: '#FFF' },
-  
+  tabTitleText: { color: TEXT_GREY, fontSize: 15, fontWeight: '700' },
+  tabTitleTextActive: { color: WHITE },
+
   chunkSelectorContainer: { paddingVertical: 14, gap: 10 },
   chunkRectPill: {
-    backgroundColor: '#161616',
+    backgroundColor: DARK_GREY,
     paddingHorizontal: 18,
     paddingVertical: 9,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.16)',
+    borderColor: BORDER_GREY,
   },
   chunkRectPillActive: {
     backgroundColor: PURE_RED,
@@ -2313,27 +2311,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   chunkRectPillTextActive: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontWeight: '900',
   },
 
   listPadding: { paddingBottom: 110 },
   episodeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12 },
-  bulletNumber: { color: '#FFF', fontSize: 16, fontWeight: '800', minWidth: 26, marginRight: 6 },
-  episodeCard: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#050505', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 4, paddingVertical: 14, paddingHorizontal: 14, overflow: 'hidden' },
-  episodeCardSelectedDelete: { borderColor: PURE_RED, backgroundColor: 'rgba(229,9,20,0.14)' },
-  episodeCardTitle: { color: '#FFF', fontSize: 14, fontWeight: '600', flex: 1 },
+  bulletNumber: { color: WHITE, fontSize: 16, fontWeight: '800', minWidth: 26, marginRight: 6 },
+  episodeCard: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: BLACK, borderWidth: 1, borderColor: BORDER_GREY, borderRadius: 4, paddingVertical: 14, paddingHorizontal: 14, overflow: 'hidden' },
+  episodeCardSelectedDelete: { borderColor: PURE_RED, backgroundColor: DARK_GREY },
+  episodeCardTitle: { color: WHITE, fontSize: 14, fontWeight: '600', flex: 1 },
   cardRightGroup: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  fillerTag: { backgroundColor: 'rgba(255,165,0,0.2)', borderWidth: 1, borderColor: '#FFA500', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 },
-  fillerTagText: { color: '#FFA500', fontSize: 9, fontWeight: '900' },
-  downloadIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)', borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
-  deleteIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: 'rgba(255,0,0,0.45)', backgroundColor: 'rgba(229,9,20,0.1)', borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
-  deleteIconBtnSelected: { borderColor: PURE_RED, backgroundColor: 'rgba(229,9,20,0.25)' },
+  fillerTag: { backgroundColor: DARK_GREY, borderWidth: 1, borderColor: WHITE, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 },
+  fillerTagText: { color: WHITE, fontSize: 9, fontWeight: '900' },
+  downloadIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: BORDER_GREY, borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  
+  deleteIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: BORDER_GREY, backgroundColor: DARK_GREY, borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
+  deleteIconBtnSelected: { borderColor: PURE_RED, backgroundColor: DARK_GREY },
   bulkCheckCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: 'rgba(255,255,255,0.6)', justifyContent: 'center', alignItems: 'center' },
   bulkCheckCircleActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
 
   watchedText: { color: 'rgba(255,255,255,0.4)' },
-  watchedCardBg: { backgroundColor: '#111', borderColor: 'rgba(255,255,255,0.05)' },
+  watchedCardBg: { backgroundColor: DARK_GREY, borderColor: 'rgba(255,255,255,0.05)' },
   epMiniProgressBg: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.1)' },
   epMiniProgressFill: { height: '100%', backgroundColor: PURE_RED },
 
@@ -2343,9 +2342,9 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    backgroundColor: '#121217',
+    backgroundColor: BLACK,
     borderTopWidth: 1.5,
-    borderTopColor: 'rgba(255,0,0,0.4)',
+    borderTopColor: BORDER_GREY,
     paddingHorizontal: 16,
     paddingTop: 12,
     paddingBottom: 18,
@@ -2359,7 +2358,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   bulkDeleteCountText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -2384,10 +2383,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 4,
-    backgroundColor: '#23232B',
+    backgroundColor: DARK_GREY,
   },
   bulkCancelText: {
-    color: '#DDD',
+    color: WHITE,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -2401,29 +2400,29 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   bulkConfirmDeleteText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 14,
     fontWeight: '900',
   },
 
-  // Settings Bottom Sheet (Matching Download Page)
+  // Settings Action Sheet Overlay (Bottom-to-Up View)
   settingsModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.8)',
     justifyContent: 'flex-end',
   },
   settingsActionSheetBox: {
-    backgroundColor: '#121216',
+    backgroundColor: BLACK,
     borderTopLeftRadius: 16,
     borderTopRightRadius: 16,
     paddingHorizontal: 20,
     paddingTop: 18,
     paddingBottom: 28,
     borderTopWidth: 1,
-    borderTopColor: '#26262C',
+    borderTopColor: BORDER_GREY,
   },
   settingsSheetTitle: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 15,
     fontWeight: '800',
     marginBottom: 14,
@@ -2434,58 +2433,52 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingVertical: 14,
     borderTopWidth: 1,
-    borderTopColor: '#1E1E24',
+    borderTopColor: BORDER_GREY,
   },
   settingsSheetOptionText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 14,
     fontWeight: '700',
   },
 
-  // Custom CSS Confirmation Popup Modal (Matching Download Page)
+  // Custom CSS Confirmation Popup (Re-styled as Bottom Sheet)
   confirmModalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.84)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
+    justifyContent: 'flex-end', // Aligns the modal to the bottom like the download sheet
   },
   confirmPopupCard: {
     width: '100%',
-    maxWidth: 340,
-    backgroundColor: '#0E0E13',
-    borderRadius: 16,
+    backgroundColor: BLACK,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
     paddingHorizontal: 22,
-    paddingVertical: 22,
-    borderWidth: 1,
-    borderColor: '#262630',
+    paddingTop: 24,
+    paddingBottom: 34,
+    borderTopWidth: 1,
+    borderColor: BORDER_GREY,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.7,
-    shadowRadius: 18,
-    elevation: 14,
   },
   confirmIconWrap: {
     width: 46,
     height: 46,
     borderRadius: 23,
-    backgroundColor: 'rgba(229,9,20,0.14)',
+    backgroundColor: DARK_GREY, // Removed red bg tint
     borderWidth: 1,
-    borderColor: 'rgba(229,9,20,0.38)',
+    borderColor: BORDER_GREY,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 14,
   },
   confirmPopupTitle: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 17,
     fontWeight: '800',
     textAlign: 'center',
     letterSpacing: 0.2,
   },
   confirmPopupMessage: {
-    color: '#8E8E93',
+    color: TEXT_GREY,
     fontSize: 13,
     lineHeight: 19,
     fontWeight: '500',
@@ -2500,29 +2493,29 @@ const styles = StyleSheet.create({
   },
   confirmCancelBtn: {
     flex: 1,
-    paddingVertical: 11,
+    paddingVertical: 12,
     borderRadius: 9,
-    backgroundColor: '#191922',
+    backgroundColor: DARK_GREY,
     borderWidth: 1,
-    borderColor: '#2C2C38',
+    borderColor: BORDER_GREY,
     alignItems: 'center',
     justifyContent: 'center',
   },
   confirmCancelBtnText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 13,
     fontWeight: '700',
   },
   confirmDangerBtn: {
     flex: 1,
-    paddingVertical: 11,
+    paddingVertical: 12,
     borderRadius: 9,
-    backgroundColor: BRAND_RED,
+    backgroundColor: PURE_RED,
     alignItems: 'center',
     justifyContent: 'center',
   },
   confirmDangerBtnText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -2530,18 +2523,18 @@ const styles = StyleSheet.create({
   // RecentSlider-matched UI for Bottom Sequel Slider
   recentStyleSection: { marginTop: 18, marginBottom: 25 },
   recentHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
-  recentSectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  recentSectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: PURE_RED, paddingLeft: 8 },
   recentListPadding: { paddingHorizontal: 20 },
   recentCardContainer: { width: 140, marginRight: 15 },
-  recentImageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: '#2A2A2A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  recentImageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
   recentCoverImage: { width: '100%', height: '100%' },
   recentBadgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
-  recentEpBadge: { backgroundColor: '#FFFFFF', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 3 },
-  recentEpBadgeText: { color: '#000000', fontSize: 10, fontWeight: '900' },
-  recentCcBadge: { backgroundColor: 'rgba(229,9,20,0.9)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-  recentCcBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: 'bold' },
-  recentSaveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  recentSaveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: BRAND_RED },
+  recentEpBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
+  recentEpBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
+  recentCcBadge: { backgroundColor: DARK_GREY, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 }, // Removed red bg tint
+  recentCcBadgeText: { color: WHITE, fontSize: 9, fontWeight: 'bold' },
+  recentSaveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
+  recentSaveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: PURE_RED },
   recentAnimeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
 
   gridRowWrapper: {
@@ -2558,15 +2551,15 @@ const styles = StyleSheet.create({
     height: Math.floor(GRID_CARD_WIDTH * 1.5),
     borderRadius: 8,
     overflow: 'hidden',
-    backgroundColor: '#2A2A2A',
+    backgroundColor: DARK_GREY,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
+    borderColor: BORDER_GREY,
   },
 
   emptyContainer: { paddingVertical: 40, alignItems: 'center' },
-  emptyText: { color: '#777', fontSize: 13 },
+  emptyText: { color: TEXT_GREY, fontSize: 13 },
 
-  // Bottom Half-Screen Download Sheet
+  // Bottom Half-Screen Download Sheet View Container
   bottomSheetOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.72)',
@@ -2575,14 +2568,14 @@ const styles = StyleSheet.create({
   halfScreenSheet: {
     width: '100%',
     height: Math.floor(height * 0.54),
-    backgroundColor: '#111115',
+    backgroundColor: BLACK,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     paddingHorizontal: 20,
     paddingTop: 10,
     paddingBottom: 18,
     borderTopWidth: 1.5,
-    borderTopColor: 'rgba(255,255,255,0.12)',
+    borderTopColor: BORDER_GREY,
     elevation: 25,
   },
   sheetGrabHandle: {
@@ -2599,13 +2592,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 10,
   },
-  modalTitle: { color: '#FFF', fontSize: 17, fontWeight: '900' },
+  modalTitle: { color: WHITE, fontSize: 17, fontWeight: '900' },
   modalSubHeader: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: 2 },
   modalCloseBtn: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#1C1C22',
+    backgroundColor: DARK_GREY,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2616,7 +2609,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   selectAllToggleBtn: {
-    backgroundColor: '#1B1B22',
+    backgroundColor: DARK_GREY,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 4,
@@ -2637,11 +2630,11 @@ const styles = StyleSheet.create({
   multiEpPill: {
     width: '23%',
     paddingVertical: 10,
-    backgroundColor: '#1B1B22',
+    backgroundColor: DARK_GREY,
     borderRadius: 4,
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: BORDER_GREY,
   },
   multiEpPillActive: {
     backgroundColor: PURE_RED,
@@ -2653,7 +2646,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   multiEpPillTextActive: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontWeight: '900',
   },
   sheetScrollArea: {
@@ -2681,12 +2674,12 @@ const styles = StyleSheet.create({
     paddingRight: 12,
   },
   sheetRectPill: {
-    backgroundColor: '#1B1B22',
+    backgroundColor: DARK_GREY,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.14)',
+    borderColor: BORDER_GREY,
   },
   sheetRectPillActive: {
     backgroundColor: PURE_RED,
@@ -2698,7 +2691,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   sheetRectPillTextActive: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontWeight: '900',
   },
   step2FooterRow: {
@@ -2712,7 +2705,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   step2BackText: {
-    color: '#CCCCCC',
+    color: TEXT_GREY,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -2727,7 +2720,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   sheetDownloadSubmitText: {
-    color: '#FFFFFF',
+    color: WHITE,
     fontSize: 15,
     fontWeight: '900',
     letterSpacing: 0.4,
