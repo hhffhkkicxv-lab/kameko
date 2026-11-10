@@ -1,8 +1,12 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, Platform, DeviceEventEmitter } from 'react-native';
 import Svg, { Path, Circle, Polyline, Line } from 'react-native-svg';
 
+// --- SIGNATURE PALETTE ---
 const BRAND_RED = '#E50914';
+const NAV_BG = '#0A0A0A';
+const INACTIVE_COLOR = '#888888';
+const BORDER_COLOR = '#222222';
 
 // --- Premium Navigation Icons ---
 const IconHome = ({ color }) => (
@@ -35,6 +39,18 @@ const IconSettings = ({ color }) => (
 );
 
 export default function BottomNav({ activeTab, setActiveTab }) {
+  const [isVisible, setIsVisible] = useState(true);
+
+  // Listen for signals to hide/show the bottom nav
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener('TOGGLE_BOTTOM_NAV', (visible) => {
+      setIsVisible(visible);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  if (!isVisible) return null; // Fully hides the nav bar when a popup/player is active
+
   const tabs = [
     { name: 'Home', Icon: IconHome },
     { name: 'Search', Icon: IconSearch },
@@ -46,13 +62,13 @@ export default function BottomNav({ activeTab, setActiveTab }) {
     <View style={styles.bottomNav}>
       {tabs.map((tab, idx) => {
         const isActive = activeTab === tab.name;
-        const color = isActive ? BRAND_RED : '#888888';
+        const color = isActive ? BRAND_RED : INACTIVE_COLOR;
         return (
           <TouchableOpacity 
             key={idx} 
             style={styles.navItem} 
             onPress={() => setActiveTab(tab.name)}
-            activeOpacity={0.7}
+            activeOpacity={0.8}
           >
             <tab.Icon color={color} />
             <Text style={[styles.navText, isActive && styles.navTextActive]}>
@@ -70,20 +86,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row', 
     justifyContent: 'space-around', 
     alignItems: 'center', 
-    height: 65, 
-    backgroundColor: '#0a0a0a', 
+    backgroundColor: NAV_BG, 
     borderTopWidth: 1, 
-    borderTopColor: '#222222', 
-    paddingBottom: 8,
-    paddingTop: 8 
+    borderTopColor: BORDER_COLOR, 
+    minHeight: 65, 
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'android' ? 12 : 24, 
   },
   navItem: { 
     alignItems: 'center', 
     justifyContent: 'center',
-    flex: 1 
+    flex: 1,
+    paddingVertical: 4,
   },
   navText: { 
-    color: '#888888', 
+    color: INACTIVE_COLOR, 
     fontSize: 10, 
     marginTop: 6, 
     fontWeight: '600' 
