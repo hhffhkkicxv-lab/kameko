@@ -8,7 +8,9 @@ import * as NavigationBar from 'expo-navigation-bar';
 import Carousel from './home/carousel';
 import ContinueWatching from './home/continue_watching'; 
 import RecentSlider from './home/recent_slider';
+import ForYouSlider from './home/foryou_slider';
 import TrendingSlider from './home/trending_slider';
+import Top10Slider from './home/top10_slider';
 import Play from '../pages/play';
 import ProfileSettings from './profile'; 
 import Search from '../components/search'; 
@@ -180,6 +182,7 @@ export default function Home({
             />
           </View>
           
+          {/* Recent Slider */}
           <RecentSlider 
             user={resolvedUser} 
             activeProfile={currentProfile}
@@ -187,7 +190,27 @@ export default function Home({
             activeProfileId={activeProfileId}
             onSelectAnime={handleSelectAnime} 
           />
+
+          {/* For You Slider (Based on Library & Downloads) */}
+          <ForYouSlider 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onSelectAnime={handleSelectAnime} 
+          />
+
+          {/* Trending Slider */}
           <TrendingSlider 
+            user={resolvedUser} 
+            activeProfile={currentProfile}
+            currentProfile={currentProfile}
+            activeProfileId={activeProfileId}
+            onSelectAnime={handleSelectAnime} 
+          />
+
+          {/* Top 10 Slider */}
+          <Top10Slider 
             user={resolvedUser} 
             activeProfile={currentProfile}
             currentProfile={currentProfile}
