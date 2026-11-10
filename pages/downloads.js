@@ -72,7 +72,7 @@ const stripNonAscii = (str) =>
     .replace(/[^\x20-\x7E]/g, '')
     .trim();
 
-// --- ATOMIC SERIALIZED LOCAL STORAGE READ / WRITE ---
+// --- ATOMIC SERIALIZED LOCAL STORAGE ---
 let storageLockPromise = Promise.resolve();
 
 const readLocalQueue = async () => {
@@ -119,25 +119,11 @@ const mutateQueueSafe = (mutatorFn) => {
 const pushPlainNotification = async (notifId, titleText, bodyText, pct, isPaused, posterUri) => {
   try {
     if (typeof NotificationEngine?.showProgressNotification === 'function') {
-      await NotificationEngine.showProgressNotification(
-        notifId,
-        stripNonAscii(titleText),
-        pct,
-        {
-          body: stripNonAscii(bodyText),
-          subtitle: stripNonAscii(bodyText),
-          plainText: true,
-          isPaused: Boolean(isPaused),
-          largeIcon: posterUri || null,
-          posterUrl: posterUri || null,
-          imageUrl: posterUri || null,
-          ongoing: !isPaused,
-          actions: [
-            { id: isPaused ? 'RESUME_DOWNLOAD' : 'PAUSE_DOWNLOAD', title: isPaused ? 'resume' : 'pause' },
-            { id: 'CANCEL_DOWNLOAD', title: 'Cancel' },
-          ],
-        }
-      );
+      await NotificationEngine.showProgressNotification(notifId, stripNonAscii(titleText), pct, {
+        body: stripNonAscii(bodyText), subtitle: stripNonAscii(bodyText), plainText: true,
+        isPaused: Boolean(isPaused), largeIcon: posterUri || null, posterUrl: posterUri || null, imageUrl: posterUri || null,
+        ongoing: !isPaused, actions: [{ id: isPaused ? 'RESUME_DOWNLOAD' : 'PAUSE_DOWNLOAD', title: isPaused ? 'resume' : 'pause' }, { id: 'CANCEL_DOWNLOAD', title: 'Cancel' }],
+      });
     }
   } catch (_) {}
 };
@@ -145,58 +131,28 @@ const pushPlainNotification = async (notifId, titleText, bodyText, pct, isPaused
 const pushPlainDoneNotification = async (notifId, titleText, posterUri) => {
   try {
     if (typeof NotificationEngine?.showCompletionNotification === 'function') {
-      await NotificationEngine.showCompletionNotification(
-        notifId,
-        stripNonAscii(titleText),
-        { largeIcon: posterUri || null, posterUrl: posterUri || null, plainText: true }
-      );
+      await NotificationEngine.showCompletionNotification(notifId, stripNonAscii(titleText), { largeIcon: posterUri || null, posterUrl: posterUri || null, plainText: true });
     }
   } catch (_) {}
 };
 
 const dismissPlainNotification = async (notifId) => {
   try {
-    if (typeof NotificationEngine?.clearNotification === 'function') {
-      await NotificationEngine.clearNotification(notifId);
-    }
+    if (typeof NotificationEngine?.clearNotification === 'function') await NotificationEngine.clearNotification(notifId);
   } catch (_) {}
 };
 
 // --- FETCH ANIME SYNOPSIS FOR OFFLINE ---
 const fetchAnimeDetailsForOffline = async (animeTitle) => {
   try {
-    const query = `
-      query ($search: String) {
-        Media (search: $search, type: ANIME) {
-          description
-          genres
-          episodes
-          bannerImage
-          coverImage { extraLarge large }
-        }
-      }
-    `;
-    const res = await fetch('https://graphql.anilist.co', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, variables: { search: animeTitle } }),
-    });
+    const query = `query ($search: String) { Media (search: $search, type: ANIME) { description genres episodes bannerImage coverImage { extraLarge large } } }`;
+    const res = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, variables: { search: animeTitle } }) });
     const json = await res.json();
     const media = json?.data?.Media;
     if (!media) return null;
-
     const cleanSynopsis = (media.description || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
-
-    return {
-      synopsis: cleanSynopsis,
-      genres: Array.isArray(media.genres) ? media.genres.slice(0, 3) : ['Action', 'Adventure'],
-      totalEpisodes: media.episodes || null,
-      coverImage: media.coverImage?.extraLarge || media.coverImage?.large || null,
-      backdrop: media.bannerImage || media.coverImage?.extraLarge || null,
-    };
-  } catch (_) {
-    return null;
-  }
+    return { synopsis: cleanSynopsis, genres: Array.isArray(media.genres) ? media.genres.slice(0, 3) : ['Action', 'Adventure'], totalEpisodes: media.episodes || null, coverImage: media.coverImage?.extraLarge || media.coverImage?.large || null, backdrop: media.bannerImage || media.coverImage?.extraLarge || null };
+  } catch (_) { return null; }
 };
 
 // ============================================================================
@@ -212,23 +168,17 @@ const getJobsSnapshot = () => {
 
 const notifyListeners = () => {
   const snapshot = getJobsSnapshot();
-  BgManager.listeners.forEach((fn) => {
-    try { fn(snapshot); } catch (_) {}
-  });
+  BgManager.listeners.forEach((fn) => { try { fn(snapshot); } catch (_) {} });
 };
 
 const updateQueueRecord = async (itemId, patch) => {
   let targetRecord = null;
   const updatedList = await mutateQueueSafe((list) =>
     list.map((item) => {
-      if (item.id === itemId) {
-        targetRecord = { ...item, ...patch, updatedAt: Date.now() };
-        return targetRecord;
-      }
+      if (item.id === itemId) { targetRecord = { ...item, ...patch, updatedAt: Date.now() }; return targetRecord; }
       return item;
     })
   );
-
   if (targetRecord && targetRecord.userUid && targetRecord.profileId) {
     firestore().collection('users').doc(String(targetRecord.userUid)).collection('profiles').doc(String(targetRecord.profileId)).collection('downloads').doc(`${targetRecord.animeId}_ep_${targetRecord.episodeNum}`).set(targetRecord, { merge: true }).catch(() => {});
   }
@@ -241,15 +191,7 @@ const executeConcurrentDownload = async (task) => {
   const existingJob = BgManager.jobs.get(task.id);
   if (existingJob?.isRunning) return;
 
-  const jobState = {
-    isRunning: true,
-    isPaused: task.status === 'paused',
-    isCanceled: false,
-    task,
-    pct: task.progressPct || 0,
-    downloadedBytes: task.sizeBytes || 0,
-    estimatedTotalBytes: task.estimatedTotalBytes || 100 * 1024 * 1024,
-  };
+  const jobState = { isRunning: true, isPaused: task.status === 'paused', isCanceled: false, task, pct: task.progressPct || 0, downloadedBytes: task.sizeBytes || 0, estimatedTotalBytes: task.estimatedTotalBytes || 100 * 1024 * 1024 };
   BgManager.jobs.set(task.id, jobState);
   notifyListeners();
 
@@ -302,20 +244,9 @@ const executeConcurrentDownload = async (task) => {
       } catch (_) {}
     }
 
-    const updatedTaskMeta = {
-      ...task,
-      status: jobState.isPaused ? 'paused' : 'downloading',
-      targetFolder: epFolderUri,
-      localPosterUri,
-      localThumbUri,
-      synopsis,
-      episodeSynopsis: epSynopsis,
-      genres,
-      totalEpisodes: totalEpCount,
-    };
+    const updatedTaskMeta = { ...task, status: jobState.isPaused ? 'paused' : 'downloading', targetFolder: epFolderUri, localPosterUri, localThumbUri, synopsis, episodeSynopsis: epSynopsis, genres, totalEpisodes: totalEpCount };
     jobState.task = updatedTaskMeta;
     await updateQueueRecord(task.id, updatedTaskMeta);
-
     await pushPlainNotification(notifId, notifTitle, jobState.isPaused ? `Paused - ${formatMbRatio(jobState.downloadedBytes, jobState.estimatedTotalBytes)}` : `${jobState.pct}% - ${formatMbRatio(jobState.downloadedBytes, jobState.estimatedTotalBytes)}`, jobState.pct, jobState.isPaused, localPosterUri);
 
     let streamUri = task.streamUri;
@@ -410,17 +341,12 @@ const executeConcurrentDownload = async (task) => {
           continue;
         }
       }
-
-      if (line.startsWith('#')) {
-        rewrittenLines.push(line);
-        continue;
-      }
+      if (line.startsWith('#')) { rewrittenLines.push(line); continue; }
 
       const absSegUrl = resolveRelativeUrl(activePlaylistUrl, line);
       const segFileName = `seg_${String(segCounter).padStart(5, '0')}.ts`;
       const localSegUri = `${epFolderUri}${segFileName}`;
       segCounter++;
-
       segmentEntries.push({ remoteUrl: absSegUrl, localUri: localSegUri });
       rewrittenLines.push(localSegUri);
     }
@@ -442,10 +368,7 @@ const executeConcurrentDownload = async (task) => {
         batch.map(async (seg) => {
           if (jobState.isCanceled) return;
           const existingInfo = await FileSystem.getInfoAsync(seg.localUri);
-          if (existingInfo.exists && (existingInfo.size || 0) > 0) {
-            completedSegs++;
-            return;
-          }
+          if (existingInfo.exists && (existingInfo.size || 0) > 0) { completedSegs++; return; }
           const proxiedUrl = buildProxyUrl(seg.remoteUrl, referer);
           const resumable = FileSystem.createDownloadResumable(proxiedUrl, seg.localUri, { sessionType: FileSystem.FileSystemSessionType?.BACKGROUND || 0 });
           const dlRes = await resumable.downloadAsync();
@@ -453,18 +376,13 @@ const executeConcurrentDownload = async (task) => {
             const fileStat = await FileSystem.getInfoAsync(seg.localUri);
             accumulatedBytes += fileStat?.size || 0;
             completedSegs++;
-          } else {
-            throw new Error('Network interrupted');
-          }
+          } else { throw new Error('Network interrupted'); }
         })
       );
 
       const pct = Math.min(100, Math.round((completedSegs / totalSegs) * 100));
       const dynamicTotalBytes = completedSegs > 4 ? Math.round((accumulatedBytes / completedSegs) * totalSegs) : 100 * 1024 * 1024;
-
-      jobState.pct = pct;
-      jobState.downloadedBytes = accumulatedBytes;
-      jobState.estimatedTotalBytes = dynamicTotalBytes;
+      jobState.pct = pct; jobState.downloadedBytes = accumulatedBytes; jobState.estimatedTotalBytes = dynamicTotalBytes;
       notifyListeners();
 
       if (pct % 5 === 0 || pct === 100 || completedSegs === totalSegs) {
@@ -480,17 +398,16 @@ const executeConcurrentDownload = async (task) => {
     const localMetaUri = `${epFolderUri}metadata.json`;
     const fullOfflineMetadata = {
       id: task.id, animeId: task.animeId, animeTitle: task.animeTitle, episodeNum: task.episodeNum,
-      episodeTitle: task.episodeTitle, synopsis, episodeSynopsis: epSynopsis, genres,
-      totalEpisodes: totalEpCount, audioType: task.audioType, quality: task.quality,
-      coverImage: localPosterUri, backdrop: localThumbUri, subtitle: { ...(task.subtitle || {}), localUri: localSubtitleUri },
-      localM3u8Uri, sizeBytes: accumulatedBytes, downloadedAt: Date.now(),
+      episodeTitle: task.episodeTitle, synopsis, episodeSynopsis: epSynopsis, genres, totalEpisodes: totalEpCount,
+      audioType: task.audioType, quality: task.quality, coverImage: localPosterUri, backdrop: localThumbUri,
+      subtitle: { ...(task.subtitle || {}), localUri: localSubtitleUri }, localM3u8Uri, sizeBytes: accumulatedBytes, downloadedAt: Date.now(),
     };
     await FileSystem.writeAsStringAsync(localMetaUri, JSON.stringify(fullOfflineMetadata));
 
     await updateQueueRecord(task.id, {
       status: 'completed', progressPct: 100, sizeBytes: accumulatedBytes, estimatedTotalBytes: accumulatedBytes,
-      localUri: localM3u8Uri, localMetaUri, localSubtitleUri, localPosterUri, localThumbUri,
-      synopsis, episodeSynopsis: epSynopsis, genres, totalEpisodes: totalEpCount, targetFolder: epFolderUri, downloadedAt: Date.now(),
+      localUri: localM3u8Uri, localMetaUri, localSubtitleUri, localPosterUri, localThumbUri, synopsis,
+      episodeSynopsis: epSynopsis, genres, totalEpisodes: totalEpCount, targetFolder: epFolderUri, downloadedAt: Date.now(),
     });
     await pushPlainDoneNotification(notifId, `Downloaded ${notifTitle}`, localPosterUri);
   } catch (err) {
@@ -520,12 +437,10 @@ const handleTogglePauseJob = async (taskId, forcePauseState = null) => {
   const nextPaused = forcePauseState !== null ? forcePauseState : !job.isPaused;
   job.isPaused = nextPaused;
   notifyListeners();
-
   const task = job.task;
   const notifId = `dl-${task.id}`;
-  const notifTitle = `${task.animeTitle} - Episode ${task.episodeNum}`;
   const mbRatioStr = formatMbRatio(job.downloadedBytes, job.estimatedTotalBytes);
-  await pushPlainNotification(notifId, notifTitle, nextPaused ? `Paused - ${mbRatioStr}` : `${job.pct}% - ${mbRatioStr}`, job.pct, nextPaused, task.localPosterUri || task.coverImage || task.backdrop);
+  await pushPlainNotification(notifId, `${task.animeTitle} - Episode ${task.episodeNum}`, nextPaused ? `Paused - ${mbRatioStr}` : `${job.pct}% - ${mbRatioStr}`, job.pct, nextPaused, task.localPosterUri || task.coverImage || task.backdrop);
   await updateQueueRecord(task.id, { status: nextPaused ? 'paused' : 'downloading' });
 };
 
@@ -558,22 +473,16 @@ const initBackgroundDaemon = () => {
     if (tId) handleTogglePauseJob(tId, true);
     else BgManager.jobs.forEach((job, id) => { if (!job.isPaused) handleTogglePauseJob(id, true); });
   });
-
   DeviceEventEmitter.addListener('RESUME_DOWNLOAD', (notifId) => {
     const tId = extractTaskId(notifId);
     if (tId) handleTogglePauseJob(tId, false);
     else BgManager.jobs.forEach((job, id) => { if (job.isPaused) handleTogglePauseJob(id, false); });
   });
-
   DeviceEventEmitter.addListener('CANCEL_DOWNLOAD', (notifId) => {
     const tId = extractTaskId(notifId);
     if (tId) handleCancelJob(tId);
-    else {
-      const firstKey = BgManager.jobs.keys().next().value;
-      if (firstKey) handleCancelJob(firstKey);
-    }
+    else { const firstKey = BgManager.jobs.keys().next().value; if (firstKey) handleCancelJob(firstKey); }
   });
-
   setInterval(async () => {
     const queue = await readLocalQueue();
     const pendingItems = queue.filter((item) => item.status === 'queued' || item.status === 'downloading');
@@ -589,46 +498,13 @@ setTimeout(() => { initBackgroundDaemon(); }, 2500);
 // ============================================================================
 // SVG ICONS
 // ============================================================================
-const IconChevronLeft = ({ size = 22, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M15 18l-6-6 6-6" />
-  </Svg>
-);
-const IconBookmark = ({ size = 18, color = WHITE, filled = false }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : 'none'} stroke={filled ? PURE_RED : color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-  </Svg>
-);
-const IconDotsVertical = ({ size = 18, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Circle cx="12" cy="5" r="2" />
-    <Circle cx="12" cy="12" r="2" />
-    <Circle cx="12" cy="19" r="2" />
-  </Svg>
-);
-const IconPlay = ({ size = 16, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M8 5v14l11-7z" />
-  </Svg>
-);
-const IconPause = ({ size = 15, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Rect x="6" y="4" width="4" height="16" rx="1" />
-    <Rect x="14" y="4" width="4" height="16" rx="1" />
-  </Svg>
-);
-const IconTrash = ({ size = 16, color = PURE_RED }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-    <Polyline points="3 6 5 6 21 6" />
-    <Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-  </Svg>
-);
-const IconSettings = ({ size = 22, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-    <Circle cx="12" cy="12" r="3" />
-    <Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-  </Svg>
-);
+const IconChevronLeft = ({ size = 22, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><Path d="M15 18l-6-6 6-6" /></Svg>);
+const IconBookmark = ({ size = 18, color = WHITE, filled = false }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : 'none'} stroke={filled ? PURE_RED : color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></Svg>);
+const IconDotsVertical = ({ size = 18, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Circle cx="12" cy="5" r="2" /><Circle cx="12" cy="12" r="2" /><Circle cx="12" cy="19" r="2" /></Svg>);
+const IconPlay = ({ size = 16, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Path d="M8 5v14l11-7z" /></Svg>);
+const IconPause = ({ size = 15, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Rect x="6" y="4" width="4" height="16" rx="1" /><Rect x="14" y="4" width="4" height="16" rx="1" /></Svg>);
+const IconTrash = ({ size = 16, color = PURE_RED }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><Polyline points="3 6 5 6 21 6" /><Path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Svg>);
+const IconSettings = ({ size = 22, color = WHITE }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><Circle cx="12" cy="12" r="3" /><Path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.8 1 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></Svg>);
 
 export default function Downloads({
   user: propUser,
@@ -651,17 +527,20 @@ export default function Downloads({
   const hasSetInitialTab = useRef(false);
   const prevActiveDlCountRef = useRef(0);
 
-  const [activePlaySeries, setActivePlaySeries] = useState(null);
+  const [activePlaySeries, setActivePlaySeries] = useState(null); // Fallback only
   const [watchlistMap, setWatchlistMap] = useState({});
   const [menuTarget, setMenuTarget] = useState(null);
-  const [topLevelPlayback, setTopLevelPlayback] = useState(null);
+  const [topLevelPlayback, setTopLevelPlayback] = useState(null); // Fallback only
 
   const [confirmDialog, setConfirmDialog] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [wifiOnly, setWifiOnly] = useState(true);
 
-  // RIGOROUS IMMERSIVE MODE ENFORCEMENT
+  // RIGOROUS TAB BAR HIDER & IMMERSIVE ENFORCEMENT
   useEffect(() => {
+    const isOverlayActive = showSettings || menuTarget || confirmDialog || activePlaySeries || topLevelPlayback;
+    
+    // Hide native android bars
     const enforceImmersive = async () => {
       try {
         StatusBar.setHidden(true, 'none');
@@ -672,9 +551,19 @@ export default function Downloads({
       } catch (_) {}
     };
     enforceImmersive();
-  }, [showSettings, menuTarget, confirmDialog, activePlaySeries, topLevelPlayback]);
 
-  // HARDWARE BACK BUTTON INTERCEPTOR FOR ABSOLUTE VIEWS
+    // Dynamically hide the React Navigation Bottom Tab Bar (if it exists)
+    try {
+      const parentNav = navigation?.getParent ? navigation.getParent() : navigation;
+      if (isOverlayActive) {
+        parentNav?.setOptions({ tabBarStyle: { display: 'none' } });
+      } else {
+        parentNav?.setOptions({ tabBarStyle: { display: 'flex', backgroundColor: BLACK, borderTopWidth: 0 } });
+      }
+    } catch (_) {}
+  }, [showSettings, menuTarget, confirmDialog, activePlaySeries, topLevelPlayback, navigation]);
+
+  // HARDWARE BACK BUTTON INTERCEPTOR
   useEffect(() => {
     const onHardwareBack = () => {
       if (topLevelPlayback) { handleCloseTopPlayer(); return true; }
@@ -753,18 +642,74 @@ export default function Downloads({
     if (hasSetInitialTab.current && activeDownloadList.length === 0 && activeTab === 'downloading') setActiveTab('downloaded');
   }, [activeDownloadList.length]);
 
+
+  // =========================================================
+  // NAVIGATION: BYPASS TAB BAR BY PUSHING TO APP STACK
+  // =========================================================
   const handleOpenSeriesPlayScreen = (series) => {
     if (!series) return;
     setMenuTarget(null);
+
     const animePayload = {
       id: series.animeId, animeId: series.animeId, title: series.animeTitle, name: series.animeTitle, animeTitle: series.animeTitle,
       poster: series.coverImage, img: series.coverImage, image: series.coverImage, coverImage: series.coverImage,
       backdrop: series.backdrop || series.coverImage, bannerImage: series.backdrop || series.coverImage, synopsis: series.synopsis,
       description: series.synopsis, genres: series.genres, totalEpisodes: series.totalEpisodes, offlineEpisodes: series.episodes, isOffline: true,
     };
-    if (typeof onOpenPlay === 'function') { onOpenPlay(animePayload); return; }
-    if (typeof onSelectAnime === 'function') { onSelectAnime(animePayload); return; }
-    setActivePlaySeries(animePayload);
+
+    // Natively push Play screen to break out of BottomNav
+    if (navigation && navigation.navigate) {
+      navigation.navigate('Play', { anime: animePayload, user: resolvedUser, activeProfile: resolvedProfile, activeProfileId: resolvedProfileId });
+    } else if (typeof onOpenPlay === 'function') { 
+      onOpenPlay(animePayload); 
+    } else if (typeof onSelectAnime === 'function') { 
+      onSelectAnime(animePayload); 
+    } else {
+      setActivePlaySeries(animePayload); // Absolute View fallback
+    }
+  };
+
+  const handleOpenPlayerOnTop = async (epItem) => {
+    if (!epItem) return;
+    setMenuTarget(null);
+    const streamSource = epItem.localUri || epItem.streamUri;
+    if (!streamSource) return;
+
+    try {
+      StatusBar.setHidden(true, 'none');
+      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        await NavigationBar.setVisibilityAsync('hidden');
+        await NavigationBar.setBehaviorAsync('overlay-swipe');
+      }
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch (_) {}
+
+    const playbackPayload = {
+      activeUrl: streamSource, streamUrl: streamSource, localUri: epItem.localUri || null, localMetaUri: epItem.localMetaUri || null,
+      localSubtitleUri: epItem.localSubtitleUri || null, animeTitle: epItem.animeTitle, animeBackdrop: epItem.localThumbUri || epItem.backdrop || epItem.coverImage,
+      coverImage: epItem.localPosterUri || epItem.coverImage || epItem.backdrop, episodeNum: Number(epItem.episodeNum), episodeTitle: epItem.episodeTitle,
+      animeId: epItem.animeId, slug: epItem.slug, quality: epItem.quality || '1080p', progress: 0, userUid: resolvedUid, activeProfileId: resolvedProfileId,
+      targetType: epItem.audioType || 'sub', isOffline: Boolean(epItem.localUri),
+    };
+
+    // Natively push Player screen to break out of BottomNav
+    if (navigation && navigation.navigate) {
+      navigation.navigate('Player', playbackPayload);
+    } else {
+      setTopLevelPlayback(playbackPayload); // Absolute View fallback
+    }
+  };
+  // =========================================================
+
+  const handleCloseTopPlayer = async () => {
+    setTopLevelPlayback(null);
+    try {
+      StatusBar.setHidden(true, 'none');
+      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        await NavigationBar.setVisibilityAsync('hidden');
+      }
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    } catch (_) {}
   };
 
   const handlePauseOrResumeAllDownloading = async () => {
@@ -839,40 +784,6 @@ export default function Downloads({
     } catch (_) {}
   };
 
-  const handleOpenPlayerOnTop = async (epItem) => {
-    if (!epItem) return;
-    setMenuTarget(null);
-    const streamSource = epItem.localUri || epItem.streamUri;
-    if (!streamSource) return;
-
-    try {
-      StatusBar.setHidden(true, 'none');
-      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-        await NavigationBar.setVisibilityAsync('hidden');
-        await NavigationBar.setBehaviorAsync('overlay-swipe');
-      }
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-    } catch (_) {}
-
-    setTopLevelPlayback({
-      activeUrl: streamSource, streamUrl: streamSource, localUri: epItem.localUri || null, localMetaUri: epItem.localMetaUri || null,
-      localSubtitleUri: epItem.localSubtitleUri || null, animeTitle: epItem.animeTitle, animeBackdrop: epItem.localThumbUri || epItem.backdrop || epItem.coverImage,
-      coverImage: epItem.localPosterUri || epItem.coverImage || epItem.backdrop, episodeNum: Number(epItem.episodeNum), episodeTitle: epItem.episodeTitle,
-      animeId: epItem.animeId, slug: epItem.slug, quality: epItem.quality || '1080p', progress: 0, userUid: resolvedUid, activeProfileId: resolvedProfileId,
-      targetType: epItem.audioType || 'sub', isOffline: Boolean(epItem.localUri),
-    });
-  };
-
-  const handleCloseTopPlayer = async () => {
-    setTopLevelPlayback(null);
-    try {
-      StatusBar.setHidden(true, 'none');
-      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-        await NavigationBar.setVisibilityAsync('hidden');
-      }
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-    } catch (_) {}
-  };
 
   return (
     <View style={styles.container}>
@@ -967,6 +878,7 @@ export default function Downloads({
         </View>
       )}
 
+      {/* --- DOWNLOADED SERIES LIST ONLY (No Internal List Expansion) --- */}
       {activeTab === 'downloaded' && (
         <View style={{ flex: 1 }}>
           {downloadedSeriesGroups.length > 0 && (
@@ -986,7 +898,12 @@ export default function Downloads({
             showsVerticalScrollIndicator={false}
             ListEmptyComponent={<View style={styles.emptyWrap}><Text style={styles.emptyText}>No downloaded anime yet</Text></View>}
             renderItem={({ item: series }) => (
-              <TouchableOpacity style={[styles.mainCard, { marginBottom: 14 }]} activeOpacity={0.88} onPress={() => handleOpenSeriesPlayScreen(series)} onLongPress={() => handleDeleteEntireSeries(series)}>
+              <TouchableOpacity 
+                style={[styles.mainCard, { marginBottom: 14 }]} 
+                activeOpacity={0.88} 
+                onPress={() => handleOpenSeriesPlayScreen(series)} 
+                onLongPress={() => handleDeleteEntireSeries(series)}
+              >
                 <View style={styles.posterContainer}><ProxyImage source={{ uri: series.coverImage || series.backdrop }} style={styles.posterImage} resizeMode="cover" /></View>
                 <View style={styles.cardRightCol}>
                   <View style={styles.titleAndDotsRow}>
@@ -1014,20 +931,22 @@ export default function Downloads({
       {/* --- SETTINGS BOTTOM SHEET (Absolute View) --- */}
       {showSettings && (
         <View style={styles.absoluteOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setShowSettings(false)} />
-          <View style={styles.bottomSheetCard}>
-            <Text style={styles.sheetTitle}>Download Settings</Text>
-            <View style={styles.settingsRow}>
-              <Text style={styles.settingsLabel}>Download over Wi-Fi only</Text>
-              <Switch value={wifiOnly} onValueChange={setWifiOnly} trackColor={{ false: BORDER_GREY, true: PURE_RED }} thumbColor={WHITE} />
+          <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setShowSettings(false)} />
+          <View style={styles.bottomSheetWrapper}>
+            <View style={styles.bottomSheetCard}>
+              <Text style={styles.sheetTitle}>Download Settings</Text>
+              <View style={styles.settingsRow}>
+                <Text style={styles.settingsLabel}>Download over Wi-Fi only</Text>
+                <Switch value={wifiOnly} onValueChange={setWifiOnly} trackColor={{ false: BORDER_GREY, true: PURE_RED }} thumbColor={WHITE} />
+              </View>
+              <View style={styles.settingsRow}>
+                <Text style={styles.settingsLabel}>Total Download Storage</Text>
+                <Text style={styles.settingsValue}>{((queueItems.reduce((acc, item) => acc + (item.sizeBytes || 0), 0)) / (1024 * 1024)).toFixed(2)} MB</Text>
+              </View>
+              <TouchableOpacity style={styles.settingsCloseBtn} activeOpacity={0.8} onPress={() => setShowSettings(false)}>
+                <Text style={styles.settingsCloseBtnText}>Close</Text>
+              </TouchableOpacity>
             </View>
-            <View style={styles.settingsRow}>
-              <Text style={styles.settingsLabel}>Total Download Storage</Text>
-              <Text style={styles.settingsValue}>{((queueItems.reduce((acc, item) => acc + (item.sizeBytes || 0), 0)) / (1024 * 1024)).toFixed(2)} MB</Text>
-            </View>
-            <TouchableOpacity style={styles.settingsCloseBtn} activeOpacity={0.8} onPress={() => setShowSettings(false)}>
-              <Text style={styles.settingsCloseBtnText}>Close</Text>
-            </TouchableOpacity>
           </View>
         </View>
       )}
@@ -1035,62 +954,66 @@ export default function Downloads({
       {/* --- "⋮" MENU ACTION SHEET (Absolute View) --- */}
       {Boolean(menuTarget) && (
         <View style={styles.absoluteOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setMenuTarget(null)} />
-          <View style={styles.bottomSheetCard}>
-            <Text style={styles.sheetTitle} numberOfLines={1}>{menuTarget.animeTitle} {menuTarget.episodeNum ? `• Episode ${menuTarget.episodeNum}` : ''}</Text>
+          <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setMenuTarget(null)} />
+          <View style={styles.bottomSheetWrapper}>
+            <View style={styles.bottomSheetCard}>
+              <Text style={styles.sheetTitle} numberOfLines={1}>{menuTarget.animeTitle} {menuTarget.episodeNum ? `• Episode ${menuTarget.episodeNum}` : ''}</Text>
 
-            {Array.isArray(menuTarget.episodes) && (
-              <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleOpenSeriesPlayScreen(menuTarget)}>
-                <IconPlay size={18} color={WHITE} />
-                <Text style={styles.sheetOptionText}>See All Downloaded Episodes</Text>
+              {Array.isArray(menuTarget.episodes) && (
+                <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleOpenSeriesPlayScreen(menuTarget)}>
+                  <IconPlay size={18} color={WHITE} />
+                  <Text style={styles.sheetOptionText}>See All Downloaded Episodes</Text>
+                </TouchableOpacity>
+              )}
+
+              {menuTarget.status === 'completed' && !Array.isArray(menuTarget.episodes) && (
+                <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleOpenPlayerOnTop(menuTarget)}>
+                  <IconPlay size={18} color={WHITE} />
+                  <Text style={styles.sheetOptionText}>Play Episode</Text>
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => toggleBookmarkWatchlist(menuTarget)}>
+                <IconBookmark size={18} color={WHITE} filled={Boolean(watchlistMap[String(menuTarget.animeId)])} />
+                <Text style={styles.sheetOptionText}>{watchlistMap[String(menuTarget.animeId)] ? 'Remove from User List' : 'Add to User List'}</Text>
               </TouchableOpacity>
-            )}
 
-            {menuTarget.status === 'completed' && !Array.isArray(menuTarget.episodes) && (
-              <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleOpenPlayerOnTop(menuTarget)}>
-                <IconPlay size={18} color={WHITE} />
-                <Text style={styles.sheetOptionText}>Play Episode</Text>
+              <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleDeleteEpisode(menuTarget)}>
+                <View style={styles.binIconWrap}><IconTrash size={18} color={PURE_RED} /></View>
+                <Text style={[styles.sheetOptionText, { color: PURE_RED, marginLeft: -8 }]}>
+                  {Array.isArray(menuTarget.episodes) ? 'Delete Entire Series' : menuTarget.status === 'completed' ? 'Delete Download' : 'Cancel Download'}
+                </Text>
               </TouchableOpacity>
-            )}
-
-            <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => toggleBookmarkWatchlist(menuTarget)}>
-              <IconBookmark size={18} color={WHITE} filled={Boolean(watchlistMap[String(menuTarget.animeId)])} />
-              <Text style={styles.sheetOptionText}>{watchlistMap[String(menuTarget.animeId)] ? 'Remove from User List' : 'Add to User List'}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.sheetOptionRow} activeOpacity={0.8} onPress={() => handleDeleteEpisode(menuTarget)}>
-              <View style={styles.binIconWrap}><IconTrash size={18} color={PURE_RED} /></View>
-              <Text style={[styles.sheetOptionText, { color: PURE_RED, marginLeft: -8 }]}>
-                {Array.isArray(menuTarget.episodes) ? 'Delete Entire Series' : menuTarget.status === 'completed' ? 'Delete Download' : 'Cancel Download'}
-              </Text>
-            </TouchableOpacity>
+            </View>
           </View>
         </View>
       )}
 
-      {/* --- CONFIRMATION POPUP (Absolute View) --- */}
+      {/* --- CONFIRMATION POPUP (Absolute View Bottom Sheet) --- */}
       {Boolean(confirmDialog) && (
         <View style={styles.absoluteOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setConfirmDialog(null)} />
-          <View style={styles.bottomSheetCard}>
-            <View style={{ alignItems: 'center' }}>
-              <View style={styles.confirmIconWrap}><IconTrash size={22} color={PURE_RED} /></View>
-              <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
-              <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
-              <View style={styles.confirmBtnsRow}>
-                <TouchableOpacity style={styles.confirmCancelBtn} activeOpacity={0.85} onPress={() => setConfirmDialog(null)}>
-                  <Text style={styles.confirmCancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.confirmDangerBtn} activeOpacity={0.85} onPress={confirmDialog.onConfirm}>
-                  <Text style={styles.confirmDangerBtnText}>{confirmDialog.confirmText || 'Delete'}</Text>
-                </TouchableOpacity>
+          <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setConfirmDialog(null)} />
+          <View style={styles.bottomSheetWrapper}>
+            <View style={styles.bottomSheetCard}>
+              <View style={{ alignItems: 'center' }}>
+                <View style={styles.confirmIconWrap}><IconTrash size={22} color={PURE_RED} /></View>
+                <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
+                <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
+                <View style={styles.confirmBtnsRow}>
+                  <TouchableOpacity style={styles.confirmCancelBtn} activeOpacity={0.85} onPress={() => setConfirmDialog(null)}>
+                    <Text style={styles.confirmCancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.confirmDangerBtn} activeOpacity={0.85} onPress={confirmDialog.onConfirm}>
+                    <Text style={styles.confirmDangerBtnText}>{confirmDialog.confirmText || 'Delete'}</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
           </View>
         </View>
       )}
 
-      {/* --- PLAY.JS SERIES PAGE (Absolute Fullscreen View) --- */}
+      {/* --- PLAY.JS SERIES PAGE (Fallback Absolute Fullscreen View) --- */}
       {Boolean(activePlaySeries) && (
         <View style={styles.fullScreenPlayerOverlay}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1110,7 +1033,7 @@ export default function Downloads({
         </View>
       )}
 
-      {/* --- FULLSCREEN VIDEO PLAYER (Absolute Fullscreen View) --- */}
+      {/* --- FULLSCREEN VIDEO PLAYER (Fallback Absolute Fullscreen View) --- */}
       {Boolean(topLevelPlayback) && (
         <View style={styles.fullScreenPlayerOverlay}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
@@ -1136,14 +1059,26 @@ const styles = StyleSheet.create({
   // --- FULL SCREEN / MODAL REPLACEMENTS ---
   absoluteOverlay: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    top: -1000, 
+    left: -1000,
+    right: -1000,
+    bottom: -1000,
     zIndex: 9999,
     elevation: 9999,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  overlayBackground: {
+    position: 'absolute',
+    width: SCREEN_WIDTH * 3,
+    height: SCREEN_HEIGHT * 3,
     backgroundColor: 'rgba(0,0,0,0.85)',
-    justifyContent: 'flex-end',
+  },
+  bottomSheetWrapper: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: SCREEN_WIDTH,
   },
   fullScreenPlayerOverlay: {
     position: 'absolute',
