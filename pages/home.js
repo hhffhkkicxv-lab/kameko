@@ -195,7 +195,8 @@ export default function Home({
             onSelectAnime={handleSelectAnime} 
           />
 
-          <View style={{ height: 40 }} />
+          {/* INCREASED SPACER: Prevents the last item from getting cut off by the floating bottom nav */}
+          <View style={{ height: 110 }} />
         </ScrollView>
 
         {/* FLOATING HEADER WITH ENHANCED GRADIENT */}
