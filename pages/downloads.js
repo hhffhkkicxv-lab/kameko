@@ -1754,7 +1754,7 @@ export default function Downloads({
         <View style={styles.settingsModalOverlay}>
           <View style={styles.settingsCard}>
             <Text style={styles.settingsTitle}>Download Settings</Text>
-            
+
             <View style={styles.settingsRow}>
               <Text style={styles.settingsLabel}>Download over Wi-Fi only</Text>
               <Switch
@@ -1942,78 +1942,42 @@ export default function Downloads({
         </View>
       </Modal>
 
-      {/* PLAY.JS MODAL FOR SERIES */}
-      <Modal
-        visible={Boolean(activePlaySeries)}
-        animationType="slide"
-        transparent={false}
-        hardwareAccelerated={true}
-        statusBarTranslucent={true}
-        onShow={async () => {
-          try {
-            StatusBar.setHidden(true, 'none');
-            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-              await NavigationBar.setVisibilityAsync('hidden');
-              await NavigationBar.setBehaviorAsync('overlay-swipe');
-            }
-          } catch (_) {}
-        }}
-        onRequestClose={() => setActivePlaySeries(null)}
-      >
-        <View style={styles.topPlayerModalContainer}>
+      {/* PLAY.JS VIEW FOR SERIES (Replaced Modal for NavigationBar fix) */}
+      {Boolean(activePlaySeries) && (
+        <View style={[StyleSheet.absoluteFill, { zIndex: 9998, backgroundColor: '#000' }]}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-          {activePlaySeries && (
-            <PlayScreen
-              anime={activePlaySeries}
-              selectedAnime={activePlaySeries}
-              item={activePlaySeries}
-              route={{ params: { anime: activePlaySeries, ...activePlaySeries } }}
-              navigation={{
-                ...(navigation || {}),
-                goBack: () => setActivePlaySeries(null),
-              }}
-              onBack={() => setActivePlaySeries(null)}
-              onClose={() => setActivePlaySeries(null)}
-              user={resolvedUser}
-              activeProfile={resolvedProfile}
-              currentProfile={resolvedProfile}
-              activeProfileId={resolvedProfileId}
-            />
-          )}
+          <PlayScreen
+            anime={activePlaySeries}
+            selectedAnime={activePlaySeries}
+            item={activePlaySeries}
+            route={{ params: { anime: activePlaySeries, ...activePlaySeries } }}
+            navigation={{
+              ...(navigation || {}),
+              goBack: () => setActivePlaySeries(null),
+            }}
+            onBack={() => setActivePlaySeries(null)}
+            onClose={() => setActivePlaySeries(null)}
+            user={resolvedUser}
+            activeProfile={resolvedProfile}
+            currentProfile={resolvedProfile}
+            activeProfileId={resolvedProfileId}
+          />
         </View>
-      </Modal>
+      )}
 
-      {/* TOP-MOST FULLSCREEN IMMERSIVE PLAYER MODAL */}
-      <Modal
-        visible={Boolean(topLevelPlayback)}
-        animationType="fade"
-        transparent={false}
-        hardwareAccelerated={true}
-        statusBarTranslucent={true}
-        onShow={async () => {
-          try {
-            StatusBar.setHidden(true, 'none');
-            if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-              await NavigationBar.setVisibilityAsync('hidden');
-              await NavigationBar.setBehaviorAsync('overlay-swipe');
-            }
-          } catch (_) {}
-        }}
-        onRequestClose={handleCloseTopPlayer}
-      >
-        <View style={styles.topPlayerModalContainer}>
+      {/* TOP-MOST FULLSCREEN IMMERSIVE PLAYER VIEW (Replaced Modal for NavigationBar fix) */}
+      {Boolean(topLevelPlayback) && (
+        <View style={[StyleSheet.absoluteFill, { zIndex: 9999, backgroundColor: '#000' }]}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-          {topLevelPlayback && (
-            <Player
-              route={{ params: topLevelPlayback }}
-              navigation={{ goBack: handleCloseTopPlayer }}
-              user={resolvedUser}
-              activeProfile={resolvedProfile}
-              activeProfileId={resolvedProfileId}
-            />
-          )}
+          <Player
+            route={{ params: topLevelPlayback }}
+            navigation={{ goBack: handleCloseTopPlayer }}
+            user={resolvedUser}
+            activeProfile={resolvedProfile}
+            activeProfileId={resolvedProfileId}
+          />
         </View>
-      </Modal>
+      )}
     </View>
   );
 }
