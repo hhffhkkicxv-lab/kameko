@@ -8,9 +8,9 @@ import * as NavigationBar from 'expo-navigation-bar';
 import Carousel from './home/carousel';
 import ContinueWatching from './home/continue_watching'; 
 import RecentSlider from './home/recent_slider';
-import ForYouSlider from './home/foryou_slider';
+import ForYouSlider from './home/foryou_slider';    // NEW
 import TrendingSlider from './home/trending_slider';
-import Top10Slider from './home/top10_slider';
+import Top10Slider from './home/top10_slider';      // NEW
 import Play from '../pages/play';
 import ProfileSettings from './profile'; 
 import Search from '../components/search'; 
@@ -182,7 +182,6 @@ export default function Home({
             />
           </View>
           
-          {/* Recent Slider */}
           <RecentSlider 
             user={resolvedUser} 
             activeProfile={currentProfile}
@@ -191,7 +190,6 @@ export default function Home({
             onSelectAnime={handleSelectAnime} 
           />
 
-          {/* For You Slider (Based on Library & Downloads) */}
           <ForYouSlider 
             user={resolvedUser} 
             activeProfile={currentProfile}
@@ -200,7 +198,6 @@ export default function Home({
             onSelectAnime={handleSelectAnime} 
           />
 
-          {/* Trending Slider */}
           <TrendingSlider 
             user={resolvedUser} 
             activeProfile={currentProfile}
@@ -209,7 +206,6 @@ export default function Home({
             onSelectAnime={handleSelectAnime} 
           />
 
-          {/* Top 10 Slider */}
           <Top10Slider 
             user={resolvedUser} 
             activeProfile={currentProfile}
@@ -218,7 +214,7 @@ export default function Home({
             onSelectAnime={handleSelectAnime} 
           />
 
-          {/* INCREASED SPACER: Prevents the last item from getting cut off by the floating bottom nav */}
+          {/* Spacer increased to 110 to clear the absolute BottomNav */}
           <View style={{ height: 110 }} />
         </ScrollView>
 
