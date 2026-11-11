@@ -4,7 +4,12 @@ import firestore from '@react-native-firebase/firestore';
 import Svg, { Path } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
-const BRAND_RED = '#E50914'; const BLACK = '#000000'; const WHITE = '#FFFFFF'; const DARK_GREY = '#18181C'; const BORDER_GREY = '#26262C';
+const BRAND_RED = '#E50914'; 
+const BLACK = '#000000'; 
+const WHITE = '#FFFFFF'; 
+const DARK_GREY = '#18181C'; 
+const BORDER_GREY = '#26262C';
+const TEXT_GREY = '#8E8E93'; // FIX: Added missing variable to prevent crash on boot
 
 const BookmarkIcon = ({ filled }) => (
   <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : WHITE} strokeWidth="2.5"><Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></Svg>
