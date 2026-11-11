@@ -1,16 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, ActivityIndicator, Animated 
+  TouchableOpacity, Animated 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
+// --- STRICT PALETTE ---
 const BRAND_RED = '#E50914';
+const BLACK = '#000000';
+const WHITE = '#FFFFFF';
+const DARK_GREY = '#18181C';
+const BORDER_GREY = '#26262C';
+const TEXT_GREY = '#8E8E93';
 
 const BookmarkIcon = ({ filled }) => (
-  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : "#FFFFFF"} strokeWidth="2.5">
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : WHITE} strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -24,14 +30,18 @@ const Top10Skeleton = () => {
         Animated.timing(shimmer, { toValue: 0.3, duration: 800, useNativeDriver: true })
       ])
     ).start();
-  }, []);
+  }, [shimmer]);
 
   return (
     <View style={styles.sectionContainer}>
-      <View style={styles.headerRow}><Text style={styles.sectionTitle}>Top 10 Anime</Text></View>
+      <View style={styles.headerRow}>
+        <Text style={styles.sectionTitle}>Top 10 Anime</Text>
+      </View>
       <View style={{ flexDirection: 'row', paddingHorizontal: 20, gap: 15 }}>
-        {[1, 2, 3, 4].map((_, i) => (
-          <Animated.View key={i} style={[styles.skeletonCard, { opacity: shimmer }]} />
+        {[1, 2, 3].map((_, i) => (
+          <View key={i} style={styles.cardContainer}>
+            <Animated.View style={[styles.skeletonCard, { opacity: shimmer }]} />
+          </View>
         ))}
       </View>
     </View>
@@ -52,13 +62,14 @@ export default function Top10Slider({ user, onSelectAnime }) {
       .collection('library')
       .onSnapshot((snap) => {
         const currentLib = new Set();
-        snap.forEach((doc) => currentLib.add(doc.id));
+        snap?.forEach((doc) => currentLib.add(doc.id));
         setLibrarySet(currentLib);
       });
     return () => unsubscribe();
   }, [user]);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchTop10 = async () => {
       try {
         const query = `
@@ -100,7 +111,6 @@ export default function Top10Slider({ user, onSelectAnime }) {
             }) || apiResults[0];
 
             if (!exactMatch) return null;
-
             streamId = exactMatch.id;
           } catch(e) {
             return null;
@@ -120,15 +130,17 @@ export default function Top10Slider({ user, onSelectAnime }) {
           };
         }));
 
-        setTop10List(verifiedTop10.filter(item => item !== null).slice(0, 10));
+        if (isMounted) {
+          setTop10List(verifiedTop10.filter(item => item !== null).slice(0, 10));
+          setLoading(false);
+        }
       } catch (error) {
-        console.error("Top 10 Slider fetch error:", error);
-      } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     };
 
     fetchTop10();
+    return () => { isMounted = false; };
   }, [currentYear]);
 
   const handleNavigateToPlay = (anime) => {
@@ -151,9 +163,14 @@ export default function Top10Slider({ user, onSelectAnime }) {
     if (!user) return;
     const ref = firestore().collection('users').doc(user.uid).collection('library').doc(anime.id);
     if (librarySet.has(anime.id)) {
-      await ref.delete();
+      await ref.delete().catch(() => {});
     } else {
-      await ref.set({ id: anime.id, title: anime.title, img: anime.image, addedAt: firestore.FieldValue.serverTimestamp() });
+      await ref.set({ 
+        id: anime.id, 
+        title: anime.title, 
+        img: anime.image, 
+        addedAt: Date.now() 
+      }).catch(() => {});
     }
   };
 
@@ -169,22 +186,36 @@ export default function Top10Slider({ user, onSelectAnime }) {
         data={top10List}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.listPadding}
-        snapToInterval={155} 
+        snapToInterval={185} 
         decelerationRate="fast"
         renderItem={({ item, index }) => {
           const isAdded = librarySet.has(item.id);
           const rank = index + 1;
+          // Shift the number 10 slightly more to the left so both digits look balanced
+          const numberLeftOffset = rank === 10 ? -22 : -10; 
+
           return (
-            <TouchableOpacity style={styles.cardContainer} activeOpacity={0.85} onPress={() => handleNavigateToPlay(item)}>
+            <TouchableOpacity 
+              style={styles.cardContainer} 
+              activeOpacity={0.88} 
+              onPress={() => handleNavigateToPlay(item)}
+            >
+              {/* GIANT NETFLIX-STYLE NUMBER */}
+              <Text style={[styles.giantNumber, { left: numberLeftOffset }]}>
+                {rank}
+              </Text>
+
               <View style={styles.imageWrapper}>
                 <ProxyImage source={{ uri: item.image }} style={styles.coverImage} resizeMode="cover" />
                 
-                {/* Large overlapping numbers matching web styling context */}
                 <View style={styles.badgeContainer}>
-                  <View style={styles.rankBadge}><Text style={styles.rankBadgeText}>#{rank}</Text></View>
-                  {item.episode !== '?' && <View style={styles.epBadge}><Text style={styles.epBadgeText}>EP {item.episode}</Text></View>}
+                  {item.episode !== '?' && (
+                    <View style={styles.epBadge}>
+                      <Text style={styles.epBadgeText}>EP {item.episode}</Text>
+                    </View>
+                  )}
                 </View>
 
                 <TouchableOpacity 
@@ -196,7 +227,6 @@ export default function Top10Slider({ user, onSelectAnime }) {
                   <BookmarkIcon filled={isAdded} />
                 </TouchableOpacity>
               </View>
-              <Text style={styles.animeTitle} numberOfLines={1}>{item.title}</Text>
             </TouchableOpacity>
           );
         }}
@@ -206,21 +236,59 @@ export default function Top10Slider({ user, onSelectAnime }) {
 }
 
 const styles = StyleSheet.create({
-  sectionContainer: { marginTop: 10, marginBottom: 25 },
-  loadingContainer: { height: 200, justifyContent: 'center', alignItems: 'center' },
+  sectionContainer: { marginTop: 15, marginBottom: 25 },
   headerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
-  sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
-  listPadding: { paddingHorizontal: 20 },
-  cardContainer: { width: 140, marginRight: 15 },
-  imageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: '#2A2A2A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  sectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  
+  // Padding adjusted to account for the numbers sticking out & their drop shadow
+  listPadding: { paddingHorizontal: 20, paddingBottom: 15, paddingTop: 10 },
+  
+  cardContainer: { 
+    width: 175, // Wide enough to hold the poster (140) + sticking out number space
+    height: 210, 
+    marginRight: 10,
+    justifyContent: 'flex-end',
+    alignItems: 'flex-end',
+  },
+  
+  // The giant number is positioned BEHIND the image, sticking out to the left
+  giantNumber: {
+    position: 'absolute',
+    bottom: -28, 
+    fontSize: 140,
+    fontWeight: '900',
+    color: WHITE,
+    zIndex: 1, 
+    letterSpacing: -8, // Tightens the text layout
+    textShadowColor: 'rgba(0,0,0,0.85)',
+    textShadowOffset: { width: 4, height: 4 },
+    textShadowRadius: 10,
+  },
+
+  imageWrapper: { 
+    width: 140, 
+    height: 210, 
+    borderRadius: 8, 
+    overflow: 'hidden', 
+    backgroundColor: DARK_GREY, 
+    borderWidth: 1, 
+    borderColor: BORDER_GREY,
+    zIndex: 5, // Brings the poster to the front so it covers the right half of the number
+    elevation: 5, // Android shadow
+    shadowColor: BLACK, // iOS Shadow
+    shadowOffset: { width: -4, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+  },
+  
   coverImage: { width: '100%', height: '100%' },
+  
   badgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
-  rankBadge: { backgroundColor: BRAND_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  rankBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '900' },
-  epBadge: { backgroundColor: '#FFFFFF', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-  epBadgeText: { color: '#000000', fontSize: 10, fontWeight: '900' },
-  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  epBadge: { backgroundColor: WHITE, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
+  epBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
+  
+  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
   saveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: BRAND_RED },
-  animeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
-  skeletonCard: { width: 140, height: 210, backgroundColor: '#2A2A2A', borderRadius: 8 }
+  
+  skeletonCard: { width: 140, height: 210, backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY, alignSelf: 'flex-end' }
 });
