@@ -5,15 +5,23 @@ import firestore from '@react-native-firebase/firestore';
 import Svg, { Defs, LinearGradient, Stop, Rect, Path, Circle } from 'react-native-svg';
 import * as NavigationBar from 'expo-navigation-bar';
 
+// --- SLIDER IMPORTS ---
 import Carousel from './home/carousel';
 import ContinueWatching from './home/continue_watching'; 
-import GenresSlider from './home/genres_slider';       
-import GenreGrid from './home/genre_grid';             
 import RecentSlider from './home/recent_slider';
-import ForYouSlider from './home/foryou_slider';    
 import TrendingSlider from './home/trending_slider';
-import MoviesSlider from './home/movies_slider';       // NEW
 import Top10Slider from './home/top10_slider';      
+import ForYouSlider from './home/foryou_slider';    
+import MoviesSlider from './home/movies_slider';       
+import GenresSlider from './home/genres_slider';       
+import BingeSlider from './home/binge_slider';
+import BecauseYouLikedSlider from './home/because_you_liked_slider';
+import EditorsChoiceSlider from './home/editors_choice_slider';
+import TopRomanceSlider from './home/top_romance_slider';
+import DubsSlider from './home/dubs_slider';
+
+// --- OVERLAY IMPORTS ---
+import GenreGrid from './home/genre_grid';             
 import Play from '../pages/play';
 import ProfileSettings from './profile'; 
 import Search from '../components/search'; 
@@ -112,25 +120,48 @@ export default function Home({
       <View style={[styles.container, isOverlayActive && { display: 'none' }]}>
         <ScrollView showsVerticalScrollIndicator={false} style={styles.scroll} overScrollMode="never" bounces={false}>
           
+          {/* 1. Carousel */}
           <Carousel user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
+          {/* 2. Continue Watching */}
           <View style={styles.contentPadding}>
             <ContinueWatching user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           </View>
 
-          <GenresSlider onSelectGenre={(genre) => setActiveGenre(genre)} />
-          
+          {/* 3. Recent */}
           <RecentSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          <ForYouSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
-
+          {/* 4. Trending */}
           <TrendingSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* New Movies Slider positioned here */}
-          <MoviesSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
-
+          {/* 5. Top 10 */}
           <Top10Slider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
+          {/* 6. For You */}
+          <ForYouSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          {/* 7. Movies */}
+          <MoviesSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          {/* 8. Genres (Special colorful slider) */}
+          <GenresSlider onSelectGenre={(genre) => setActiveGenre(genre)} />
+          
+          {/* 9. Binge in One Night */}
+          <BingeSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+          
+          {/* 10. Because You Liked... */}
+          <BecauseYouLikedSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+          
+          {/* 11. Editor's Choice */}
+          <EditorsChoiceSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+          
+          {/* 12. Romance */}
+          <TopRomanceSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          {/* 13. Dubs (Included from previous request) */}
+          <DubsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          {/* Bottom spacer to clear absolute BottomNav */}
           <View style={{ height: 110 }} />
         </ScrollView>
 
