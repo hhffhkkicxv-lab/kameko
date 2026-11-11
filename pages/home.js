@@ -120,48 +120,35 @@ export default function Home({
       <View style={[styles.container, isOverlayActive && { display: 'none' }]}>
         <ScrollView showsVerticalScrollIndicator={false} style={styles.scroll} overScrollMode="never" bounces={false}>
           
-          {/* 1. Carousel */}
           <Carousel user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
-          {/* 2. Continue Watching */}
           <View style={styles.contentPadding}>
             <ContinueWatching user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           </View>
 
-          {/* 3. Recent */}
+          {/* EXACT ORDER YOU REQUESTED */}
           <RecentSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* 4. Trending */}
           <TrendingSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* 5. Top 10 */}
           <Top10Slider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* 6. For You */}
           <ForYouSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* 7. Movies */}
           <MoviesSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* 8. Genres (Special colorful slider) */}
           <GenresSlider onSelectGenre={(genre) => setActiveGenre(genre)} />
           
-          {/* 9. Binge in One Night */}
           <BingeSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
-          {/* 10. Because You Liked... */}
           <BecauseYouLikedSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
-          {/* 11. Editor's Choice */}
           <EditorsChoiceSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
-          {/* 12. Romance */}
           <TopRomanceSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* 13. Dubs (Included from previous request) */}
           <DubsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* Bottom spacer to clear absolute BottomNav */}
           <View style={{ height: 110 }} />
         </ScrollView>
 
