@@ -15,6 +15,7 @@ import ForYouSlider from './home/foryou_slider';
 import MoviesSlider from './home/movies_slider';       
 import GenresSlider from './home/genres_slider';       
 import BingeSlider from './home/binge_slider';
+import ShortsSlider from './home/shorts_slider';               // FIX: Added previously missing import
 import BecauseYouLikedSlider from './home/because_you_liked_slider';
 import EditorsChoiceSlider from './home/editors_choice_slider';
 import TopRomanceSlider from './home/top_romance_slider';
@@ -126,7 +127,6 @@ export default function Home({
             <ContinueWatching user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           </View>
 
-          {/* EXACT ORDER YOU REQUESTED */}
           <RecentSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
           <TrendingSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
@@ -141,6 +141,8 @@ export default function Home({
           
           <BingeSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
+          <ShortsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
           <BecauseYouLikedSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
           <EditorsChoiceSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
