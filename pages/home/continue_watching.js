@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
   TouchableOpacity, Animated, StatusBar, Platform, BackHandler
@@ -156,7 +156,7 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
   // Bulk Delete State
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
-  const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false); // Used as "confirm dialog" for both delete all & delete selected
+  const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false); 
 
   // Direct Fullscreen Player State
   const [directPlaybackParams, setDirectPlaybackParams] = useState(null);
@@ -305,16 +305,14 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
 
     setDeleteAllModalVisible(false);
 
-    // Collect all doc IDs to delete based on the selected animeIds
     const allDocIdsToDelete = new Set();
     historyList.forEach(item => {
       if (selectedIds.includes(String(item.animeId))) {
-        deletedIdsRef.current.add(String(item.animeId)); // Block from snapshot
+        deletedIdsRef.current.add(String(item.animeId)); 
         (item._docIds || [item.animeId]).forEach(id => allDocIdsToDelete.add(id));
       }
     });
 
-    // Optimistically update UI
     setHistoryList((prev) => prev.filter((item) => !selectedIds.includes(String(item.animeId))));
     setIsBulkDeleteMode(false);
     setBulkDeleteSelectedMap({});
@@ -331,7 +329,6 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
 
       const batch = firestore().batch();
       
-      // Also query to catch any missed episode docs for these animeIds
       for (const cleanId of selectedIds) {
         allDocIdsToDelete.add(cleanId);
         const matchingSnap = await colRef.where('animeId', '==', cleanId).get().catch(() => null);
@@ -345,9 +342,7 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
       });
 
       await batch.commit();
-    } catch (err) {
-      console.warn("Failed to delete watch history items:", err);
-    } finally {
+    } catch (err) {} finally {
       setTimeout(() => {
         selectedIds.forEach(id => deletedIdsRef.current.delete(String(id)));
       }, 4000);
@@ -376,9 +371,7 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         batch.delete(doc.ref);
       });
       await batch.commit();
-    } catch (e) {
-      console.warn("Failed to delete all watch history:", e);
-    } finally {
+    } catch (e) {} finally {
       setTimeout(() => {
         deletedIdsRef.current.clear();
       }, 4000);
@@ -425,7 +418,7 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
     } catch (_) {}
   };
 
-  // Hardware back intercepts Modals & Players
+  // Hardware back intercepts Modals & Players directly avoiding app close
   useEffect(() => {
     const onHardwareBack = () => {
       if (directPlaybackParams) { handleCloseDirectPlayer(); return true; }
@@ -562,9 +555,9 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         </View>
       )}
 
-      {/* DIRECT FULLSCREEN PLAYER.JS (<View> instead of Modal) */}
+      {/* DIRECT FULLSCREEN PLAYER.JS (Strictly <View>, NOT Modal) */}
       {PlayerComponent && directPlaybackParams && (
-        <View style={styles.fullScreenPlayerOverlay}>
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 100000, elevation: 100000, backgroundColor: BLACK }]}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
           <PlayerComponent
             route={{ params: directPlaybackParams }}
@@ -632,9 +625,9 @@ const styles = StyleSheet.create({
   bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900' },
 
   // Absolute Overlay (Bottom Sheet)
-  absoluteOverlay: { position: 'absolute', top: -1000, left: -1000, right: -1000, bottom: -1000, zIndex: 9999, elevation: 9999, justifyContent: 'center', alignItems: 'center' },
-  overlayBackground: { position: 'absolute', width: '300%', height: '300%', backgroundColor: 'rgba(0,0,0,0.85)' },
-  bottomSheetWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0 },
+  absoluteOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 9999, elevation: 9999, justifyContent: 'flex-end', alignItems: 'center' },
+  overlayBackground: { position: 'absolute', width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.85)' },
+  bottomSheetWrapper: { width: '100%', position: 'absolute', bottom: 0 },
   bottomSheetCard: { width: '100%', backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 22, paddingTop: 24, paddingBottom: 34, borderTopWidth: 1, borderColor: BORDER_GREY, alignItems: 'center' },
   confirmIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
   confirmPopupTitle: { color: WHITE, fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
@@ -644,7 +637,4 @@ const styles = StyleSheet.create({
   confirmCancelBtnText: { color: WHITE, fontSize: 13, fontWeight: '700' },
   confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center' },
   confirmDangerBtnText: { color: WHITE, fontSize: 13, fontWeight: '800' },
-
-  // Player Absolute Fullscreen
-  fullScreenPlayerOverlay: { position: 'absolute', top: -1000, left: -1000, right: -1000, bottom: -1000, zIndex: 10000, elevation: 10000, backgroundColor: BLACK },
 });
