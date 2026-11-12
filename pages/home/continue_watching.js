@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, Animated, StatusBar, Platform, BackHandler
+  TouchableOpacity, StatusBar, Platform, BackHandler, Modal
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import * as NavigationBar from 'expo-navigation-bar';
@@ -9,12 +9,12 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
-// FIX 1: Static import (No try/catch require blocks to prevent Metro crashes)
+// --- STRICT STATIC IMPORT (CRASH-PROOF) ---
 import PlayerComponent from '../../pages/play/player';
 
 // --- STRICT PALETTE ---
 const BRAND_RED = '#E50914';
-const PURE_RED = '#FF0000'; // FIX 2: Added missing variable to prevent StyleSheet crash
+const PURE_RED = '#FF0000';
 const BLACK = '#000000';
 const WHITE = '#FFFFFF';
 const DARK_GREY = '#18181C';
@@ -22,7 +22,6 @@ const BORDER_GREY = '#26262C';
 const TEXT_GREY = '#8E8E93';
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
-// --- Helper for Timestamp Formatting ---
 const formatSeconds = (seconds) => {
   if (isNaN(seconds) || seconds < 0) return '00:00';
   const totalSecs = Math.floor(seconds);
@@ -32,20 +31,12 @@ const formatSeconds = (seconds) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-// --- Premium SVGs ---
-const IconClose = ({ size = 16, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
-    <Path d="M18 6L6 18M6 6l12 12" />
-  </Svg>
-);
-
 const IconTrash = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
     <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
   </Svg>
 );
 
-// --- Individual Animated Card Component ---
 const ContinueCard = ({ item, isBulkDeleteMode, isSelectedForDelete, toggleBulkDeleteSelection, handleLongPressCard, onPlayDirect }) => {
   const animeId = String(item.animeId || item.id || '');
   const displayTitle = item.animeTitle || item.title || `Anime ${animeId}`;
@@ -145,10 +136,12 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
   const [historyList, setHistoryList] = useState([]);
   const [loading, setLoading] = useState(true);
   
+  // Bulk Delete State
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
   const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false); 
 
+  // Direct Fullscreen Player State
   const [directPlaybackParams, setDirectPlaybackParams] = useState(null);
 
   const deletedIdsRef = useRef(new Set());
@@ -233,7 +226,6 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         setHistoryList(enriched.filter((i) => !deletedIdsRef.current.has(String(i.animeId))));
         setLoading(false);
       }, (err) => {
-        console.warn("Continue Watching listener error:", err);
         setLoading(false);
       });
 
@@ -445,13 +437,7 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
                 <Text style={styles.bulkDeleteCountText}>
                   {selectedCount} Selected
                 </Text>
-                <TouchableOpacity
-                  style={styles.bulkCancelBtn}
-                  onPress={() => {
-                    setIsBulkDeleteMode(false);
-                    setBulkDeleteSelectedMap({});
-                  }}
-                >
+                <TouchableOpacity style={styles.bulkCancelBtn} onPress={() => { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); }}>
                   <Text style={styles.bulkCancelText}>Cancel</Text>
                 </TouchableOpacity>
               </View>
@@ -472,7 +458,14 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         </>
       )}
 
-      {Boolean(deleteAllModalVisible) && (
+      {/* REUSABLE TRANSPARENT MODAL OVERLAY FOR DELETE POPUPS (Breaks out of ScrollView perfectly) */}
+      <Modal
+        visible={Boolean(deleteAllModalVisible)}
+        transparent={true}
+        animationType="fade"
+        statusBarTranslucent={true}
+        onRequestClose={() => setDeleteAllModalVisible(false)}
+      >
         <View style={styles.absoluteOverlay}>
           <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setDeleteAllModalVisible(false)} />
           <View style={styles.bottomSheetWrapper}>
@@ -503,20 +496,30 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
             </View>
           </View>
         </View>
-      )}
+      </Modal>
 
-      {PlayerComponent && directPlaybackParams && (
-        <View style={[StyleSheet.absoluteFillObject, { zIndex: 100000, elevation: 100000, backgroundColor: BLACK }]}>
+      {/* FULLSCREEN PLAYER MODAL (Breaks out of ScrollView perfectly) */}
+      <Modal
+        visible={Boolean(directPlaybackParams)}
+        transparent={true}
+        animationType="fade"
+        statusBarTranslucent={true}
+        supportedOrientations={['portrait', 'landscape']}
+        onRequestClose={handleCloseDirectPlayer}
+      >
+        <View style={styles.fullScreenPlayerOverlay}>
           <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-          <PlayerComponent
-            route={{ params: directPlaybackParams }}
-            navigation={{ goBack: handleCloseDirectPlayer }}
-            user={user}
-            activeProfile={activeProfile}
-            activeProfileId={activeProfile?.id}
-          />
+          {PlayerComponent && (
+            <PlayerComponent
+              route={{ params: directPlaybackParams }}
+              navigation={{ goBack: handleCloseDirectPlayer }}
+              user={user}
+              activeProfile={activeProfile}
+              activeProfileId={activeProfile?.id}
+            />
+          )}
         </View>
-      )}
+      </Modal>
     </View>
   );
 }
@@ -544,7 +547,7 @@ const styles = StyleSheet.create({
   timestampText: { color: 'rgba(255,255,255,0.75)', fontSize: 10, fontFamily: 'monospace', fontWeight: '700' },
 
   progressBarBg: { width: '100%', height: 3, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
-  progressBarFill: { height: '100%', backgroundColor: PURE_RED, borderRadius: 2 },
+  progressBarFill: { height: '100%', backgroundColor: BRAND_RED, borderRadius: 2 },
 
   bulkDeleteFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: BLACK, borderTopWidth: 1.5, borderTopColor: BORDER_GREY, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 18, zIndex: 900, elevation: 25 },
   bulkDeleteBarTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
@@ -554,9 +557,9 @@ const styles = StyleSheet.create({
   bulkConfirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 13, borderRadius: 6 },
   bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900' },
 
-  absoluteOverlay: { ...StyleSheet.absoluteFillObject, zIndex: 9999, elevation: 9999, justifyContent: 'flex-end', alignItems: 'center' },
-  overlayBackground: { position: 'absolute', width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.85)' },
-  bottomSheetWrapper: { width: '100%', position: 'absolute', bottom: 0 },
+  absoluteOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
+  overlayBackground: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)' },
+  bottomSheetWrapper: { width: '100%', paddingBottom: 0 },
   bottomSheetCard: { width: '100%', backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 22, paddingTop: 24, paddingBottom: 34, borderTopWidth: 1, borderColor: BORDER_GREY, alignItems: 'center' },
   confirmIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
   confirmPopupTitle: { color: WHITE, fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
@@ -566,4 +569,6 @@ const styles = StyleSheet.create({
   confirmCancelBtnText: { color: WHITE, fontSize: 13, fontWeight: '700' },
   confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center' },
   confirmDangerBtnText: { color: WHITE, fontSize: 13, fontWeight: '800' },
+
+  fullScreenPlayerOverlay: { flex: 1, backgroundColor: BLACK },
 });
