@@ -16,6 +16,8 @@ import * as ShareSheetModule from '../components/ShareSheet';
 import * as RoomModule from '../components/room';
 
 const { width, height } = Dimensions.get('window');
+const SCREEN_WIDTH = width;
+const SCREEN_HEIGHT = height;
 
 // --- STRICT PALETTE ---
 const BLACK = '#000000';
@@ -168,12 +170,16 @@ export default function Play({
   };
 
   const [currentAnime, setCurrentAnime] = useState(initialAnime);
+  const [historyStack, setHistoryStack] = useState([]); // Array of previously viewed anime objects
+  const flatListRef = useRef(null); // Ref to scroll FlatList back to top
 
   useEffect(() => {
     if (propAnime && (propAnime.id || propAnime.animeId)) {
       setCurrentAnime(propAnime);
+      setHistoryStack([]);
     } else if (routeParams.anime && (routeParams.anime.id || routeParams.anime.animeId)) {
       setCurrentAnime(routeParams.anime);
+      setHistoryStack([]);
     }
   }, [propAnime, routeParams.anime]);
 
@@ -325,6 +331,27 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
+  // --- LOCAL NAVIGATION HANDLER (BACK) ---
+  const handleGoBack = () => {
+    if (historyStack.length > 0) {
+      // Pop the last anime from history stack
+      const previousAnime = historyStack[historyStack.length - 1];
+      setHistoryStack((prev) => prev.slice(0, -1));
+      
+      setTitleLogo(null);
+      setTmdbSynopsis(previousAnime.description || '');
+      setCurrentAnime(previousAnime);
+      setActiveTab('episodes');
+      
+      // Scroll to top automatically when navigating back
+      flatListRef.current?.scrollToOffset({ animated: true, offset: 0 });
+    } else {
+      // Stack is empty, close the overlay entirely
+      if (onBack) onBack();
+      else navigation?.goBack?.();
+    }
+  };
+
   // Enforce Immersive Mode rigorously whenever overlays toggle
   useEffect(() => {
     const enforceImmersive = async () => {
@@ -341,41 +368,26 @@ export default function Play({
 
   useEffect(() => {
     const onHardwareBack = () => {
-      if (activePlayback) {
-        setActivePlayback(null);
+      if (activePlayback) { setActivePlayback(null); return true; }
+      if (downloadModalVisible) { setDownloadModalVisible(false); return true; }
+      if (topMenuVisible) { setTopMenuVisible(false); return true; }
+      if (confirmDialog) { setConfirmDialog(null); return true; }
+      if (shareModalVisible) { setShareModalVisible(false); return true; }
+      if (roomModalVisible) { setRoomModalVisible(false); return true; }
+      if (isBulkDeleteMode) { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); return true; }
+      
+      // If we are deep inside related anime links, pop local stack instead of closing app/overlay
+      if (historyStack.length > 0) {
+        handleGoBack();
         return true;
       }
-      if (downloadModalVisible) {
-        setDownloadModalVisible(false);
-        return true;
-      }
-      if (topMenuVisible) {
-        setTopMenuVisible(false);
-        return true;
-      }
-      if (confirmDialog) {
-        setConfirmDialog(null);
-        return true;
-      }
-      if (shareModalVisible) {
-        setShareModalVisible(false);
-        return true;
-      }
-      if (roomModalVisible) {
-        setRoomModalVisible(false);
-        return true;
-      }
-      if (isBulkDeleteMode) {
-        setIsBulkDeleteMode(false);
-        setBulkDeleteSelectedMap({});
-        return true;
-      }
-      return false;
+
+      return false; // Let normal back handler close the overlay via Home/Downloads
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
     return () => sub.remove();
-  }, [activePlayback, downloadModalVisible, topMenuVisible, confirmDialog, shareModalVisible, roomModalVisible, isBulkDeleteMode]);
+  }, [activePlayback, downloadModalVisible, topMenuVisible, confirmDialog, shareModalVisible, roomModalVisible, isBulkDeleteMode, historyStack]);
 
   const syncLocalDownloads = useCallback(async () => {
     const queue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
@@ -1309,6 +1321,7 @@ export default function Play({
     }
   };
 
+  // --- LOCAL NAVIGATION STACK ---
   const handleSelectRelatedAnime = useCallback((item) => {
     if (!item) return;
     const enrichedTarget = {
@@ -1318,20 +1331,19 @@ export default function Play({
       activeProfile: resolvedProfile,
       currentProfile: resolvedProfile,
     };
-    if (navigation?.push) {
-      navigation.push('Play', {
-        anime: enrichedTarget,
-        user: resolvedUser,
-        activeProfile: resolvedProfile,
-        activeProfileId: resolvedProfileId,
-      });
-    } else {
-      setTitleLogo(null);
-      setTmdbSynopsis(item.description || '');
-      setCurrentAnime(enrichedTarget);
-      setActiveTab('episodes');
-    }
-  }, [resolvedUid, resolvedProfileId, resolvedProfile, resolvedUser, navigation]);
+    
+    // Save current state to history stack
+    setHistoryStack((prev) => [...prev, currentAnime]);
+    
+    setTitleLogo(null);
+    setTmdbSynopsis(item.description || '');
+    setCurrentAnime(enrichedTarget);
+    setActiveTab('episodes');
+    
+    // Auto scroll to top
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
+    
+  }, [resolvedUid, resolvedProfileId, resolvedProfile, resolvedUser, currentAnime]);
 
   const targetEp = (() => {
     if (episodes.length === 0) return null;
@@ -1587,7 +1599,7 @@ export default function Play({
 
       {/* TOP FLOATING NAV BAR WITH VERTICAL "..." MENU */}
       <View style={styles.topNavFloatContainer} pointerEvents="box-none">
-        <TouchableOpacity style={styles.navBackCircle} onPress={onBack || (() => navigation?.goBack?.())}>
+        <TouchableOpacity style={styles.navBackCircle} onPress={handleGoBack}>
           <IconBack />
         </TouchableOpacity>
 
@@ -1597,6 +1609,7 @@ export default function Play({
       </View>
 
       <FlatList
+        ref={flatListRef}
         key={isEpisodesTab ? 'episodes-list' : 'more-like-this-grid'}
         numColumns={isEpisodesTab ? 1 : GRID_COLUMNS}
         data={isEpisodesTab ? currentEpisodesToRender : moreLikeThis}
@@ -2567,7 +2580,7 @@ const styles = StyleSheet.create({
   },
   halfScreenSheet: {
     width: '100%',
-    height: Math.floor(height * 0.54),
+    height: Math.floor(SCREEN_HEIGHT * 0.54),
     backgroundColor: BLACK,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
