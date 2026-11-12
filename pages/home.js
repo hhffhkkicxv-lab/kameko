@@ -11,11 +11,14 @@ import ContinueWatching from './home/continue_watching';
 import RecentSlider from './home/recent_slider';
 import TrendingSlider from './home/trending_slider';
 import Top10Slider from './home/top10_slider';      
+import GenresSlider from './home/genres_slider';       
 import ForYouSlider from './home/foryou_slider';    
 import MoviesSlider from './home/movies_slider';       
-import GenresSlider from './home/genres_slider';       
 import BingeSlider from './home/binge_slider';
-import ShortsSlider from './home/shorts_slider';               // FIX: Added previously missing import
+import ShortsSlider from './home/shorts_slider';
+import AllTimePopularSlider from './home/all_time_popular_slider'; 
+import IsekaiSlider from './home/isekai_slider';                   
+import UnderratedSlider from './home/underrated_slider';           
 import BecauseYouLikedSlider from './home/because_you_liked_slider';
 import EditorsChoiceSlider from './home/editors_choice_slider';
 import TopRomanceSlider from './home/top_romance_slider';
@@ -133,15 +136,23 @@ export default function Home({
 
           <Top10Slider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
+          {/* Genres moved below Top 10 */}
+          <GenresSlider onSelectGenre={(genre) => setActiveGenre(genre)} />
+          
           <ForYouSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
           <MoviesSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          <GenresSlider onSelectGenre={(genre) => setActiveGenre(genre)} />
-          
           <BingeSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
           <ShortsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          {/* All Time Popular moved above Isekai and Underrated */}
+          <AllTimePopularSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          <IsekaiSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+
+          <UnderratedSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
           <BecauseYouLikedSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
@@ -151,6 +162,7 @@ export default function Home({
 
           <DubsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
+          {/* Bottom spacer to clear absolute BottomNav */}
           <View style={{ height: 110 }} />
         </ScrollView>
 
