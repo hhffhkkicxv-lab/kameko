@@ -4,7 +4,7 @@ import {
   TouchableOpacity, Animated 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
-import Svg, { Path } from 'react-native-svg';
+import Svg, { Path, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
 // --- STRICT PALETTE ---
@@ -13,7 +13,6 @@ const BLACK = '#000000';
 const WHITE = '#FFFFFF';
 const DARK_GREY = '#18181C';
 const BORDER_GREY = '#26262C';
-const TEXT_GREY = '#8E8E93';
 
 const BookmarkIcon = ({ filled }) => (
   <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : WHITE} strokeWidth="2.5">
@@ -193,8 +192,9 @@ export default function Top10Slider({ user, onSelectAnime }) {
         renderItem={({ item, index }) => {
           const isAdded = librarySet.has(item.id);
           const rank = index + 1;
-          // Shift the number 10 slightly more to the left so both digits look balanced
-          const numberLeftOffset = rank === 10 ? -22 : -10; 
+          
+          // Adjust offset based on double digits
+          const numberLeftOffset = rank === 10 ? -12 : -4; 
 
           return (
             <TouchableOpacity 
@@ -202,14 +202,20 @@ export default function Top10Slider({ user, onSelectAnime }) {
               activeOpacity={0.88} 
               onPress={() => handleNavigateToPlay(item)}
             >
-              {/* GIANT NETFLIX-STYLE NUMBER */}
-              <Text style={[styles.giantNumber, { left: numberLeftOffset }]}>
-                {rank}
-              </Text>
-
               <View style={styles.imageWrapper}>
                 <ProxyImage source={{ uri: item.image }} style={styles.coverImage} resizeMode="cover" />
                 
+                {/* Edge Gradient to make numbers visible against light posters */}
+                <Svg height="100%" width="35%" style={[StyleSheet.absoluteFillObject, { left: 0 }]}>
+                  <Defs>
+                    <LinearGradient id="edgeGrad" x1="0" y1="0" x2="1" y2="0">
+                      <Stop offset="0" stopColor="#000" stopOpacity="0.75" />
+                      <Stop offset="1" stopColor="#000" stopOpacity="0" />
+                    </LinearGradient>
+                  </Defs>
+                  <Rect width="100%" height="100%" fill="url(#edgeGrad)" />
+                </Svg>
+
                 <View style={styles.badgeContainer}>
                   {item.episode !== '?' && (
                     <View style={styles.epBadge}>
@@ -227,6 +233,12 @@ export default function Top10Slider({ user, onSelectAnime }) {
                   <BookmarkIcon filled={isAdded} />
                 </TouchableOpacity>
               </View>
+
+              {/* GIANT NETFLIX-STYLE NUMBER (Now on top of poster) */}
+              <Text style={[styles.giantNumber, { left: numberLeftOffset }]}>
+                {rank}
+              </Text>
+
             </TouchableOpacity>
           );
         }}
@@ -240,29 +252,28 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
   sectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
   
-  // Padding adjusted to account for the numbers sticking out & their drop shadow
   listPadding: { paddingHorizontal: 20, paddingBottom: 15, paddingTop: 10 },
   
   cardContainer: { 
-    width: 175, // Wide enough to hold the poster (140) + sticking out number space
+    width: 175, 
     height: 210, 
     marginRight: 10,
     justifyContent: 'flex-end',
     alignItems: 'flex-end',
   },
   
-  // The giant number is positioned BEHIND the image, sticking out to the left
+  // The giant number is now brought to the front (zIndex: 10) and scaled down slightly
   giantNumber: {
     position: 'absolute',
-    bottom: -28, 
-    fontSize: 140,
+    bottom: -18, 
+    fontSize: 110,
     fontWeight: '900',
     color: WHITE,
-    zIndex: 1, 
-    letterSpacing: -8, // Tightens the text layout
-    textShadowColor: 'rgba(0,0,0,0.85)',
+    zIndex: 10, 
+    letterSpacing: -6, 
+    textShadowColor: 'rgba(0,0,0,0.65)',
     textShadowOffset: { width: 4, height: 4 },
-    textShadowRadius: 10,
+    textShadowRadius: 8,
   },
 
   imageWrapper: { 
@@ -273,21 +284,16 @@ const styles = StyleSheet.create({
     backgroundColor: DARK_GREY, 
     borderWidth: 1, 
     borderColor: BORDER_GREY,
-    zIndex: 5, // Brings the poster to the front so it covers the right half of the number
-    elevation: 5, // Android shadow
-    shadowColor: BLACK, // iOS Shadow
-    shadowOffset: { width: -4, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 8,
+    zIndex: 5, 
   },
   
   coverImage: { width: '100%', height: '100%' },
   
-  badgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
+  badgeContainer: { position: 'absolute', top: 8, right: 8, alignItems: 'flex-end', gap: 4 },
   epBadge: { backgroundColor: WHITE, paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
   epBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
   
-  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
+  saveBtn: { position: 'absolute', bottom: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
   saveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: BRAND_RED },
   
   skeletonCard: { width: 140, height: 210, backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY, alignSelf: 'flex-end' }
