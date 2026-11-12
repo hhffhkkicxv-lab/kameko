@@ -8,19 +8,10 @@ import Svg, { Path } from 'react-native-svg';
 import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../../components/ProxyImage';
 
-// Safely resolve Play.js regardless of folder depth
-let PlayComponent = null;
-try {
-  const mod = require('../../pages/play');
-  PlayComponent = mod?.default || mod;
-} catch (_) {
-  try {
-    const fallbackMod = require('../pages/play');
-    PlayComponent = fallbackMod?.default || fallbackMod;
-  } catch (__) {}
-}
+// Safe static import to prevent Metro bundler crashes on launch
+import PlayComponent from '../../pages/play'; 
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('screen');
+const { width: SCREEN_WIDTH } = Dimensions.get('screen');
 
 // --- STRICT PALETTE ---
 const BLACK = '#000000';
@@ -54,10 +45,8 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
   const [hasNextPage, setHasNextPage] = useState(true);
   const [librarySet, setLibrarySet] = useState(new Set());
   
-  // Local state to open Play.js directly above the grid
   const [activePlayAnime, setActivePlayAnime] = useState(null);
 
-  // Enforce Immersive Mode
   useEffect(() => {
     const enforceImmersive = async () => {
       try {
@@ -69,9 +58,8 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
       } catch (_) {}
     };
     enforceImmersive();
-  }, [activePlayAnime]); // Re-run when Play opens/closes
+  }, [activePlayAnime]); 
 
-  // Hardware Back Handler
   useEffect(() => {
     const onHardwareBack = () => {
       if (activePlayAnime) {
@@ -85,7 +73,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
     return () => sub.remove();
   }, [activePlayAnime, onBack]);
 
-  // Sync Library for Bookmarks
   useEffect(() => {
     if (!user) return;
     const unsub = firestore()
@@ -100,7 +87,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
     return () => unsub();
   }, [user]);
 
-  // Infinite Scroll Fetch Logic
   const fetchGenreAnime = async (pageNum, isInitial = false) => {
     if (!hasNextPage && !isInitial) return;
     if (isInitial) setLoading(true);
@@ -129,7 +115,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
       const rawList = json?.data?.Page?.media || [];
       setHasNextPage(json?.data?.Page?.pageInfo?.hasNextPage ?? false);
 
-      // Validate playability against Vercel API
       const verifiedAnime = await Promise.all(rawList.map(async (anime) => {
         const titleEng = anime.title.english || anime.title.romaji;
         let streamId = null;
@@ -183,7 +168,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
     }
   };
 
-  // Initial Load
   useEffect(() => {
     fetchGenreAnime(1, true);
   }, [genre]);
@@ -225,7 +209,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
     <View style={styles.container}>
       <StatusBar hidden={true} />
       
-      {/* Top Header */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.backBtn} onPress={onBack} activeOpacity={0.7}>
           <IconBack />
@@ -233,7 +216,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
         <Text style={styles.headerTitle}>{genre} Anime</Text>
       </View>
 
-      {/* Grid Content */}
       {loading ? (
         <View style={styles.centerLoading}>
           <ActivityIndicator size="large" color={PURE_RED} />
@@ -266,7 +248,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
                 <View style={styles.imageBox}>
                   <ProxyImage source={{ uri: item.image }} style={styles.coverImage} resizeMode="cover" />
                   
-                  {/* Badges */}
                   <View style={styles.badgeContainer}>
                     <View style={styles.epBadge}>
                       <Text style={styles.epBadgeText}>{item.format === 'TV' ? 'SERIES' : item.format}</Text>
@@ -276,7 +257,6 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
                     </View>
                   </View>
 
-                  {/* Bookmark Button */}
                   <TouchableOpacity 
                     style={[styles.saveBtn, isAdded && styles.saveBtnActive]}
                     onPress={() => toggleLibrary(item)}
@@ -312,129 +292,24 @@ export default function GenreGrid({ genre, user, activeProfile, activeProfileId,
 }
 
 const styles = StyleSheet.create({
-  container: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: BLACK,
-    zIndex: 9000,
-    elevation: 9000,
-  },
-  playOverlayScreen: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: BLACK,
-    zIndex: 10000,
-    elevation: 10000,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingTop: Platform.OS === 'android' ? 40 : 50,
-    paddingBottom: 16,
-    paddingHorizontal: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: BORDER_GREY,
-    backgroundColor: BLACK,
-  },
-  backBtn: {
-    padding: 8,
-    marginRight: 8,
-  },
-  headerTitle: {
-    color: WHITE,
-    fontSize: 20,
-    fontWeight: '900',
-  },
-  centerLoading: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  footerLoader: {
-    paddingVertical: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  listPadding: {
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 120,
-  },
-  columnWrapper: {
-    justifyContent: 'flex-start',
-    gap: GRID_SPACING,
-    marginBottom: 20,
-  },
-  cardContainer: {
-    width: CARD_WIDTH,
-  },
-  imageBox: {
-    width: CARD_WIDTH,
-    height: Math.floor(CARD_WIDTH * 1.5),
-    backgroundColor: DARK_GREY,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-    overflow: 'hidden',
-  },
-  coverImage: {
-    width: '100%',
-    height: '100%',
-  },
-  badgeContainer: { 
-    position: 'absolute', 
-    top: 6, 
-    left: 6, 
-    alignItems: 'flex-start', 
-    gap: 4 
-  },
-  epBadge: { 
-    backgroundColor: WHITE, 
-    paddingHorizontal: 5, 
-    paddingVertical: 2, 
-    borderRadius: 4, 
-    shadowColor: BLACK, 
-    shadowOpacity: 0.5, 
-    shadowRadius: 3 
-  },
-  epBadgeText: { 
-    color: BLACK, 
-    fontSize: 9, 
-    fontWeight: '900' 
-  },
-  ccBadge: { 
-    backgroundColor: DARK_GREY, 
-    paddingHorizontal: 5, 
-    paddingVertical: 2, 
-    borderRadius: 4, 
-    borderWidth: 1, 
-    borderColor: BORDER_GREY 
-  },
-  ccBadgeText: { 
-    color: WHITE, 
-    fontSize: 9, 
-    fontWeight: 'bold' 
-  },
-  saveBtn: { 
-    position: 'absolute', 
-    top: 6, 
-    right: 6, 
-    backgroundColor: 'rgba(0,0,0,0.65)', 
-    width: 28, 
-    height: 28, 
-    borderRadius: 8, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    borderWidth: 1, 
-    borderColor: BORDER_GREY 
-  },
-  saveBtnActive: { 
-    backgroundColor: 'rgba(0,0,0,0.85)', 
-    borderColor: PURE_RED 
-  },
-  animeTitle: {
-    color: TEXT_GREY,
-    fontSize: 12,
-    fontWeight: '700',
-    marginTop: 8,
-    lineHeight: 16,
-  }
+  container: { ...StyleSheet.absoluteFillObject, backgroundColor: BLACK, zIndex: 9000, elevation: 9000 },
+  playOverlayScreen: { ...StyleSheet.absoluteFillObject, backgroundColor: BLACK, zIndex: 10000, elevation: 10000 },
+  header: { flexDirection: 'row', alignItems: 'center', paddingTop: Platform.OS === 'android' ? 40 : 50, paddingBottom: 16, paddingHorizontal: 16, borderBottomWidth: 1, borderBottomColor: BORDER_GREY, backgroundColor: BLACK },
+  backBtn: { padding: 8, marginRight: 8 },
+  headerTitle: { color: WHITE, fontSize: 20, fontWeight: '900' },
+  centerLoading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  footerLoader: { paddingVertical: 20, alignItems: 'center', justifyContent: 'center' },
+  listPadding: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 120 },
+  columnWrapper: { justifyContent: 'flex-start', gap: GRID_SPACING, marginBottom: 20 },
+  cardContainer: { width: CARD_WIDTH },
+  imageBox: { width: CARD_WIDTH, height: Math.floor(CARD_WIDTH * 1.5), backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY, overflow: 'hidden' },
+  coverImage: { width: '100%', height: '100%' },
+  badgeContainer: { position: 'absolute', top: 6, left: 6, alignItems: 'flex-start', gap: 4 },
+  epBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
+  epBadgeText: { color: BLACK, fontSize: 9, fontWeight: '900' },
+  ccBadge: { backgroundColor: DARK_GREY, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY },
+  ccBadgeText: { color: WHITE, fontSize: 9, fontWeight: 'bold' },
+  saveBtn: { position: 'absolute', top: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.65)', width: 28, height: 28, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
+  saveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: PURE_RED },
+  animeTitle: { color: TEXT_GREY, fontSize: 12, fontWeight: '700', marginTop: 8, lineHeight: 16 }
 });
