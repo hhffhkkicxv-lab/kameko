@@ -11,6 +11,7 @@ import * as FileSystem from 'expo-file-system';
 import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../components/ProxyImage';
 
+// --- STRICT STATIC IMPORTS (Crash-Proof) ---
 import Player from './play/player';
 import * as ShareSheetModule from '../components/ShareSheet';
 import * as RoomModule from '../components/room';
@@ -44,6 +45,7 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
+// Safely extract a valid React component from a module import
 const resolveValidComponent = (mod) => {
   if (!mod) return null;
   if (typeof mod === 'function') return mod;
@@ -1069,7 +1071,6 @@ export default function Play({
         </TouchableOpacity>
 
         <View style={styles.actionsBar}>
-          {/* UPDATED SAVE ICON TO MATCH SLIDERS */}
           <TouchableOpacity style={styles.actionTab} onPress={toggleLibrary} activeOpacity={0.7}>
             <BookmarkIcon filled={inLibrary} size={22} />
             <Text style={styles.actionTabText}>Watchlist</Text>
