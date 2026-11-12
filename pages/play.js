@@ -44,7 +44,6 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
-// Safely extract a valid React component from a module import
 const resolveValidComponent = (mod) => {
   if (!mod) return null;
   if (typeof mod === 'function') return mod;
@@ -92,7 +91,7 @@ const writeLocalJson = async (fileUri, data) => {
   } catch (_) {}
 };
 
-// --- SVG ICONS (STRICTLY WHITE/PURE RED) ---
+// --- SVG ICONS ---
 const IconBack = ({ size = 20 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={WHITE} strokeWidth="2.5">
     <Path d="M15 18l-6-6 6-6" />
@@ -101,16 +100,6 @@ const IconBack = ({ size = 20 }) => (
 const IconPlay = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
     <Path d="M8 5v14l11-7z" />
-  </Svg>
-);
-const IconPlus = ({ size = 24, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
-    <Path d="M12 5v14M5 12h14" />
-  </Svg>
-);
-const IconCheck = ({ size = 24, color = WHITE }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3">
-    <Path d="M20 6L9 17l-5-5" />
   </Svg>
 );
 const IconShare = ({ size = 22, color = WHITE }) => (
@@ -140,8 +129,15 @@ const IconVerticalDots = ({ size = 22, color = WHITE }) => (
     <Circle cx="12" cy="19" r="2" />
   </Svg>
 );
-const BookmarkIcon = ({ filled }) => (
-  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? PURE_RED : "none"} stroke={WHITE} strokeWidth="2.5">
+const IconCheck = ({ size = 24, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="3">
+    <Path d="M20 6L9 17l-5-5" />
+  </Svg>
+);
+
+// Consistent Bookmark Icon (Filled Red or White Outline)
+const BookmarkIcon = ({ filled, size = 18 }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : "none"} stroke={filled ? PURE_RED : WHITE} strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -170,44 +166,21 @@ export default function Play({
   };
 
   const [currentAnime, setCurrentAnime] = useState(initialAnime);
-  const [historyStack, setHistoryStack] = useState([]); // Array of previously viewed anime objects
-  const flatListRef = useRef(null); // Ref to scroll FlatList back to top
+  const [nestedAnime, setNestedAnime] = useState(null); // Used to recursively render new <Play/> overlays
 
   useEffect(() => {
     if (propAnime && (propAnime.id || propAnime.animeId)) {
       setCurrentAnime(propAnime);
-      setHistoryStack([]);
     } else if (routeParams.anime && (routeParams.anime.id || routeParams.anime.animeId)) {
       setCurrentAnime(routeParams.anime);
-      setHistoryStack([]);
     }
   }, [propAnime, routeParams.anime]);
 
-  const resolvedUser =
-    propUser ||
-    routeParams.user ||
-    currentAnime?.user ||
-    auth().currentUser ||
-    null;
-
-  const incomingProfile =
-    propActiveProfile ||
-    propCurrentProfile ||
-    currentAnime?.activeProfile ||
-    currentAnime?.currentProfile ||
-    routeParams.activeProfile ||
-    routeParams.currentProfile ||
-    null;
+  const resolvedUser = propUser || routeParams.user || currentAnime?.user || auth().currentUser || null;
+  const incomingProfile = propActiveProfile || propCurrentProfile || currentAnime?.activeProfile || currentAnime?.currentProfile || routeParams.activeProfile || routeParams.currentProfile || null;
 
   const [resolvedProfile, setResolvedProfile] = useState(incomingProfile);
-  const [resolvedProfileId, setResolvedProfileId] = useState(
-    () =>
-      propActiveProfileId ||
-      incomingProfile?.id ||
-      currentAnime?.activeProfileId ||
-      routeParams.activeProfileId ||
-      null
-  );
+  const [resolvedProfileId, setResolvedProfileId] = useState(() => propActiveProfileId || incomingProfile?.id || currentAnime?.activeProfileId || routeParams.activeProfileId || null);
 
   useEffect(() => {
     if (incomingProfile?.id) {
@@ -218,12 +191,7 @@ export default function Play({
     }
   }, [incomingProfile, propActiveProfileId]);
 
-  const resolvedUid =
-    resolvedUser?.uid ||
-    currentAnime?.userUid ||
-    routeParams.userUid ||
-    auth().currentUser?.uid ||
-    null;
+  const resolvedUid = resolvedUser?.uid || currentAnime?.userUid || routeParams.userUid || auth().currentUser?.uid || null;
 
   useEffect(() => {
     if (resolvedProfileId || !resolvedUid) return;
@@ -244,14 +212,7 @@ export default function Play({
             return;
           }
         }
-
-        const snap = await firestore()
-          .collection('users')
-          .doc(String(resolvedUid))
-          .collection('profiles')
-          .limit(1)
-          .get();
-
+        const snap = await firestore().collection('users').doc(String(resolvedUid)).collection('profiles').limit(1).get();
         if (!snap.empty && isMounted) {
           const firstDoc = snap.docs[0];
           const prof = { id: firstDoc.id, ...firstDoc.data() };
@@ -286,12 +247,8 @@ export default function Play({
   const [latestWatched, setLatestWatched] = useState(null);
 
   const [titleLogo, setTitleLogo] = useState(null);
-  const [tmdbSynopsis, setTmdbSynopsis] = useState(
-    String(currentAnime?.description || 'Watch all episodes in HD.')
-  );
-  const [isUpcoming, setIsUpcoming] = useState(
-    String(currentAnime?.status || '').toUpperCase() === 'UPCOMING'
-  );
+  const [tmdbSynopsis, setTmdbSynopsis] = useState(String(currentAnime?.description || 'Watch all episodes in HD.'));
+  const [isUpcoming, setIsUpcoming] = useState(String(currentAnime?.status || '').toUpperCase() === 'UPCOMING');
 
   const [vercelAnimeId, setVercelAnimeId] = useState(animeDocId);
   const [episodes, setEpisodes] = useState([]);
@@ -331,28 +288,16 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
-  // --- LOCAL NAVIGATION HANDLER (BACK) ---
+  // --- TOP-LEFT BACK BUTTON HANDLER ---
   const handleGoBack = () => {
-    if (historyStack.length > 0) {
-      // Pop the last anime from history stack
-      const previousAnime = historyStack[historyStack.length - 1];
-      setHistoryStack((prev) => prev.slice(0, -1));
-      
-      setTitleLogo(null);
-      setTmdbSynopsis(previousAnime.description || '');
-      setCurrentAnime(previousAnime);
-      setActiveTab('episodes');
-      
-      // Scroll to top automatically when navigating back
-      flatListRef.current?.scrollToOffset({ animated: true, offset: 0 });
-    } else {
-      // Stack is empty, close the overlay entirely
-      if (onBack) onBack();
-      else navigation?.goBack?.();
+    if (onBack) {
+      onBack();
+    } else if (navigation?.goBack) {
+      navigation.goBack();
     }
   };
 
-  // Enforce Immersive Mode rigorously whenever overlays toggle
+  // Re-Enforce Immersive Mode rigorously whenever overlays (or nested instances) toggle
   useEffect(() => {
     const enforceImmersive = async () => {
       try {
@@ -364,8 +309,9 @@ export default function Play({
       } catch (_) {}
     };
     enforceImmersive();
-  }, [topMenuVisible, confirmDialog, downloadModalVisible, shareModalVisible, roomModalVisible, activePlayback]);
+  }, [topMenuVisible, confirmDialog, downloadModalVisible, shareModalVisible, roomModalVisible, activePlayback, nestedAnime]);
 
+  // HARDWARE BACK HANDLER - Completely fixed to prevent app closing
   useEffect(() => {
     const onHardwareBack = () => {
       if (activePlayback) { setActivePlayback(null); return true; }
@@ -376,18 +322,29 @@ export default function Play({
       if (roomModalVisible) { setRoomModalVisible(false); return true; }
       if (isBulkDeleteMode) { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); return true; }
       
-      // If we are deep inside related anime links, pop local stack instead of closing app/overlay
-      if (historyStack.length > 0) {
-        handleGoBack();
-        return true;
+      // If we have a nested child, we DO NOT handle the back button here.
+      // Let the nested child's BackHandler (which executes first) intercept it.
+      if (nestedAnime) {
+        return false;
       }
 
-      return false; // Let normal back handler close the overlay via Home/Downloads
+      // If we've hit the base Play.js, trigger onBack explicitly and block default behavior
+      if (onBack) {
+        onBack();
+        return true; 
+      }
+      
+      if (navigation?.goBack) {
+        navigation.goBack();
+        return true;
+      }
+      
+      return false; 
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
     return () => sub.remove();
-  }, [activePlayback, downloadModalVisible, topMenuVisible, confirmDialog, shareModalVisible, roomModalVisible, isBulkDeleteMode, historyStack]);
+  }, [activePlayback, downloadModalVisible, topMenuVisible, confirmDialog, shareModalVisible, roomModalVisible, isBulkDeleteMode, nestedAnime, onBack, navigation]);
 
   const syncLocalDownloads = useCallback(async () => {
     const queue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
@@ -401,20 +358,11 @@ export default function Play({
     setDownloadedEpMap((prev) => ({ ...prev, ...map }));
   }, [animeDocId]);
 
-  useEffect(() => {
-    syncLocalDownloads();
-  }, [syncLocalDownloads]);
+  useEffect(() => { syncLocalDownloads(); }, [syncLocalDownloads]);
 
   useEffect(() => {
     if (!resolvedUid || !resolvedProfileId || !animeDocId) return;
-    const dlRef = firestore()
-      .collection('users')
-      .doc(String(resolvedUid))
-      .collection('profiles')
-      .doc(String(resolvedProfileId))
-      .collection('downloads')
-      .where('animeId', '==', animeDocId);
-
+    const dlRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').where('animeId', '==', animeDocId);
     const unsub = dlRef.onSnapshot(
       (snap) => {
         const fsMap = {};
@@ -428,7 +376,6 @@ export default function Play({
       },
       () => {}
     );
-
     return () => unsub();
   }, [resolvedUid, resolvedProfileId, animeDocId]);
 
@@ -438,12 +385,9 @@ export default function Play({
       if (numsToDelete.length === 0) return;
 
       const deleteSet = new Set(numsToDelete);
-
       setDownloadedEpMap((prev) => {
         const next = { ...prev };
-        numsToDelete.forEach((num) => {
-          delete next[num];
-        });
+        numsToDelete.forEach((num) => { delete next[num]; });
         return next;
       });
 
@@ -458,7 +402,6 @@ export default function Play({
             FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
           }
         }
-
         const updatedQueue = existingQueue.filter(
           (item) => !(String(item?.animeId) === animeDocId && deleteSet.has(Number(item?.episodeNum)))
         );
@@ -467,18 +410,9 @@ export default function Play({
 
       if (resolvedUid && resolvedProfileId) {
         for (const epNum of numsToDelete) {
-          firestore()
-            .collection('users')
-            .doc(String(resolvedUid))
-            .collection('profiles')
-            .doc(String(resolvedProfileId))
-            .collection('downloads')
-            .doc(`${animeDocId}_ep_${epNum}`)
-            .delete()
-            .catch(() => {});
+          firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').doc(`${animeDocId}_ep_${epNum}`).delete().catch(() => {});
         }
       }
-
       setIsBulkDeleteMode(false);
       setBulkDeleteSelectedMap({});
     },
@@ -508,33 +442,21 @@ export default function Play({
 
   const handleLongPressDownloadedEpisode = useCallback((epNum) => {
     setIsBulkDeleteMode(true);
-    setBulkDeleteSelectedMap((prev) => ({
-      ...prev,
-      [epNum]: true,
-    }));
+    setBulkDeleteSelectedMap((prev) => ({ ...prev, [epNum]: true }));
   }, []);
 
   const toggleBulkDeleteEpisodeSelection = useCallback((epNum) => {
     setBulkDeleteSelectedMap((prev) => {
       const next = { ...prev, [epNum]: !prev[epNum] };
       const anyLeft = Object.keys(next).some((k) => next[k]);
-      if (!anyLeft) {
-        setIsBulkDeleteMode(false);
-      }
+      if (!anyLeft) setIsBulkDeleteMode(false);
       return next;
     });
   }, []);
 
   const handleTriggerShare = async () => {
-    if (ResolvedShareComp) {
-      setShareModalVisible(true);
-      return;
-    }
-    try {
-      await Share.share({
-        message: `Watch ${resolvedTitle} on Kameko!`,
-      });
-    } catch (_) {}
+    if (ResolvedShareComp) { setShareModalVisible(true); return; }
+    try { await Share.share({ message: `Watch ${resolvedTitle} on Kameko!`, }); } catch (_) {}
   };
 
   const updateLocalPreferences = useCallback(async (patch) => {
@@ -542,10 +464,7 @@ export default function Play({
     const merged = {
       ...existing,
       ...patch,
-      selectedChunksByAnime: {
-        ...(existing?.selectedChunksByAnime || {}),
-        ...(patch?.selectedChunksByAnime || {}),
-      },
+      selectedChunksByAnime: { ...(existing?.selectedChunksByAnime || {}), ...(patch?.selectedChunksByAnime || {}) },
       updatedAt: Date.now(),
     };
     await writeLocalJson(PLAY_PREFS_FILE_URI, merged);
@@ -567,12 +486,8 @@ export default function Play({
       } else {
         setCurrentChunkIndex(0);
       }
-
-      if (savedPrefs?.preferredDownloadType) {
-        setSelectedDownloadType(savedPrefs.preferredDownloadType);
-      }
+      if (savedPrefs?.preferredDownloadType) { setSelectedDownloadType(savedPrefs.preferredDownloadType); }
     };
-
     restoreSavedSelection();
     return () => { isMounted = false; };
   }, [animeDocId]);
@@ -581,45 +496,24 @@ export default function Play({
     setCurrentChunkIndex(index);
     hasRestoredLocalChunkRef.current = true;
     updateLocalPreferences({
-      selectedChunksByAnime: {
-        [animeDocId]: index,
-      },
-      lastSelectedChunk: {
-        animeId: animeDocId,
-        animeTitle: resolvedTitle,
-        chunkIndex: index,
-        rangeLabel,
-        timestamp: Date.now(),
-      },
+      selectedChunksByAnime: { [animeDocId]: index },
+      lastSelectedChunk: { animeId: animeDocId, animeTitle: resolvedTitle, chunkIndex: index, rangeLabel, timestamp: Date.now() },
     });
   }, [animeDocId, resolvedTitle, updateLocalPreferences]);
 
   useEffect(() => {
     if (!resolvedUid) return;
 
-    const libColRef = firestore()
-      .collection('users')
-      .doc(String(resolvedUid))
-      .collection('library');
-
+    const libColRef = firestore().collection('users').doc(String(resolvedUid)).collection('library');
     const libUnsub = libColRef.onSnapshot((snap) => {
       const nextSet = new Set();
       snap?.forEach((doc) => nextSet.add(String(doc.id)));
       setLibrarySet(nextSet);
     }, () => {});
 
-    if (!resolvedProfileId || !animeDocId) {
-      return () => libUnsub();
-    }
+    if (!resolvedProfileId || !animeDocId) return () => libUnsub();
 
-    const historyRef = firestore()
-      .collection('users')
-      .doc(String(resolvedUid))
-      .collection('profiles')
-      .doc(String(resolvedProfileId))
-      .collection(WATCH_HISTORY_COLLECTION)
-      .where('animeId', '==', animeDocId);
-
+    const historyRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection(WATCH_HISTORY_COLLECTION).where('animeId', '==', animeDocId);
     const historyUnsub = historyRef.onSnapshot((snapshot) => {
       if (snapshot && !snapshot.empty) {
         const pMap = {};
@@ -637,9 +531,7 @@ export default function Play({
               if (data.episodes[k]?.slug) pMap[String(data.episodes[k].slug)] = data.episodes[k];
             });
           }
-          if (!latest || (data.timestamp || 0) > (latest.timestamp || 0)) {
-            latest = data;
-          }
+          if (!latest || (data.timestamp || 0) > (latest.timestamp || 0)) { latest = data; }
         });
         setUserProgressMap(pMap);
         setLatestWatched(latest);
@@ -649,31 +541,18 @@ export default function Play({
       }
     }, () => {});
 
-    return () => {
-      historyUnsub();
-      libUnsub();
-    };
+    return () => { historyUnsub(); libUnsub(); };
   }, [resolvedUid, resolvedProfileId, animeDocId]);
 
   const toggleLibrary = async () => {
     if (!resolvedUid || !animeDocId) return;
-    const ref = firestore()
-      .collection('users')
-      .doc(String(resolvedUid))
-      .collection('library')
-      .doc(animeDocId);
-
+    const ref = firestore().collection('users').doc(String(resolvedUid)).collection('library').doc(animeDocId);
     if (inLibrary) {
       await ref.delete().catch(() => {});
     } else {
       await ref.set({
-        id: animeDocId,
-        animeId: animeDocId,
-        title: resolvedTitle,
-        img: currentAnime?.coverImage || resolvedBackdrop,
-        backdrop: resolvedBackdrop,
-        profileId: resolvedProfileId,
-        addedAt: Date.now(),
+        id: animeDocId, animeId: animeDocId, title: resolvedTitle, img: currentAnime?.coverImage || resolvedBackdrop,
+        backdrop: resolvedBackdrop, profileId: resolvedProfileId, addedAt: Date.now(),
       }).catch(() => {});
     }
   };
@@ -681,23 +560,15 @@ export default function Play({
   const toggleCardLibraryItem = async (cardItem) => {
     if (!resolvedUid || !cardItem?.id) return;
     const targetId = String(cardItem.id);
-    const ref = firestore()
-      .collection('users')
-      .doc(String(resolvedUid))
-      .collection('library')
-      .doc(targetId);
-
+    const ref = firestore().collection('users').doc(String(resolvedUid)).collection('library').doc(targetId);
     if (librarySet.has(targetId)) {
       await ref.delete().catch(() => {});
     } else {
       await ref.set({
-        id: targetId,
-        animeId: targetId,
-        title: String(cardItem.title || 'Anime'),
+        id: targetId, animeId: targetId, title: String(cardItem.title || 'Anime'),
         img: String(cardItem.coverImage || cardItem.image || cardItem.backdrop || ''),
         backdrop: String(cardItem.backdrop || cardItem.coverImage || cardItem.image || ''),
-        profileId: resolvedProfileId,
-        addedAt: Date.now(),
+        profileId: resolvedProfileId, addedAt: Date.now(),
       }).catch(() => {});
     }
   };
@@ -717,17 +588,13 @@ export default function Play({
 
       for (const srv of servers) {
         try {
-          const res = await fetchWithTimeout(
-            `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=${audioType}`
-          );
+          const res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=${audioType}`);
           const json = await res.json();
           const payload = json?.data || json?.results || {};
           if (payload?.m3u8 || payload?.streamingLink) {
             targetMasterUrl = payload.m3u8 || payload.streamingLink;
             if (payload.referer) targetReferer = payload.referer;
-            if (Array.isArray(payload.subtitles) && payload.subtitles.length > 0) {
-              collectedSubtitles = [...payload.subtitles];
-            }
+            if (Array.isArray(payload.subtitles) && payload.subtitles.length > 0) { collectedSubtitles = [...payload.subtitles]; }
             break;
           }
         } catch (_) {}
@@ -736,9 +603,7 @@ export default function Play({
       if (audioType === 'dub' || collectedSubtitles.length === 0) {
         for (const srv of servers) {
           try {
-            const subRes = await fetchWithTimeout(
-              `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=sub`
-            );
+            const subRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=sub`);
             const subJson = await subRes.json();
             const subPayload = subJson?.data || subJson?.results || {};
             if (!targetMasterUrl && (subPayload?.m3u8 || subPayload?.streamingLink)) {
@@ -749,10 +614,7 @@ export default function Play({
               const seen = new Set(collectedSubtitles.map((s) => s.label || s.lang));
               for (const s of subPayload.subtitles) {
                 const lbl = s.label || s.lang;
-                if (lbl && !seen.has(lbl)) {
-                  seen.add(lbl);
-                  collectedSubtitles.push(s);
-                }
+                if (lbl && !seen.has(lbl)) { seen.add(lbl); collectedSubtitles.push(s); }
               }
               break;
             }
@@ -764,19 +626,11 @@ export default function Play({
       setSelectedSubTrack((prev) => {
         if (prev && prev.lang === 'none') return prev;
         if (prev) {
-          const match = collectedSubtitles.find(
-            (s) => (s.label || s.lang) === (prev.label || prev.lang)
-          );
+          const match = collectedSubtitles.find((s) => (s.label || s.lang) === (prev.label || prev.lang));
           if (match) return match;
         }
         if (collectedSubtitles.length > 0) {
-          return (
-            collectedSubtitles.find((s) =>
-              String(s.label || s.lang || '').toLowerCase().includes('eng')
-            ) ||
-            collectedSubtitles.find((s) => s.default) ||
-            collectedSubtitles[0]
-          );
+          return collectedSubtitles.find((s) => String(s.label || s.lang || '').toLowerCase().includes('eng')) || collectedSubtitles.find((s) => s.default) || collectedSubtitles[0];
         }
         return { label: 'No Subtitles / Off', file: null, lang: 'none' };
       });
@@ -784,9 +638,7 @@ export default function Play({
       let explicitQualities = [];
       if (targetMasterUrl) {
         try {
-          const m3Res = await fetchWithTimeout(targetMasterUrl, {
-            headers: { Referer: targetReferer }
-          });
+          const m3Res = await fetchWithTimeout(targetMasterUrl, { headers: { Referer: targetReferer } });
           const m3Text = await m3Res.text();
           const lines = m3Text.split('\n');
 
@@ -796,17 +648,8 @@ export default function Play({
               if (resMatch && lines[i + 1]) {
                 const label = `${resMatch[1]}p`;
                 let streamUri = lines[i + 1].trim();
-                if (!streamUri.startsWith('http')) {
-                  streamUri = targetMasterUrl.substring(0, targetMasterUrl.lastIndexOf('/') + 1) + streamUri;
-                }
-                if (label.toLowerCase() !== 'auto') {
-                  explicitQualities.push({
-                    label,
-                    resolution: Number(resMatch[1]),
-                    uri: streamUri,
-                    referer: targetReferer,
-                  });
-                }
+                if (!streamUri.startsWith('http')) { streamUri = targetMasterUrl.substring(0, targetMasterUrl.lastIndexOf('/') + 1) + streamUri; }
+                if (label.toLowerCase() !== 'auto') { explicitQualities.push({ label, resolution: Number(resMatch[1]), uri: streamUri, referer: targetReferer }); }
               }
             }
           }
@@ -823,35 +666,25 @@ export default function Play({
       }
       uniqueQualities.sort((a, b) => (b.resolution || 0) - (a.resolution || 0));
 
-      const finalQualities =
-        uniqueQualities.length > 0
-          ? uniqueQualities
-          : [
-              { label: '1080p', resolution: 1080, uri: targetMasterUrl || '', referer: targetReferer },
-              { label: '720p', resolution: 720, uri: targetMasterUrl || '', referer: targetReferer },
-              { label: '480p', resolution: 480, uri: targetMasterUrl || '', referer: targetReferer },
-              { label: '360p', resolution: 360, uri: targetMasterUrl || '', referer: targetReferer },
-            ];
+      const finalQualities = uniqueQualities.length > 0 ? uniqueQualities : [
+        { label: '1080p', resolution: 1080, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '720p', resolution: 720, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '480p', resolution: 480, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '360p', resolution: 360, uri: targetMasterUrl || '', referer: targetReferer },
+      ];
 
       setDownloadQualities(finalQualities);
       setSelectedDownloadQuality((prev) => {
-        if (prev) {
-          const matchedQ = finalQualities.find((q) => q.label === prev.label);
-          if (matchedQ) return matchedQ;
-        }
+        if (prev) { const matchedQ = finalQualities.find((q) => q.label === prev.label); if (matchedQ) return matchedQ; }
         return finalQualities[0];
       });
     } catch (_) {
       const fallback = [
-        { label: '1080p', resolution: 1080, uri: '' },
-        { label: '720p', resolution: 720, uri: '' },
-        { label: '480p', resolution: 480, uri: '' },
+        { label: '1080p', resolution: 1080, uri: '' }, { label: '720p', resolution: 720, uri: '' }, { label: '480p', resolution: 480, uri: '' }
       ];
       setDownloadQualities(fallback);
       setSelectedDownloadQuality(fallback[0]);
-    } finally {
-      setIsFetchingDownloadData(false);
-    }
+    } finally { setIsFetchingDownloadData(false); }
   }, [vercelAnimeId, animeDocId]);
 
   const handleOpenSingleEpisodeDownload = async (episodeItem) => {
@@ -885,13 +718,8 @@ export default function Play({
   const handleSwitchDownloadAudioType = (type) => {
     setSelectedDownloadType(type);
     updateLocalPreferences({ preferredDownloadType: type });
-    const refEp =
-      downloadTargetEp ||
-      episodes.find((e) => selectedEpNumsMap[e.num]) ||
-      episodes[0];
-    if (refEp) {
-      fetchUnifiedDownloadOptions(refEp, type);
-    }
+    const refEp = downloadTargetEp || episodes.find((e) => selectedEpNumsMap[e.num]) || episodes[0];
+    if (refEp) fetchUnifiedDownloadOptions(refEp, type);
   };
 
   const handleConfirmDownloadFinal = async () => {
@@ -901,7 +729,6 @@ export default function Play({
       : Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
 
     if (!finalQuality || selectedNums.length === 0) return;
-
     setDownloadModalVisible(false);
 
     const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
@@ -911,74 +738,35 @@ export default function Play({
 
     for (const numStr of selectedNums) {
       const epNum = Number(numStr);
-      const epObj =
-        episodes.find((e) => Number(e.num) === epNum) ||
-        downloadTargetEp || {
-          num: epNum,
-          slug: String(epNum),
-          title: `Episode ${epNum}`,
-        };
-
-      const isSameAsFetchedTarget =
-        downloadTargetEp && Number(downloadTargetEp.num) === epNum;
+      const epObj = episodes.find((e) => Number(e.num) === epNum) || downloadTargetEp || { num: epNum, slug: String(epNum), title: `Episode ${epNum}` };
+      const isSameAsFetchedTarget = downloadTargetEp && Number(downloadTargetEp.num) === epNum;
 
       const downloadRecord = {
         id: `${animeDocId}_ep_${epNum}_${selectedDownloadType}_${finalQuality.label}`,
-        animeId: animeDocId,
-        animeTitle: resolvedTitle,
-        backdrop: resolvedBackdrop,
-        coverImage: String(currentAnime?.coverImage || resolvedBackdrop || ''),
-        synopsis: String(tmdbSynopsis || currentAnime?.description || ''),
-        genres: Array.isArray(currentAnime?.genres) ? currentAnime.genres : ['Action', 'Adventure'],
-        totalEpisodes: episodes.length || 12,
-        episodeNum: epNum,
-        episodeTitle: String(epObj.title || `Episode ${epNum}`),
-        slug: String(epObj.slug || epNum),
+        animeId: animeDocId, animeTitle: resolvedTitle, backdrop: resolvedBackdrop, coverImage: String(currentAnime?.coverImage || resolvedBackdrop || ''),
+        synopsis: String(tmdbSynopsis || currentAnime?.description || ''), genres: Array.isArray(currentAnime?.genres) ? currentAnime.genres : ['Action', 'Adventure'],
+        totalEpisodes: episodes.length || 12, episodeNum: epNum, episodeTitle: String(epObj.title || `Episode ${epNum}`), slug: String(epObj.slug || epNum),
         audioType: selectedDownloadType,
-        subtitle: {
-          label: String(selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off'),
-          file: isSameAsFetchedTarget ? selectedSubTrack?.file || null : null,
-          lang: String(selectedSubTrack?.lang || 'none'),
-        },
-        quality: finalQuality.label,
-        streamUri: isSameAsFetchedTarget ? finalQuality.uri || null : null,
-        referer: finalQuality.referer || 'https://vidwish.live/',
-        profileId: resolvedProfileId || 'default',
-        userUid: resolvedUid || null,
-        status: 'queued',
-        savedAt: Date.now(),
+        subtitle: { label: String(selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off'), file: isSameAsFetchedTarget ? selectedSubTrack?.file || null : null, lang: String(selectedSubTrack?.lang || 'none') },
+        quality: finalQuality.label, streamUri: isSameAsFetchedTarget ? finalQuality.uri || null : null, referer: finalQuality.referer || 'https://vidwish.live/',
+        profileId: resolvedProfileId || 'default', userUid: resolvedUid || null, status: 'queued', savedAt: Date.now(),
       };
 
       newRecords.push(downloadRecord);
       newlyDownloadedMapPatch[epNum] = downloadRecord;
 
       if (resolvedUid && resolvedProfileId) {
-        firestore()
-          .collection('users')
-          .doc(String(resolvedUid))
-          .collection('profiles')
-          .doc(String(resolvedProfileId))
-          .collection('downloads')
-          .doc(`${animeDocId}_ep_${epNum}`)
-          .set(downloadRecord, { merge: true })
-          .catch(() => {});
+        firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').doc(`${animeDocId}_ep_${epNum}`).set(downloadRecord, { merge: true }).catch(() => {});
       }
     }
 
     setDownloadedEpMap((prev) => ({ ...prev, ...newlyDownloadedMapPatch }));
 
-    const filteredQueue = queueArray.filter(
-      (item) => !newRecords.some((n) => n.id === item.id)
-    );
+    const filteredQueue = queueArray.filter((item) => !newRecords.some((n) => n.id === item.id));
     const updatedQueue = [...newRecords, ...filteredQueue];
     await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
 
-    await updateLocalPreferences({
-      preferredDownloadType: selectedDownloadType,
-      preferredSubtitleLang: selectedSubTrack?.label || selectedSubTrack?.lang || 'Off',
-      preferredDownloadQuality: finalQuality.label,
-      lastDownload: newRecords[0],
-    });
+    await updateLocalPreferences({ preferredDownloadType: selectedDownloadType, preferredSubtitleLang: selectedSubTrack?.label || selectedSubTrack?.lang || 'Off', preferredDownloadQuality: finalQuality.label, lastDownload: newRecords[0] });
   };
 
   useEffect(() => {
@@ -988,16 +776,12 @@ export default function Play({
         const cleanTitle = String(resolvedTitle || '').replace(/\(Dub\)|\(Sub\)/gi, '').trim();
         if (!cleanTitle) return;
         const searchType = currentAnime?.format === 'MOVIE' ? 'movie' : 'tv';
-        const tmdbRes = await fetchWithTimeout(
-          `https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`
-        );
+        const tmdbRes = await fetchWithTimeout(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`);
         const tmdbJson = await tmdbRes.json();
         const show = tmdbJson?.results?.[0];
 
         if (show && isMounted) {
-          const detailRes = await fetchWithTimeout(
-            `https://api.themoviedb.org/3/${searchType}/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=images`
-          );
+          const detailRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${searchType}/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
           const detailJson = await detailRes.json();
           if (detailJson?.overview && isMounted) setTmdbSynopsis(detailJson.overview);
 
@@ -1015,19 +799,11 @@ export default function Play({
           query ($search: String) {
             Media (search: $search, type: ANIME) {
               status
-              recommendations (sort: RATING_DESC, perPage: 18) {
+              recommendations (sort: RATING_DESC, perPage: 25) {
                 nodes {
                   mediaRecommendation {
-                    id
-                    title { romaji english }
-                    bannerImage
-                    coverImage { extraLarge large }
-                    format
-                    episodes
-                    seasonYear
-                    averageScore
-                    status
-                    description
+                    id type title { romaji english } bannerImage coverImage { extraLarge large }
+                    format episodes seasonYear averageScore status description
                   }
                 }
               }
@@ -1035,17 +811,8 @@ export default function Play({
                 edges {
                   relationType
                   node {
-                    id
-                    type
-                    title { romaji english }
-                    bannerImage
-                    coverImage { extraLarge large }
-                    format
-                    episodes
-                    seasonYear
-                    averageScore
-                    status
-                    description
+                    id type title { romaji english } bannerImage coverImage { extraLarge large }
+                    format episodes seasonYear averageScore status description
                   }
                 }
               }
@@ -1060,40 +827,29 @@ export default function Play({
         const aJson = await aRes.json();
         const media = aJson?.data?.Media;
 
+        const isValidMedia = (node) => {
+          if (!node) return false;
+          if (node.type && node.type !== 'ANIME') return false; 
+          if (node.format === 'MUSIC' || node.format === 'NOVEL' || node.format === 'ONE_SHOT' || node.format === 'MANGA') return false;
+          return true;
+        };
+
         const relationEdges = (media?.relations?.edges || []).filter(
-          (e) => e?.node && (!e.node.type || e.node.type === 'ANIME')
+          (e) => e?.node && isValidMedia(e.node)
         );
 
-        const relationPriority = {
-          SEQUEL: 1,
-          PREQUEL: 2,
-          PARENT: 3,
-          SIDE_STORY: 4,
-          SPIN_OFF: 5,
-          ALTERNATIVE: 6,
-          SUMMARY: 7,
-          OTHER: 8,
-        };
+        const relationPriority = { SEQUEL: 1, PREQUEL: 2, PARENT: 3, SIDE_STORY: 4, SPIN_OFF: 5, ALTERNATIVE: 6, SUMMARY: 7, OTHER: 8 };
 
         const formattedRelations = relationEdges
           .map((edge) => {
             const node = edge.node;
             const relType = edge.relationType || 'RELATED';
             return {
-              id: String(node.id),
-              animeId: String(node.id),
-              title: node.title?.english || node.title?.romaji || 'Untitled',
-              image: node.coverImage?.extraLarge || node.coverImage?.large || '',
-              coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
-              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '',
-              format: node.format || 'TV',
-              episodesCount: node.episodes || 12,
-              sub: node.episodes || 12,
-              score: node.averageScore || 85,
-              year: node.seasonYear || '',
-              status: node.status || 'FINISHED',
-              relationType: String(relType).replace(/_/g, ' '),
-              priority: relationPriority[relType] || 99,
+              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
+              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
+              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
+              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
+              status: node.status || 'FINISHED', relationType: String(relType).replace(/_/g, ' '), priority: relationPriority[relType] || 99,
               description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
             };
           })
@@ -1101,24 +857,15 @@ export default function Play({
 
         const recNodes = (media?.recommendations?.nodes || [])
           .map((n) => n?.mediaRecommendation)
-          .filter(Boolean);
+          .filter((node) => isValidMedia(node));
 
         const combinedMore = [
           ...recNodes.map((node) => ({
-            id: String(node.id),
-            animeId: String(node.id),
-            title: node.title?.english || node.title?.romaji || 'Untitled',
-            image: node.coverImage?.extraLarge || node.coverImage?.large || '',
-            coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
-            backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '',
-            format: node.format || 'TV',
-            episodesCount: node.episodes || 12,
-            sub: node.episodes || 12,
-            score: node.averageScore || 85,
-            year: node.seasonYear || '',
-            status: node.status || 'FINISHED',
-            relationType: node.format || 'TV',
-            description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
+            id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
+            image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
+            backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
+            episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
+            status: node.status || 'FINISHED', relationType: node.format || 'TV', description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
           })),
           ...formattedRelations,
         ];
@@ -1126,14 +873,10 @@ export default function Play({
         const uniqueMore = [];
         const seenMoreIds = new Set();
         for (const item of combinedMore) {
-          if (!seenMoreIds.has(item.id)) {
-            seenMoreIds.add(item.id);
-            uniqueMore.push(item);
-          }
+          if (!seenMoreIds.has(item.id)) { seenMoreIds.add(item.id); uniqueMore.push(item); }
         }
 
-        const sequelSliderItems =
-          formattedRelations.length > 0 ? formattedRelations : uniqueMore.slice(0, 10);
+        const sequelSliderItems = formattedRelations.length > 0 ? formattedRelations : uniqueMore.slice(0, 10);
 
         if (isMounted) {
           setSequelsAndRelated(sequelSliderItems);
@@ -1157,9 +900,7 @@ export default function Play({
       }
       try {
         let targetId = animeDocId;
-        const searchRes = await fetchWithTimeout(
-          `${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`
-        );
+        const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`);
         const searchJson = await searchRes.json();
         const matches = searchJson?.data || [];
         if (matches.length > 0) {
@@ -1174,25 +915,10 @@ export default function Play({
 
         if (isMounted && Array.isArray(list)) {
           const formatted = list.map((ep, idx) => ({
-            id: String(ep.id || idx + 1),
-            slug: String(ep.slug || ep.id || ep.num || idx + 1),
-            num: Number(ep.num || idx + 1),
-            title: ep.title || `Episode ${ep.num || idx + 1}`,
-            isFiller: Boolean(ep.isFiller),
-            isSub: ep.isSub ?? true,
-            isDub: ep.isDub ?? false,
+            id: String(ep.id || idx + 1), slug: String(ep.slug || ep.id || ep.num || idx + 1), num: Number(ep.num || idx + 1),
+            title: ep.title || `Episode ${ep.num || idx + 1}`, isFiller: Boolean(ep.isFiller), isSub: ep.isSub ?? true, isDub: ep.isDub ?? false,
           }));
           setEpisodes(formatted);
-
-          if (!hasRestoredLocalChunkRef.current) {
-            const targetEpNum = latestWatched?.episodeNum || latestWatched?.lastWatchedEp || currentAnime?.episodeNum;
-            if (targetEpNum) {
-              const epIndex = formatted.findIndex((e) => String(e.num) === String(targetEpNum));
-              if (epIndex !== -1) {
-                setCurrentChunkIndex(Math.floor(epIndex / EPISODE_CHUNK_SIZE));
-              }
-            }
-          }
         }
       } catch (_) {
         if (isMounted) setEpisodes([]);
@@ -1203,13 +929,11 @@ export default function Play({
 
     fetchEpisodes();
     return () => { isMounted = false; };
-  }, [animeDocId, resolvedTitle, isUpcoming, latestWatched?.episodeNum, latestWatched?.lastWatchedEp]);
+  }, [animeDocId, resolvedTitle, isUpcoming]);
 
   const episodeChunks = useMemo(() => {
     const chunks = [];
-    for (let i = 0; i < episodes.length; i += EPISODE_CHUNK_SIZE) {
-      chunks.push(episodes.slice(i, i + EPISODE_CHUNK_SIZE));
-    }
+    for (let i = 0; i < episodes.length; i += EPISODE_CHUNK_SIZE) { chunks.push(episodes.slice(i, i + EPISODE_CHUNK_SIZE)); }
     return chunks;
   }, [episodes]);
 
@@ -1218,20 +942,14 @@ export default function Play({
 
   const handlePlayEpisode = async (episodeItem) => {
     if (!episodeItem) return;
-
     try {
       setLoadingEpisode(episodeItem.num);
       const safeId = encodeURIComponent(vercelAnimeId || animeDocId);
       const safeEp = encodeURIComponent(String(episodeItem.slug));
-
       const downloadedRecord = downloadedEpMap[episodeItem.num] || null;
-      const offlineFileUri =
-        downloadedRecord?.localUri ||
-        downloadedRecord?.fileUri ||
-        downloadedRecord?.streamUri ||
-        null;
-
+      const offlineFileUri = downloadedRecord?.localUri || downloadedRecord?.fileUri || downloadedRecord?.streamUri || null;
       let streamManifest = null;
+      
       if (!offlineFileUri || !String(offlineFileUri).startsWith('file://')) {
         try {
           const streamUrl = `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=hd-1&type=sub`;
@@ -1241,87 +959,34 @@ export default function Play({
         } catch (_) {}
       }
 
-      const savedEpProgress =
-        userProgressMap[String(episodeItem.slug)] ||
-        userProgressMap[`ep_${episodeItem.num}`] ||
-        null;
-
+      const savedEpProgress = userProgressMap[String(episodeItem.slug)] || userProgressMap[`ep_${episodeItem.num}`] || null;
       const playbackPayload = {
-        streamUrl:
-          offlineFileUri ||
-          streamManifest?.m3u8 ||
-          streamManifest?.streamingLink ||
-          null,
-        localUri:
-          offlineFileUri && String(offlineFileUri).startsWith('file://')
-            ? offlineFileUri
-            : null,
-        localMetaUri: downloadedRecord?.localMetaUri || null,
-        localSubtitleUri:
-          downloadedRecord?.localSubtitleUri ||
-          downloadedRecord?.subtitle?.file ||
-          null,
-        isOffline: Boolean(
-          offlineFileUri && String(offlineFileUri).startsWith('file://')
-        ),
-        referer:
-          downloadedRecord?.referer ||
-          streamManifest?.referer ||
-          'https://vidwish.live/',
-        subtitles: streamManifest?.subtitles || [],
-        animeTitle: resolvedTitle,
-        title: resolvedTitle,
-        animeBackdrop: resolvedBackdrop,
-        backdropUrl: resolvedBackdrop,
-        backdrop: resolvedBackdrop,
-        coverImage: currentAnime?.coverImage || resolvedBackdrop,
-        episodeNum: Number(episodeItem.num),
-        episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`,
-        epTitle: episodeItem.title || `Episode ${episodeItem.num}`,
-        animeId: animeDocId,
-        providerId: vercelAnimeId || animeDocId,
-        slug: String(episodeItem.slug),
-        progress: savedEpProgress ? Number(savedEpProgress.progress || 0) : 0,
-        duration: savedEpProgress ? Number(savedEpProgress.duration || 0) : 0,
-        positionMillis: savedEpProgress ? Number(savedEpProgress.positionMillis || 0) : 0,
-        durationMillis: savedEpProgress ? Number(savedEpProgress.durationMillis || 0) : 0,
-        userUid: resolvedUid,
-        uid: resolvedUid,
-        user: resolvedUser,
-        activeProfileId: resolvedProfileId,
-        profileId: resolvedProfileId,
-        activeProfile: resolvedProfile,
-        currentProfile: resolvedProfile,
-        targetType: downloadedRecord?.audioType || currentAnime?.targetType || 'sub',
+        streamUrl: offlineFileUri || streamManifest?.m3u8 || streamManifest?.streamingLink || null,
+        localUri: offlineFileUri && String(offlineFileUri).startsWith('file://') ? offlineFileUri : null,
+        localMetaUri: downloadedRecord?.localMetaUri || null, localSubtitleUri: downloadedRecord?.localSubtitleUri || downloadedRecord?.subtitle?.file || null,
+        isOffline: Boolean(offlineFileUri && String(offlineFileUri).startsWith('file://')),
+        referer: downloadedRecord?.referer || streamManifest?.referer || 'https://vidwish.live/',
+        subtitles: streamManifest?.subtitles || [], animeTitle: resolvedTitle, title: resolvedTitle, animeBackdrop: resolvedBackdrop, backdropUrl: resolvedBackdrop, backdrop: resolvedBackdrop,
+        coverImage: currentAnime?.coverImage || resolvedBackdrop, episodeNum: Number(episodeItem.num), episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`,
+        epTitle: episodeItem.title || `Episode ${episodeItem.num}`, animeId: animeDocId, providerId: vercelAnimeId || animeDocId,
+        slug: String(episodeItem.slug), progress: savedEpProgress ? Number(savedEpProgress.progress || 0) : 0, duration: savedEpProgress ? Number(savedEpProgress.duration || 0) : 0,
+        positionMillis: savedEpProgress ? Number(savedEpProgress.positionMillis || 0) : 0, durationMillis: savedEpProgress ? Number(savedEpProgress.durationMillis || 0) : 0,
+        userUid: resolvedUid, uid: resolvedUid, user: resolvedUser, activeProfileId: resolvedProfileId, profileId: resolvedProfileId,
+        activeProfile: resolvedProfile, currentProfile: resolvedProfile, targetType: downloadedRecord?.audioType || currentAnime?.targetType || 'sub',
       };
 
       await updateLocalPreferences({
-        selectedChunksByAnime: {
-          [animeDocId]: currentChunkIndex,
-        },
-        lastPlayedEpisode: {
-          animeId: animeDocId,
-          animeTitle: resolvedTitle,
-          episodeNum: Number(episodeItem.num),
-          episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`,
-          slug: String(episodeItem.slug),
-          chunkIndex: currentChunkIndex,
-          timestamp: Date.now(),
-        },
+        selectedChunksByAnime: { [animeDocId]: currentChunkIndex },
+        lastPlayedEpisode: { animeId: animeDocId, animeTitle: resolvedTitle, episodeNum: Number(episodeItem.num), episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`, slug: String(episodeItem.slug), chunkIndex: currentChunkIndex, timestamp: Date.now() },
       });
 
-      if (navigation?.navigate) {
-        navigation.navigate('Player', playbackPayload);
-      } else {
-        setActivePlayback(playbackPayload);
-      }
+      if (navigation?.navigate) navigation.navigate('Player', playbackPayload);
+      else setActivePlayback(playbackPayload);
     } catch (_) {
-    } finally {
-      setLoadingEpisode(null);
-    }
+    } finally { setLoadingEpisode(null); }
   };
 
-  // --- LOCAL NAVIGATION STACK ---
+  // --- NESTED PLAY OVERLAY LOGIC ---
   const handleSelectRelatedAnime = useCallback((item) => {
     if (!item) return;
     const enrichedTarget = {
@@ -1332,27 +997,14 @@ export default function Play({
       currentProfile: resolvedProfile,
     };
     
-    // Save current state to history stack
-    setHistoryStack((prev) => [...prev, currentAnime]);
-    
-    setTitleLogo(null);
-    setTmdbSynopsis(item.description || '');
-    setCurrentAnime(enrichedTarget);
-    setActiveTab('episodes');
-    
-    // Auto scroll to top
-    flatListRef.current?.scrollToOffset({ offset: 0, animated: true });
-    
-  }, [resolvedUid, resolvedProfileId, resolvedProfile, resolvedUser, currentAnime]);
+    // Instead of replacing the current page content, push a completely new play.js layer on top
+    setNestedAnime(enrichedTarget);
+  }, [resolvedUid, resolvedProfileId, resolvedProfile]);
 
   const targetEp = (() => {
     if (episodes.length === 0) return null;
     if (latestWatched) {
-      const lastEp = episodes.find(
-        (e) =>
-          String(e.slug) === String(latestWatched.slug) ||
-          String(e.num) === String(latestWatched.episodeNum || latestWatched.lastWatchedEp)
-      );
+      const lastEp = episodes.find(e => String(e.slug) === String(latestWatched.slug) || String(e.num) === String(latestWatched.episodeNum || latestWatched.lastWatchedEp));
       if (lastEp) {
         if (latestWatched.finishedEp) {
           const nextEpIndex = episodes.findIndex((e) => e.slug === lastEp.slug) + 1;
@@ -1369,24 +1021,14 @@ export default function Play({
   })();
 
   let resumePct = 0;
-  if (
-    targetEp &&
-    latestWatched &&
-    latestWatched.duration > 0 &&
-    (String(latestWatched.slug) === String(targetEp.slug) ||
-      String(latestWatched.episodeNum || latestWatched.lastWatchedEp) === String(targetEp.num))
-  ) {
+  if (targetEp && latestWatched && latestWatched.duration > 0 && (String(latestWatched.slug) === String(targetEp.slug) || String(latestWatched.episodeNum || latestWatched.lastWatchedEp) === String(targetEp.num))) {
     resumePct = Math.min((latestWatched.progress / latestWatched.duration) * 100, 100);
   }
 
   const renderHeader = () => (
     <View style={styles.heroSection}>
       <View style={styles.backdropBox}>
-        <ProxyImage
-          source={{ uri: resolvedBackdrop || currentAnime?.coverImage }}
-          style={styles.backdropImg}
-          resizeMode="cover"
-        />
+        <ProxyImage source={{ uri: resolvedBackdrop || currentAnime?.coverImage }} style={styles.backdropImg} resizeMode="cover" />
         <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject}>
           <Defs>
             <LinearGradient id="heroDark" x1="0" y1="0" x2="0" y2="1">
@@ -1414,99 +1056,47 @@ export default function Play({
           <Text style={styles.scoreText}>★ {currentAnime?.score || 85}%</Text>
         </View>
 
-        <TouchableOpacity
-          style={[styles.resumeBtn, (episodes.length === 0 || isUpcoming) && { opacity: 0.5 }]}
-          activeOpacity={0.85}
-          onPress={() => targetEp && handlePlayEpisode(targetEp)}
-          disabled={episodes.length === 0 || isUpcoming}
-        >
+        <TouchableOpacity style={[styles.resumeBtn, (episodes.length === 0 || isUpcoming) && { opacity: 0.5 }]} activeOpacity={0.85} onPress={() => targetEp && handlePlayEpisode(targetEp)} disabled={episodes.length === 0 || isUpcoming}>
           <View style={styles.resumeContentRow}>
             <Text style={styles.resumeBtnText}>
-              {isUpcoming ? 'Not Yet Released' : (
-                latestWatched?.finishedEp && targetEp?.slug !== latestWatched?.slug 
-                  ? `Play Next: Episode ${targetEp?.num}` 
-                  : resumePct > 0 
-                    ? `Resume Episode ${targetEp?.num || 1}` 
-                    : `Watch Episode ${targetEp?.num || 1}`
-              )}
+              {isUpcoming ? 'Not Yet Released' : (latestWatched?.finishedEp && targetEp?.slug !== latestWatched?.slug ? `Play Next: Episode ${targetEp?.num}` : resumePct > 0 ? `Resume Episode ${targetEp?.num || 1}` : `Watch Episode ${targetEp?.num || 1}`)}
             </Text>
             <IconPlay size={18} color={WHITE} />
           </View>
           {resumePct > 0 && !latestWatched?.finishedEp && (
-            <View style={styles.resumeProgressUnderline}>
-              <View style={[styles.resumeProgressFill, { width: `${resumePct}%` }]} />
-            </View>
+            <View style={styles.resumeProgressUnderline}><View style={[styles.resumeProgressFill, { width: `${resumePct}%` }]} /></View>
           )}
         </TouchableOpacity>
 
         <View style={styles.actionsBar}>
+          {/* UPDATED SAVE ICON TO MATCH SLIDERS */}
           <TouchableOpacity style={styles.actionTab} onPress={toggleLibrary} activeOpacity={0.7}>
-            {inLibrary ? <IconCheck /> : <IconPlus />}
+            <BookmarkIcon filled={inLibrary} size={22} />
             <Text style={styles.actionTabText}>Watchlist</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.actionTab} onPress={() => handleOpenMultiEpisodeDownload(targetEp)} activeOpacity={0.7}>
-            <IconDownload />
-            <Text style={styles.actionTabText}>Download</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.actionTab} onPress={handleTriggerShare} activeOpacity={0.7}>
-            <IconShare />
-            <Text style={styles.actionTabText}>Share</Text>
-          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionTab} onPress={() => handleOpenMultiEpisodeDownload(targetEp)} activeOpacity={0.7}><IconDownload /><Text style={styles.actionTabText}>Download</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.actionTab} onPress={handleTriggerShare} activeOpacity={0.7}><IconShare /><Text style={styles.actionTabText}>Share</Text></TouchableOpacity>
         </View>
 
         <View style={styles.synopsisContainer}>
           <Text style={styles.synopsisBody} numberOfLines={descExpanded ? undefined : 3}>{tmdbSynopsis}</Text>
           {tmdbSynopsis?.length > 110 && (
-            <TouchableOpacity onPress={() => setDescExpanded(!descExpanded)} activeOpacity={0.7} style={styles.moreBtn}>
-              <Text style={styles.moreBtnText}>{descExpanded ? 'Less Details ▲' : 'More Details ▼'}</Text>
-            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setDescExpanded(!descExpanded)} activeOpacity={0.7} style={styles.moreBtn}><Text style={styles.moreBtnText}>{descExpanded ? 'Less Details ▲' : 'More Details ▼'}</Text></TouchableOpacity>
           )}
         </View>
 
         <View style={styles.tabsHeader}>
-          <TouchableOpacity
-            style={[styles.tabTitleBtn, activeTab === 'episodes' && styles.tabTitleBtnActive]}
-            onPress={() => setActiveTab('episodes')}
-          >
-            <Text style={[styles.tabTitleText, activeTab === 'episodes' && styles.tabTitleTextActive]}>
-              Episodes ({episodes.length})
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.tabTitleBtn, activeTab === 'moreLikeThis' && styles.tabTitleBtnActive]}
-            onPress={() => setActiveTab('moreLikeThis')}
-          >
-            <Text style={[styles.tabTitleText, activeTab === 'moreLikeThis' && styles.tabTitleTextActive]}>
-              More Like This ({moreLikeThis.length})
-            </Text>
-          </TouchableOpacity>
+          <TouchableOpacity style={[styles.tabTitleBtn, activeTab === 'episodes' && styles.tabTitleBtnActive]} onPress={() => setActiveTab('episodes')}><Text style={[styles.tabTitleText, activeTab === 'episodes' && styles.tabTitleTextActive]}>Episodes ({episodes.length})</Text></TouchableOpacity>
+          <TouchableOpacity style={[styles.tabTitleBtn, activeTab === 'moreLikeThis' && styles.tabTitleBtnActive]} onPress={() => setActiveTab('moreLikeThis')}><Text style={[styles.tabTitleText, activeTab === 'moreLikeThis' && styles.tabTitleTextActive]}>More Like This ({moreLikeThis.length})</Text></TouchableOpacity>
         </View>
 
         {activeTab === 'episodes' && episodeChunks.length > 0 && (
-          <FlatList 
-            horizontal
-            data={episodeChunks}
-            showsHorizontalScrollIndicator={false}
-            keyExtractor={(_, index) => `chunk-${index}`}
-            contentContainerStyle={styles.chunkSelectorContainer}
-            renderItem={({ item, index }) => {
-              const startEp = item[0].num;
-              const endEp = item[item.length - 1].num;
-              const rangeLabel = `${startEp} - ${endEp}`;
-              const isActive = currentChunkIndex === index;
-              return (
-                <TouchableOpacity 
-                  style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
-                  activeOpacity={0.85}
-                  onPress={() => handleSelectChunk(index, rangeLabel)}
-                >
-                  <Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>
-                    {rangeLabel}
-                  </Text>
-                </TouchableOpacity>
-              );
-            }}
-          />
+          <FlatList horizontal data={episodeChunks} showsHorizontalScrollIndicator={false} keyExtractor={(_, index) => `chunk-${index}`} contentContainerStyle={styles.chunkSelectorContainer} renderItem={({ item, index }) => {
+            const startEp = item[0].num; const endEp = item[item.length - 1].num; const rangeLabel = `${startEp} - ${endEp}`; const isActive = currentChunkIndex === index;
+            return (
+              <TouchableOpacity style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]} activeOpacity={0.85} onPress={() => handleSelectChunk(index, rangeLabel)}><Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>{rangeLabel}</Text></TouchableOpacity>
+            );
+          }} />
         )}
       </View>
     </View>
@@ -1514,65 +1104,22 @@ export default function Play({
 
   const renderEpisodesFooter = () => {
     if (activeTab !== 'episodes' || sequelsAndRelated.length === 0) return null;
-
     return (
       <View style={styles.recentStyleSection}>
-        <View style={styles.recentHeaderRow}>
-          <Text style={styles.recentSectionTitle}>Sequels & Related Anime</Text>
-        </View>
-
-        <FlatList
-          horizontal
-          data={sequelsAndRelated}
-          showsHorizontalScrollIndicator={false}
-          keyExtractor={(item) => `seq-${item.id}`}
-          contentContainerStyle={styles.recentListPadding}
-          snapToInterval={155}
-          decelerationRate="fast"
-          renderItem={({ item }) => {
-            const isAdded = librarySet.has(String(item.id));
-            return (
-              <TouchableOpacity
-                style={styles.recentCardContainer}
-                activeOpacity={0.85}
-                onPress={() => handleSelectRelatedAnime(item)}
-              >
-                <View style={styles.recentImageWrapper}>
-                  <ProxyImage
-                    source={{ uri: item.coverImage || item.image }}
-                    style={styles.recentCoverImage}
-                    resizeMode="cover"
-                  />
-
-                  <View style={styles.recentBadgeContainer}>
-                    <View style={styles.recentEpBadge}>
-                      <Text style={styles.recentEpBadgeText}>
-                        {item.relationType || item.format || 'SEQUEL'}
-                      </Text>
-                    </View>
-                    <View style={styles.recentCcBadge}>
-                      <Text style={styles.recentCcBadgeText}>
-                        CC {item.sub || item.episodesCount || 12}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <TouchableOpacity
-                    style={[styles.recentSaveBtn, isAdded && styles.recentSaveBtnActive]}
-                    onPress={() => toggleCardLibraryItem(item)}
-                    activeOpacity={0.8}
-                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-                  >
-                    <BookmarkIcon filled={isAdded} />
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.recentAnimeTitle} numberOfLines={1}>
-                  {item.title}
-                </Text>
-              </TouchableOpacity>
-            );
-          }}
-        />
+        <View style={styles.recentHeaderRow}><Text style={styles.recentSectionTitle}>Sequels & Related Anime</Text></View>
+        <FlatList horizontal data={sequelsAndRelated} showsHorizontalScrollIndicator={false} keyExtractor={(item) => `seq-${item.id}`} contentContainerStyle={styles.recentListPadding} snapToInterval={155} decelerationRate="fast" renderItem={({ item }) => {
+          const isAdded = librarySet.has(String(item.id));
+          return (
+            <TouchableOpacity style={styles.recentCardContainer} activeOpacity={0.85} onPress={() => handleSelectRelatedAnime(item)}>
+              <View style={styles.recentImageWrapper}>
+                <ProxyImage source={{ uri: item.coverImage || item.image }} style={styles.recentCoverImage} resizeMode="cover" />
+                <View style={styles.recentBadgeContainer}><View style={styles.recentEpBadge}><Text style={styles.recentEpBadgeText}>{item.relationType || item.format || 'SEQUEL'}</Text></View><View style={styles.recentCcBadge}><Text style={styles.recentCcBadgeText}>CC {item.sub || item.episodesCount || 12}</Text></View></View>
+                <TouchableOpacity style={[styles.recentSaveBtn, isAdded && styles.recentSaveBtnActive]} onPress={() => toggleCardLibraryItem(item)} activeOpacity={0.8} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}><BookmarkIcon filled={isAdded} /></TouchableOpacity>
+              </View>
+              <Text style={styles.recentAnimeTitle} numberOfLines={1}>{item.title}</Text>
+            </TouchableOpacity>
+          );
+        }} />
       </View>
     );
   };
@@ -1581,17 +1128,9 @@ export default function Play({
   const selectedDownloadCount = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]).length;
   const isAllEpisodesSelected = episodes.length > 0 && selectedDownloadCount === episodes.length;
 
-  const downloadedEpNumbersList = useMemo(
-    () => Object.keys(downloadedEpMap).map((k) => Number(k)).filter(Boolean),
-    [downloadedEpMap]
-  );
-  const selectedBulkDeleteNums = useMemo(
-    () => Object.keys(bulkDeleteSelectedMap).filter((k) => bulkDeleteSelectedMap[k]).map((k) => Number(k)),
-    [bulkDeleteSelectedMap]
-  );
-  const isAllDownloadedSelectedForDelete =
-    downloadedEpNumbersList.length > 0 &&
-    selectedBulkDeleteNums.length === downloadedEpNumbersList.length;
+  const downloadedEpNumbersList = useMemo(() => Object.keys(downloadedEpMap).map((k) => Number(k)).filter(Boolean), [downloadedEpMap]);
+  const selectedBulkDeleteNums = useMemo(() => Object.keys(bulkDeleteSelectedMap).filter((k) => bulkDeleteSelectedMap[k]).map((k) => Number(k)), [bulkDeleteSelectedMap]);
+  const isAllDownloadedSelectedForDelete = downloadedEpNumbersList.length > 0 && selectedBulkDeleteNums.length === downloadedEpNumbersList.length;
 
   return (
     <View style={styles.screenContainer}>
@@ -1602,14 +1141,12 @@ export default function Play({
         <TouchableOpacity style={styles.navBackCircle} onPress={handleGoBack}>
           <IconBack />
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.navVerticalDotsCircle} onPress={() => setTopMenuVisible(true)}>
           <IconVerticalDots size={20} color={WHITE} />
         </TouchableOpacity>
       </View>
 
       <FlatList
-        ref={flatListRef}
         key={isEpisodesTab ? 'episodes-list' : 'more-like-this-grid'}
         numColumns={isEpisodesTab ? 1 : GRID_COLUMNS}
         data={isEpisodesTab ? currentEpisodesToRender : moreLikeThis}
@@ -1619,13 +1156,7 @@ export default function Play({
         columnWrapperStyle={!isEpisodesTab ? styles.gridRowWrapper : undefined}
         ListEmptyComponent={() => (
           <View style={styles.emptyContainer}>
-            {episodesLoading ? (
-              <ActivityIndicator size="small" color={PURE_RED} />
-            ) : (
-              <Text style={styles.emptyText}>
-                {isEpisodesTab ? 'No episodes found.' : 'No similar anime found.'}
-              </Text>
-            )}
+            {episodesLoading ? <ActivityIndicator size="small" color={PURE_RED} /> : <Text style={styles.emptyText}>{isEpisodesTab ? 'No episodes found.' : 'No similar anime found.'}</Text>}
           </View>
         )}
         renderItem={({ item }) => {
@@ -1639,91 +1170,21 @@ export default function Play({
             return (
               <View style={styles.episodeRow}>
                 <Text style={[styles.bulletNumber, isFinished && styles.watchedText]}>•{item.num}</Text>
-
-                <TouchableOpacity
-                  style={[
-                    styles.episodeCard,
-                    isFinished && styles.watchedCardBg,
-                    isBulkDeleteMode && isSelectedForDelete && styles.episodeCardSelectedDelete,
-                  ]}
-                  activeOpacity={0.8}
-                  delayLongPress={320}
-                  onLongPress={() => {
-                    if (isDownloaded) {
-                      handleLongPressDownloadedEpisode(item.num);
-                    }
-                  }}
-                  onPress={() => {
-                    if (isBulkDeleteMode) {
-                      if (isDownloaded) {
-                        toggleBulkDeleteEpisodeSelection(item.num);
-                      }
-                      return;
-                    }
-                    handlePlayEpisode(item);
-                  }}
-                >
-                  <Text style={[styles.episodeCardTitle, isFinished && styles.watchedText]} numberOfLines={1}>
-                    {item.title}
-                  </Text>
-
+                <TouchableOpacity style={[styles.episodeCard, isFinished && styles.watchedCardBg, isBulkDeleteMode && isSelectedForDelete && styles.episodeCardSelectedDelete]} activeOpacity={0.8} delayLongPress={320} onLongPress={() => { if (isDownloaded) { handleLongPressDownloadedEpisode(item.num); } }} onPress={() => { if (isBulkDeleteMode) { if (isDownloaded) { toggleBulkDeleteEpisodeSelection(item.num); } return; } handlePlayEpisode(item); }}>
+                  <Text style={[styles.episodeCardTitle, isFinished && styles.watchedText]} numberOfLines={1}>{item.title}</Text>
                   <View style={styles.cardRightGroup}>
-                    {item.isFiller && (
-                      <View style={[styles.fillerTag, isFinished && { borderColor: TEXT_GREY }]}>
-                        <Text style={[styles.fillerTagText, isFinished && { color: TEXT_GREY }]}>FILLER</Text>
-                      </View>
-                    )}
-                    {isLoadingThis ? (
-                      <ActivityIndicator size="small" color={WHITE} />
-                    ) : (
-                      <IconPlay size={18} color={isFinished ? "rgba(255,255,255,0.4)" : WHITE} />
-                    )}
+                    {item.isFiller && <View style={[styles.fillerTag, isFinished && { borderColor: TEXT_GREY }]}><Text style={[styles.fillerTagText, isFinished && { color: TEXT_GREY }]}>FILLER</Text></View>}
+                    {isLoadingThis ? <ActivityIndicator size="small" color={WHITE} /> : <IconPlay size={18} color={isFinished ? "rgba(255,255,255,0.4)" : WHITE} />}
                   </View>
-
-                  {epProgress && epProgress.duration > 0 && (
-                    <View style={styles.epMiniProgressBg}>
-                      <View style={[styles.epMiniProgressFill, { width: `${Math.min((epProgress.progress / epProgress.duration) * 100, 100)}%` }]} />
-                    </View>
-                  )}
+                  {epProgress && epProgress.duration > 0 && <View style={styles.epMiniProgressBg}><View style={[styles.epMiniProgressFill, { width: `${Math.min((epProgress.progress / epProgress.duration) * 100, 100)}%` }]} /></View>}
                 </TouchableOpacity>
 
                 {isDownloaded ? (
-                  <TouchableOpacity
-                    style={[
-                      styles.deleteIconBtn,
-                      isBulkDeleteMode && isSelectedForDelete && styles.deleteIconBtnSelected,
-                    ]}
-                    activeOpacity={0.75}
-                    delayLongPress={320}
-                    onLongPress={() => handleLongPressDownloadedEpisode(item.num)}
-                    onPress={() => {
-                      if (isBulkDeleteMode) {
-                        toggleBulkDeleteEpisodeSelection(item.num);
-                      } else {
-                        handleDeleteDownloadedEpisodes([item.num]);
-                      }
-                    }}
-                  >
-                    {isBulkDeleteMode ? (
-                      <View
-                        style={[
-                          styles.bulkCheckCircle,
-                          isSelectedForDelete && styles.bulkCheckCircleActive,
-                        ]}
-                      >
-                        {isSelectedForDelete && <IconCheck size={14} color={WHITE} />}
-                      </View>
-                    ) : (
-                      <IconTrash size={20} color={PURE_RED} />
-                    )}
+                  <TouchableOpacity style={[styles.deleteIconBtn, isBulkDeleteMode && isSelectedForDelete && styles.deleteIconBtnSelected]} activeOpacity={0.75} delayLongPress={320} onLongPress={() => handleLongPressDownloadedEpisode(item.num)} onPress={() => { if (isBulkDeleteMode) { toggleBulkDeleteEpisodeSelection(item.num); } else { handleDeleteDownloadedEpisodes([item.num]); } }}>
+                    {isBulkDeleteMode ? <View style={[styles.bulkCheckCircle, isSelectedForDelete && styles.bulkCheckCircleActive]}>{isSelectedForDelete && <IconCheck size={14} color={WHITE} />}</View> : <IconTrash size={20} color={PURE_RED} />}
                   </TouchableOpacity>
                 ) : (
-                  <TouchableOpacity
-                    style={[styles.downloadIconBtn, isBulkDeleteMode && { opacity: 0.35 }]}
-                    activeOpacity={0.7}
-                    disabled={isBulkDeleteMode}
-                    onPress={() => handleOpenSingleEpisodeDownload(item)}
-                  >
+                  <TouchableOpacity style={[styles.downloadIconBtn, isBulkDeleteMode && { opacity: 0.35 }]} activeOpacity={0.7} disabled={isBulkDeleteMode} onPress={() => handleOpenSingleEpisodeDownload(item)}>
                     <IconDownload size={22} color={isFinished ? "rgba(255,255,255,0.4)" : WHITE} />
                   </TouchableOpacity>
                 )}
@@ -1733,477 +1194,149 @@ export default function Play({
 
           const isAdded = librarySet.has(String(item.id));
           return (
-            <TouchableOpacity
-              style={styles.gridAnimeCard}
-              activeOpacity={0.85}
-              onPress={() => handleSelectRelatedAnime(item)}
-            >
+            <TouchableOpacity style={styles.gridAnimeCard} activeOpacity={0.85} onPress={() => handleSelectRelatedAnime(item)}>
               <View style={styles.gridPosterBox}>
-                <ProxyImage
-                  source={{ uri: item.coverImage || item.image }}
-                  style={styles.recentCoverImage}
-                  resizeMode="cover"
-                />
-
+                <ProxyImage source={{ uri: item.coverImage || item.image }} style={styles.recentCoverImage} resizeMode="cover" />
                 <View style={styles.recentBadgeContainer}>
-                  <View style={styles.recentEpBadge}>
-                    <Text style={styles.recentEpBadgeText}>{item.format || 'TV'}</Text>
-                  </View>
-                  <View style={styles.recentCcBadge}>
-                    <Text style={styles.recentCcBadgeText}>CC {item.sub || item.episodesCount || 12}</Text>
-                  </View>
+                  <View style={styles.recentEpBadge}><Text style={styles.recentEpBadgeText}>{item.format || 'TV'}</Text></View>
+                  <View style={styles.recentCcBadge}><Text style={styles.recentCcBadgeText}>CC {item.sub || item.episodesCount || 12}</Text></View>
                 </View>
-
-                <TouchableOpacity
-                  style={[styles.recentSaveBtn, isAdded && styles.recentSaveBtnActive]}
-                  onPress={() => toggleCardLibraryItem(item)}
-                  activeOpacity={0.8}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <BookmarkIcon filled={isAdded} />
-                </TouchableOpacity>
+                <TouchableOpacity style={[styles.recentSaveBtn, isAdded && styles.recentSaveBtnActive]} onPress={() => toggleCardLibraryItem(item)} activeOpacity={0.8} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}><BookmarkIcon filled={isAdded} /></TouchableOpacity>
               </View>
-              <Text style={styles.recentAnimeTitle} numberOfLines={1}>
-                {item.title}
-              </Text>
+              <Text style={styles.recentAnimeTitle} numberOfLines={1}>{item.title}</Text>
             </TouchableOpacity>
           );
         }}
-        contentContainerStyle={[
-          styles.listPadding,
-          isBulkDeleteMode && { paddingBottom: 110 },
-        ]}
+        contentContainerStyle={[styles.listPadding, isBulkDeleteMode && { paddingBottom: 110 }]}
         showsVerticalScrollIndicator={false}
       />
 
-      {/* FLOATING BULK DELETE BAR */}
       {isBulkDeleteMode && (
         <View style={styles.bulkDeleteFloatingBar}>
           <View style={styles.bulkDeleteBarTopRow}>
-            <Text style={styles.bulkDeleteCountText}>
-              {selectedBulkDeleteNums.length} Downloaded {selectedBulkDeleteNums.length === 1 ? 'Episode' : 'Episodes'} Selected
-            </Text>
-
+            <Text style={styles.bulkDeleteCountText}>{selectedBulkDeleteNums.length} Downloaded {selectedBulkDeleteNums.length === 1 ? 'Episode' : 'Episodes'} Selected</Text>
             <View style={styles.bulkDeleteTopActions}>
-              <TouchableOpacity
-                style={styles.bulkSelectAllBtn}
-                onPress={() => {
-                  if (isAllDownloadedSelectedForDelete) {
-                    setBulkDeleteSelectedMap({});
-                  } else {
-                    const allDl = {};
-                    downloadedEpNumbersList.forEach((n) => {
-                      allDl[n] = true;
-                    });
-                    setBulkDeleteSelectedMap(allDl);
-                  }
-                }}
-              >
-                <Text style={styles.bulkSelectAllText}>
-                  {isAllDownloadedSelectedForDelete ? 'Deselect All' : 'Select All'}
-                </Text>
+              <TouchableOpacity style={styles.bulkSelectAllBtn} onPress={() => { if (isAllDownloadedSelectedForDelete) { setBulkDeleteSelectedMap({}); } else { const allDl = {}; downloadedEpNumbersList.forEach((n) => { allDl[n] = true; }); setBulkDeleteSelectedMap(allDl); } }}>
+                <Text style={styles.bulkSelectAllText}>{isAllDownloadedSelectedForDelete ? 'Deselect All' : 'Select All'}</Text>
               </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.bulkCancelBtn}
-                onPress={() => {
-                  setIsBulkDeleteMode(false);
-                  setBulkDeleteSelectedMap({});
-                }}
-              >
-                <Text style={styles.bulkCancelText}>Cancel</Text>
-              </TouchableOpacity>
+              <TouchableOpacity style={styles.bulkCancelBtn} onPress={() => { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); }}><Text style={styles.bulkCancelText}>Cancel</Text></TouchableOpacity>
             </View>
           </View>
-
-          <TouchableOpacity
-            style={[
-              styles.bulkConfirmDeleteBtn,
-              selectedBulkDeleteNums.length === 0 && { opacity: 0.45 },
-            ]}
-            disabled={selectedBulkDeleteNums.length === 0}
-            activeOpacity={0.85}
-            onPress={() => handleDeleteDownloadedEpisodes(selectedBulkDeleteNums)}
-          >
+          <TouchableOpacity style={[styles.bulkConfirmDeleteBtn, selectedBulkDeleteNums.length === 0 && { opacity: 0.45 }]} disabled={selectedBulkDeleteNums.length === 0} activeOpacity={0.85} onPress={() => handleDeleteDownloadedEpisodes(selectedBulkDeleteNums)}>
             <IconTrash size={18} color={WHITE} />
-            <Text style={styles.bulkConfirmDeleteText}>
-              Delete Selected ({selectedBulkDeleteNums.length})
-            </Text>
+            <Text style={styles.bulkConfirmDeleteText}>Delete Selected ({selectedBulkDeleteNums.length})</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      {/* --- SETTINGS MENU POPUP FROM BOTTOM (Replaced Modal) --- */}
       {topMenuVisible && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999 }]}>
           <View style={styles.settingsModalOverlay}>
-            <TouchableOpacity
-              style={StyleSheet.absoluteFillObject}
-              activeOpacity={1}
-              onPress={() => setTopMenuVisible(false)}
-            />
+            <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setTopMenuVisible(false)} />
             <View style={styles.settingsActionSheetBox}>
-              <Text style={styles.settingsSheetTitle} numberOfLines={1}>
-                {resolvedTitle}
-              </Text>
-
-              <TouchableOpacity
-                style={styles.settingsSheetOptionRow}
-                activeOpacity={0.8}
-                onPress={() => {
-                  setTopMenuVisible(false);
-                  toggleLibrary();
-                }}
-              >
-                <BookmarkIcon filled={inLibrary} />
-                <Text style={styles.settingsSheetOptionText}>
-                  {inLibrary ? 'Remove from User List' : 'Add to User List'}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.settingsSheetOptionRow}
-                activeOpacity={0.8}
-                onPress={() => {
-                  setTopMenuVisible(false);
-                  handleOpenMultiEpisodeDownload(targetEp);
-                }}
-              >
-                <IconDownload size={18} color={WHITE} />
-                <Text style={styles.settingsSheetOptionText}>Download</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.settingsSheetOptionRow}
-                activeOpacity={0.8}
-                onPress={() => {
-                  setTopMenuVisible(false);
-                  handleTriggerShare();
-                }}
-              >
-                <IconShare size={18} color={WHITE} />
-                <Text style={styles.settingsSheetOptionText}>Share</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.settingsSheetOptionRow}
-                activeOpacity={0.8}
-                onPress={() => {
-                  setTopMenuVisible(false);
-                  setRoomModalVisible(true);
-                }}
-              >
-                <IconPlay size={18} color={WHITE} />
-                <Text style={styles.settingsSheetOptionText}>Room</Text>
-              </TouchableOpacity>
+              <Text style={styles.settingsSheetTitle} numberOfLines={1}>{resolvedTitle}</Text>
+              <TouchableOpacity style={styles.settingsSheetOptionRow} activeOpacity={0.8} onPress={() => { setTopMenuVisible(false); toggleLibrary(); }}><BookmarkIcon filled={inLibrary} /><Text style={styles.settingsSheetOptionText}>{inLibrary ? 'Remove from User List' : 'Add to User List'}</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.settingsSheetOptionRow} activeOpacity={0.8} onPress={() => { setTopMenuVisible(false); handleOpenMultiEpisodeDownload(targetEp); }}><IconDownload size={18} color={WHITE} /><Text style={styles.settingsSheetOptionText}>Download</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.settingsSheetOptionRow} activeOpacity={0.8} onPress={() => { setTopMenuVisible(false); handleTriggerShare(); }}><IconShare size={18} color={WHITE} /><Text style={styles.settingsSheetOptionText}>Share</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.settingsSheetOptionRow} activeOpacity={0.8} onPress={() => { setTopMenuVisible(false); setRoomModalVisible(true); }}><IconPlay size={18} color={WHITE} /><Text style={styles.settingsSheetOptionText}>Room</Text></TouchableOpacity>
             </View>
           </View>
         </View>
       )}
 
-      {/* --- CUSTOM CSS CONFIRMATION POPUP BOTTOM SHEET (Replaced Modal) --- */}
       {Boolean(confirmDialog) && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999 }]}>
           <View style={styles.confirmModalBackdrop}>
-            <TouchableOpacity
-              style={StyleSheet.absoluteFillObject}
-              activeOpacity={1}
-              onPress={() => setConfirmDialog(null)}
-            />
+            <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setConfirmDialog(null)} />
             <View style={styles.confirmPopupCard}>
-              <View style={styles.confirmIconWrap}>
-                <IconTrash size={24} color={PURE_RED} />
-              </View>
+              <View style={styles.confirmIconWrap}><IconTrash size={24} color={PURE_RED} /></View>
               <Text style={styles.confirmPopupTitle}>{confirmDialog.title}</Text>
               <Text style={styles.confirmPopupMessage}>{confirmDialog.message}</Text>
-
               <View style={styles.confirmBtnsRow}>
-                <TouchableOpacity
-                  style={styles.confirmCancelBtn}
-                  activeOpacity={0.85}
-                  onPress={() => setConfirmDialog(null)}
-                >
-                  <Text style={styles.confirmCancelBtnText}>Cancel</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.confirmDangerBtn}
-                  activeOpacity={0.85}
-                  onPress={confirmDialog.onConfirm}
-                >
-                  <Text style={styles.confirmDangerBtnText}>
-                    {confirmDialog.confirmText || 'Delete'}
-                  </Text>
-                </TouchableOpacity>
+                <TouchableOpacity style={styles.confirmCancelBtn} activeOpacity={0.85} onPress={() => setConfirmDialog(null)}><Text style={styles.confirmCancelBtnText}>Cancel</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.confirmDangerBtn} activeOpacity={0.85} onPress={confirmDialog.onConfirm}><Text style={styles.confirmDangerBtnText}>{confirmDialog.confirmText || 'Delete'}</Text></TouchableOpacity>
               </View>
             </View>
           </View>
         </View>
       )}
 
-      {/* --- DOWNLOAD BOTTOM HALF-SCREEN SHEET (Replaced Modal) --- */}
       {downloadModalVisible && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999 }]}>
           <View style={styles.bottomSheetOverlay}>
-            <TouchableOpacity
-              style={StyleSheet.absoluteFillObject}
-              activeOpacity={1}
-              onPress={() => setDownloadModalVisible(false)}
-            />
-
+            <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={() => setDownloadModalVisible(false)} />
             <View style={styles.halfScreenSheet}>
               <View style={styles.sheetGrabHandle} />
-
               <View style={styles.modalHeaderRow}>
-                <View style={{ flex: 1, paddingRight: 10 }}>
-                  <Text style={styles.modalTitle} numberOfLines={1}>
-                    {isSingleEpisodeDownload
-                      ? `Download Episode ${downloadTargetEp?.num || 1}`
-                      : downloadStep === 1
-                        ? 'Select Episodes to Download'
-                        : `Download (${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'})`}
-                  </Text>
-                  <Text style={styles.modalSubHeader} numberOfLines={1}>
-                    {isSingleEpisodeDownload
-                      ? downloadTargetEp?.title || resolvedTitle
-                      : resolvedTitle}
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={() => setDownloadModalVisible(false)} style={styles.modalCloseBtn}>
-                  <IconClose size={18} color={WHITE} />
-                </TouchableOpacity>
+                <View style={{ flex: 1, paddingRight: 10 }}><Text style={styles.modalTitle} numberOfLines={1}>{isSingleEpisodeDownload ? `Download Episode ${downloadTargetEp?.num || 1}` : downloadStep === 1 ? 'Select Episodes to Download' : `Download (${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'})`}</Text><Text style={styles.modalSubHeader} numberOfLines={1}>{isSingleEpisodeDownload ? downloadTargetEp?.title || resolvedTitle : resolvedTitle}</Text></View>
+                <TouchableOpacity onPress={() => setDownloadModalVisible(false)} style={styles.modalCloseBtn}><IconClose size={18} color={WHITE} /></TouchableOpacity>
               </View>
 
               {!isSingleEpisodeDownload && downloadStep === 1 && (
                 <View style={{ flex: 1 }}>
                   <View style={styles.multiEpSelectTopBar}>
-                    <Text style={styles.sheetSectionLabel}>
-                      Selected ({selectedDownloadCount}/{episodes.length})
-                    </Text>
-                    <TouchableOpacity
-                      style={[styles.selectAllToggleBtn, isAllEpisodesSelected && { backgroundColor: PURE_RED }]}
-                      onPress={() => {
-                        if (isAllEpisodesSelected) {
-                          setSelectedEpNumsMap({});
-                        } else {
-                          const allMap = {};
-                          episodes.forEach((e) => { allMap[e.num] = true; });
-                          setSelectedEpNumsMap(allMap);
-                        }
-                      }}
-                    >
-                      <Text style={[styles.selectAllToggleText, isAllEpisodesSelected && { color: WHITE }]}>
-                        {isAllEpisodesSelected ? 'Deselect All' : 'Select All'}
-                      </Text>
+                    <Text style={styles.sheetSectionLabel}>Selected ({selectedDownloadCount}/{episodes.length})</Text>
+                    <TouchableOpacity style={[styles.selectAllToggleBtn, isAllEpisodesSelected && { backgroundColor: PURE_RED }]} onPress={() => { if (isAllEpisodesSelected) { setSelectedEpNumsMap({}); } else { const allMap = {}; episodes.forEach((e) => { allMap[e.num] = true; }); setSelectedEpNumsMap(allMap); } }}>
+                      <Text style={[styles.selectAllToggleText, isAllEpisodesSelected && { color: WHITE }]}>{isAllEpisodesSelected ? 'Deselect All' : 'Select All'}</Text>
                     </TouchableOpacity>
                   </View>
 
                   {episodeChunks.length > 1 && (
                     <View style={{ marginBottom: 10 }}>
-                      <FlatList
-                        horizontal
-                        data={episodeChunks}
-                        showsHorizontalScrollIndicator={false}
-                        keyExtractor={(_, index) => `dl-chunk-${index}`}
-                        contentContainerStyle={{ gap: 8 }}
-                        renderItem={({ item, index }) => {
-                          const rangeLabel = `${item[0].num} - ${item[item.length - 1].num}`;
-                          const isActive = downloadChunkIndex === index;
-                          return (
-                            <TouchableOpacity
-                              style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]}
-                              activeOpacity={0.85}
-                              onPress={() => setDownloadChunkIndex(index)}
-                            >
-                              <Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>
-                                {rangeLabel}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        }}
-                      />
+                      <FlatList horizontal data={episodeChunks} showsHorizontalScrollIndicator={false} keyExtractor={(_, index) => `dl-chunk-${index}`} contentContainerStyle={{ gap: 8 }} renderItem={({ item, index }) => {
+                        const rangeLabel = `${item[0].num} - ${item[item.length - 1].num}`; const isActive = downloadChunkIndex === index;
+                        return (<TouchableOpacity style={[styles.chunkRectPill, isActive && styles.chunkRectPillActive]} activeOpacity={0.85} onPress={() => setDownloadChunkIndex(index)}><Text style={[styles.chunkRectPillText, isActive && styles.chunkRectPillTextActive]}>{rangeLabel}</Text></TouchableOpacity>);
+                      }} />
                     </View>
                   )}
 
-                  <ScrollView
-                    style={styles.sheetScrollArea}
-                    contentContainerStyle={styles.multiEpGridContainer}
-                    showsVerticalScrollIndicator={false}
-                  >
+                  <ScrollView style={styles.sheetScrollArea} contentContainerStyle={styles.multiEpGridContainer} showsVerticalScrollIndicator={false}>
                     {currentDownloadChunkEpisodes.map((ep) => {
                       const isSelected = Boolean(selectedEpNumsMap[ep.num]);
-                      return (
-                        <TouchableOpacity
-                          key={ep.num}
-                          style={[styles.multiEpPill, isSelected && styles.multiEpPillActive]}
-                          activeOpacity={0.8}
-                          onPress={() => {
-                            setSelectedEpNumsMap((prev) => ({
-                              ...prev,
-                              [ep.num]: !prev[ep.num],
-                            }));
-                          }}
-                        >
-                          <Text style={[styles.multiEpPillText, isSelected && styles.multiEpPillTextActive]}>
-                            Ep {ep.num}
-                          </Text>
-                        </TouchableOpacity>
-                      );
+                      return (<TouchableOpacity key={ep.num} style={[styles.multiEpPill, isSelected && styles.multiEpPillActive]} activeOpacity={0.8} onPress={() => { setSelectedEpNumsMap((prev) => ({ ...prev, [ep.num]: !prev[ep.num] })); }}><Text style={[styles.multiEpPillText, isSelected && styles.multiEpPillTextActive]}>Ep {ep.num}</Text></TouchableOpacity>);
                     })}
                   </ScrollView>
 
-                  <TouchableOpacity
-                    style={[
-                      styles.sheetDownloadSubmitBtn,
-                      selectedDownloadCount === 0 && { opacity: 0.5 },
-                    ]}
-                    activeOpacity={0.85}
-                    disabled={selectedDownloadCount === 0}
-                    onPress={() => {
-                      const nums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
-                      if (nums.length === 0) return;
-                      const firstEpObj =
-                        episodes.find((e) => String(e.num) === String(nums[0])) ||
-                        downloadTargetEp ||
-                        episodes[0];
-                      setDownloadTargetEp(firstEpObj);
-                      setDownloadStep(2);
-                      fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType);
-                    }}
-                  >
+                  <TouchableOpacity style={[styles.sheetDownloadSubmitBtn, selectedDownloadCount === 0 && { opacity: 0.5 }]} activeOpacity={0.85} disabled={selectedDownloadCount === 0} onPress={() => { const nums = Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]); if (nums.length === 0) return; const firstEpObj = episodes.find((e) => String(e.num) === String(nums[0])) || downloadTargetEp || episodes[0]; setDownloadTargetEp(firstEpObj); setDownloadStep(2); fetchUnifiedDownloadOptions(firstEpObj, selectedDownloadType); }}>
                     <IconDownload size={18} color={WHITE} />
-                    <Text style={styles.sheetDownloadSubmitText}>
-                      Choose Quality & Subtitles ({selectedDownloadCount})
-                    </Text>
+                    <Text style={styles.sheetDownloadSubmitText}>Choose Quality & Subtitles ({selectedDownloadCount})</Text>
                   </TouchableOpacity>
                 </View>
               )}
 
               {(isSingleEpisodeDownload || downloadStep === 2) && (
                 <View style={{ flex: 1 }}>
-                  <ScrollView
-                    style={styles.sheetScrollArea}
-                    contentContainerStyle={styles.sheetScrollContent}
-                    showsVerticalScrollIndicator={false}
-                  >
+                  <ScrollView style={styles.sheetScrollArea} contentContainerStyle={styles.sheetScrollContent} showsVerticalScrollIndicator={false}>
                     <Text style={styles.sheetSectionLabel}>Audio</Text>
                     <View style={styles.sheetPillRow}>
                       {['sub', 'dub'].map((type) => {
                         const isSelected = selectedDownloadType === type;
-                        return (
-                          <TouchableOpacity
-                            key={type}
-                            style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
-                            activeOpacity={0.85}
-                            onPress={() => handleSwitchDownloadAudioType(type)}
-                          >
-                            <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                              {type === 'sub' ? 'SUB (Japanese)' : 'DUB (English)'}
-                            </Text>
-                          </TouchableOpacity>
-                        );
+                        return (<TouchableOpacity key={type} style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]} activeOpacity={0.85} onPress={() => handleSwitchDownloadAudioType(type)}><Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>{type === 'sub' ? 'SUB (Japanese)' : 'DUB (English)'}</Text></TouchableOpacity>);
                       })}
                     </View>
-
                     <Text style={styles.sheetSectionLabel}>Subtitles</Text>
-                    {isFetchingDownloadData ? (
-                      <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
-                    ) : (
-                      <ScrollView
-                        horizontal
-                        showsHorizontalScrollIndicator={false}
-                        contentContainerStyle={styles.sheetHorizontalPills}
-                      >
+                    {isFetchingDownloadData ? <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} /> : (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.sheetHorizontalPills}>
                         {downloadSubTracks.map((sub, idx) => {
-                          const label = sub.label || sub.lang || `Subtitle ${idx + 1}`;
-                          const isSelected =
-                            selectedSubTrack?.lang !== 'none' &&
-                            (selectedSubTrack?.label || selectedSubTrack?.lang) === label;
-                          return (
-                            <TouchableOpacity
-                              key={idx}
-                              style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
-                              activeOpacity={0.85}
-                              onPress={() => setSelectedSubTrack(sub)}
-                            >
-                              <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                                {label}
-                              </Text>
-                            </TouchableOpacity>
-                          );
+                          const label = sub.label || sub.lang || `Subtitle ${idx + 1}`; const isSelected = selectedSubTrack?.lang !== 'none' && (selectedSubTrack?.label || selectedSubTrack?.lang) === label;
+                          return (<TouchableOpacity key={idx} style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]} activeOpacity={0.85} onPress={() => setSelectedSubTrack(sub)}><Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>{label}</Text></TouchableOpacity>);
                         })}
-
-                        <TouchableOpacity
-                          style={[
-                            styles.sheetRectPill,
-                            selectedSubTrack?.lang === 'none' && styles.sheetRectPillActive,
-                          ]}
-                          activeOpacity={0.85}
-                          onPress={() =>
-                            setSelectedSubTrack({ label: 'No Subtitles / Off', file: null, lang: 'none' })
-                          }
-                        >
-                          <Text
-                            style={[
-                              styles.sheetRectPillText,
-                              selectedSubTrack?.lang === 'none' && styles.sheetRectPillTextActive,
-                            ]}
-                          >
-                            Off
-                          </Text>
-                        </TouchableOpacity>
+                        <TouchableOpacity style={[styles.sheetRectPill, selectedSubTrack?.lang === 'none' && styles.sheetRectPillActive]} activeOpacity={0.85} onPress={() => setSelectedSubTrack({ label: 'No Subtitles / Off', file: null, lang: 'none' })}><Text style={[styles.sheetRectPillText, selectedSubTrack?.lang === 'none' && styles.sheetRectPillTextActive]}>Off</Text></TouchableOpacity>
                       </ScrollView>
                     )}
-
                     <Text style={styles.sheetSectionLabel}>Quality</Text>
-                    {isFetchingDownloadData ? (
-                      <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} />
-                    ) : (
+                    {isFetchingDownloadData ? <ActivityIndicator size="small" color={PURE_RED} style={{ alignSelf: 'flex-start', marginVertical: 8 }} /> : (
                       <View style={styles.sheetPillRow}>
-                        {downloadQualities
-                          .filter((q) => q.label && q.label.toLowerCase() !== 'auto')
-                          .map((q, idx) => {
-                            const isSelected = selectedDownloadQuality?.label === q.label;
-                            return (
-                              <TouchableOpacity
-                                key={idx}
-                                style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]}
-                                activeOpacity={0.85}
-                                onPress={() => setSelectedDownloadQuality(q)}
-                              >
-                                <Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>
-                                  {q.label}
-                                </Text>
-                              </TouchableOpacity>
-                            );
-                          })}
+                        {downloadQualities.filter((q) => q.label && q.label.toLowerCase() !== 'auto').map((q, idx) => {
+                          const isSelected = selectedDownloadQuality?.label === q.label;
+                          return (<TouchableOpacity key={idx} style={[styles.sheetRectPill, isSelected && styles.sheetRectPillActive]} activeOpacity={0.85} onPress={() => setSelectedDownloadQuality(q)}><Text style={[styles.sheetRectPillText, isSelected && styles.sheetRectPillTextActive]}>{q.label}</Text></TouchableOpacity>);
+                        })}
                       </View>
                     )}
                   </ScrollView>
-
                   <View style={styles.step2FooterRow}>
-                    {!isSingleEpisodeDownload && (
-                      <TouchableOpacity style={styles.step2BackBtn} onPress={() => setDownloadStep(1)}>
-                        <Text style={styles.step2BackText}>← Episodes</Text>
-                      </TouchableOpacity>
-                    )}
-                    <TouchableOpacity
-                      style={[
-                        styles.sheetDownloadSubmitBtn,
-                        { flex: 1, marginTop: 0 },
-                        (isFetchingDownloadData || !selectedDownloadQuality) && { opacity: 0.5 },
-                      ]}
-                      activeOpacity={0.85}
-                      disabled={isFetchingDownloadData || !selectedDownloadQuality}
-                      onPress={handleConfirmDownloadFinal}
-                    >
-                      <IconDownload size={18} color={WHITE} />
-                      <Text style={styles.sheetDownloadSubmitText}>
-                        {isSingleEpisodeDownload
-                          ? 'Download Episode'
-                          : `Download ${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'}`}
-                      </Text>
-                    </TouchableOpacity>
+                    {!isSingleEpisodeDownload && <TouchableOpacity style={styles.step2BackBtn} onPress={() => setDownloadStep(1)}><Text style={styles.step2BackText}>← Episodes</Text></TouchableOpacity>}
+                    <TouchableOpacity style={[styles.sheetDownloadSubmitBtn, { flex: 1, marginTop: 0 }, (isFetchingDownloadData || !selectedDownloadQuality) && { opacity: 0.5 }]} activeOpacity={0.85} disabled={isFetchingDownloadData || !selectedDownloadQuality} onPress={handleConfirmDownloadFinal}><IconDownload size={18} color={WHITE} /><Text style={styles.sheetDownloadSubmitText}>{isSingleEpisodeDownload ? 'Download Episode' : `Download ${selectedDownloadCount} ${selectedDownloadCount === 1 ? 'Episode' : 'Episodes'}`}</Text></TouchableOpacity>
                   </View>
                 </View>
               )}
@@ -2212,47 +1345,40 @@ export default function Play({
         </View>
       )}
 
-      {/* FULLSCREEN OVERLAYS (Replaced Modal for NavigationBar fix) */}
       {shareModalVisible && ResolvedShareComp && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999, backgroundColor: BLACK }]}>
-          <ResolvedShareComp
-            visible={true} // It manages its own state, but we control mounting here
-            anime={currentAnime}
-            user={resolvedUser}
-            activeProfile={resolvedProfile}
-            activeProfileId={resolvedProfileId}
-            onClose={() => setShareModalVisible(false)}
-            onBack={() => setShareModalVisible(false)}
-            navigation={{ goBack: () => setShareModalVisible(false) }}
-          />
+          <ResolvedShareComp visible={true} anime={currentAnime} user={resolvedUser} activeProfile={resolvedProfile} activeProfileId={resolvedProfileId} onClose={() => setShareModalVisible(false)} onBack={() => setShareModalVisible(false)} navigation={{ goBack: () => setShareModalVisible(false) }} />
         </View>
       )}
 
       {roomModalVisible && ResolvedRoomComp && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 9999, elevation: 9999, backgroundColor: BLACK }]}>
-          <ResolvedRoomComp
-            visible={true}
-            anime={currentAnime}
-            user={resolvedUser}
-            activeProfile={resolvedProfile}
-            activeProfileId={resolvedProfileId}
-            onClose={() => setRoomModalVisible(false)}
-            onBack={() => setRoomModalVisible(false)}
-            navigation={{ goBack: () => setRoomModalVisible(false) }}
-          />
+          <ResolvedRoomComp visible={true} anime={currentAnime} user={resolvedUser} activeProfile={resolvedProfile} activeProfileId={resolvedProfileId} onClose={() => setRoomModalVisible(false)} onBack={() => setRoomModalVisible(false)} navigation={{ goBack: () => setRoomModalVisible(false) }} />
         </View>
       )}
 
       {activePlayback && (
         <View style={styles.playerFullscreenContainer}>
-          <Player
-            route={{ params: activePlayback }}
-            navigation={{ goBack: () => setActivePlayback(null) }}
+          <Player route={{ params: activePlayback }} navigation={{ goBack: () => setActivePlayback(null) }} user={resolvedUser} activeProfile={resolvedProfile} />
+        </View>
+      )}
+
+      {/* --- NESTED PLAY OVERLAY --- */}
+      {/* Recursively renders a new Play component completely over the current one */}
+      {nestedAnime && (
+        <View style={[StyleSheet.absoluteFillObject, { zIndex: 10000, elevation: 10000, backgroundColor: BLACK }]}>
+          <Play
+            anime={nestedAnime}
             user={resolvedUser}
             activeProfile={resolvedProfile}
+            currentProfile={resolvedProfile}
+            activeProfileId={resolvedProfileId}
+            onBack={() => setNestedAnime(null)}
+            navigation={navigation}
           />
         </View>
       )}
+
     </View>
   );
 }
@@ -2306,27 +1432,10 @@ const styles = StyleSheet.create({
   tabTitleTextActive: { color: WHITE },
 
   chunkSelectorContainer: { paddingVertical: 14, gap: 10 },
-  chunkRectPill: {
-    backgroundColor: DARK_GREY,
-    paddingHorizontal: 18,
-    paddingVertical: 9,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  chunkRectPillActive: {
-    backgroundColor: PURE_RED,
-    borderColor: PURE_RED,
-  },
-  chunkRectPillText: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  chunkRectPillTextActive: {
-    color: WHITE,
-    fontWeight: '900',
-  },
+  chunkRectPill: { backgroundColor: DARK_GREY, paddingHorizontal: 18, paddingVertical: 9, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY },
+  chunkRectPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
+  chunkRectPillText: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '700' },
+  chunkRectPillTextActive: { color: WHITE, fontWeight: '900' },
 
   listPadding: { paddingBottom: 110 },
   episodeRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, marginBottom: 12 },
@@ -2349,191 +1458,34 @@ const styles = StyleSheet.create({
   epMiniProgressBg: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.1)' },
   epMiniProgressFill: { height: '100%', backgroundColor: PURE_RED },
 
-  // Bulk Delete Floating Bar
-  bulkDeleteFloatingBar: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: BLACK,
-    borderTopWidth: 1.5,
-    borderTopColor: BORDER_GREY,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 18,
-    zIndex: 900,
-    elevation: 25,
-  },
-  bulkDeleteBarTopRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  bulkDeleteCountText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  bulkDeleteTopActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  bulkSelectAllBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: PURE_RED,
-  },
-  bulkSelectAllText: {
-    color: PURE_RED,
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  bulkCancelBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 4,
-    backgroundColor: DARK_GREY,
-  },
-  bulkCancelText: {
-    color: WHITE,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  bulkConfirmDeleteBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: PURE_RED,
-    paddingVertical: 13,
-    borderRadius: 6,
-  },
-  bulkConfirmDeleteText: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '900',
-  },
+  bulkDeleteFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: BLACK, borderTopWidth: 1.5, borderTopColor: BORDER_GREY, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 18, zIndex: 900, elevation: 25 },
+  bulkDeleteBarTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  bulkDeleteCountText: { color: WHITE, fontSize: 13, fontWeight: '800' },
+  bulkDeleteTopActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  bulkSelectAllBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, borderWidth: 1, borderColor: PURE_RED },
+  bulkSelectAllText: { color: PURE_RED, fontSize: 11, fontWeight: '800' },
+  bulkCancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: DARK_GREY },
+  bulkCancelText: { color: WHITE, fontSize: 11, fontWeight: '700' },
+  bulkConfirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 13, borderRadius: 6 },
+  bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900' },
 
-  // Settings Action Sheet Overlay (Bottom-to-Up View)
-  settingsModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    justifyContent: 'flex-end',
-  },
-  settingsActionSheetBox: {
-    backgroundColor: BLACK,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 20,
-    paddingTop: 18,
-    paddingBottom: 28,
-    borderTopWidth: 1,
-    borderTopColor: BORDER_GREY,
-  },
-  settingsSheetTitle: {
-    color: WHITE,
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 14,
-  },
-  settingsSheetOptionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingVertical: 14,
-    borderTopWidth: 1,
-    borderTopColor: BORDER_GREY,
-  },
-  settingsSheetOptionText: {
-    color: WHITE,
-    fontSize: 14,
-    fontWeight: '700',
-  },
+  settingsModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
+  settingsActionSheetBox: { backgroundColor: BLACK, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 28, borderTopWidth: 1, borderTopColor: BORDER_GREY },
+  settingsSheetTitle: { color: WHITE, fontSize: 15, fontWeight: '800', marginBottom: 14 },
+  settingsSheetOptionRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderTopWidth: 1, borderTopColor: BORDER_GREY },
+  settingsSheetOptionText: { color: WHITE, fontSize: 14, fontWeight: '700' },
 
-  // Custom CSS Confirmation Popup (Re-styled as Bottom Sheet)
-  confirmModalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.84)',
-    justifyContent: 'flex-end', // Aligns the modal to the bottom like the download sheet
-  },
-  confirmPopupCard: {
-    width: '100%',
-    backgroundColor: BLACK,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 22,
-    paddingTop: 24,
-    paddingBottom: 34,
-    borderTopWidth: 1,
-    borderColor: BORDER_GREY,
-    alignItems: 'center',
-  },
-  confirmIconWrap: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: DARK_GREY, // Removed red bg tint
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
-  confirmPopupTitle: {
-    color: WHITE,
-    fontSize: 17,
-    fontWeight: '800',
-    textAlign: 'center',
-    letterSpacing: 0.2,
-  },
-  confirmPopupMessage: {
-    color: TEXT_GREY,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '500',
-    textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 20,
-  },
-  confirmBtnsRow: {
-    flexDirection: 'row',
-    width: '100%',
-    gap: 12,
-  },
-  confirmCancelBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 9,
-    backgroundColor: DARK_GREY,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  confirmCancelBtnText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  confirmDangerBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 9,
-    backgroundColor: PURE_RED,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  confirmDangerBtnText: {
-    color: WHITE,
-    fontSize: 13,
-    fontWeight: '800',
-  },
+  confirmModalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.84)', justifyContent: 'flex-end' },
+  confirmPopupCard: { width: '100%', backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 22, paddingTop: 24, paddingBottom: 34, borderTopWidth: 1, borderColor: BORDER_GREY, alignItems: 'center' },
+  confirmIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  confirmPopupTitle: { color: WHITE, fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
+  confirmPopupMessage: { color: TEXT_GREY, fontSize: 13, lineHeight: 19, fontWeight: '500', textAlign: 'center', marginTop: 8, marginBottom: 20 },
+  confirmBtnsRow: { flexDirection: 'row', width: '100%', gap: 12 },
+  confirmCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center' },
+  confirmCancelBtnText: { color: WHITE, fontSize: 13, fontWeight: '700' },
+  confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center' },
+  confirmDangerBtnText: { color: WHITE, fontSize: 13, fontWeight: '800' },
 
-  // RecentSlider-matched UI for Bottom Sequel Slider
   recentStyleSection: { marginTop: 18, marginBottom: 25 },
   recentHeaderRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
   recentSectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: PURE_RED, paddingLeft: 8 },
@@ -2544,198 +1496,46 @@ const styles = StyleSheet.create({
   recentBadgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
   recentEpBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
   recentEpBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
-  recentCcBadge: { backgroundColor: DARK_GREY, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 }, // Removed red bg tint
+  recentCcBadge: { backgroundColor: DARK_GREY, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
   recentCcBadgeText: { color: WHITE, fontSize: 9, fontWeight: 'bold' },
   recentSaveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
   recentSaveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: PURE_RED },
   recentAnimeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
 
-  gridRowWrapper: {
-    paddingHorizontal: 20,
-    justifyContent: 'flex-start',
-    gap: GRID_SPACING,
-    marginBottom: 18,
-  },
-  gridAnimeCard: {
-    width: GRID_CARD_WIDTH,
-  },
-  gridPosterBox: {
-    width: GRID_CARD_WIDTH,
-    height: Math.floor(GRID_CARD_WIDTH * 1.5),
-    borderRadius: 8,
-    overflow: 'hidden',
-    backgroundColor: DARK_GREY,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
+  gridRowWrapper: { paddingHorizontal: 20, justifyContent: 'flex-start', gap: GRID_SPACING, marginBottom: 18 },
+  gridAnimeCard: { width: GRID_CARD_WIDTH },
+  gridPosterBox: { width: GRID_CARD_WIDTH, height: Math.floor(GRID_CARD_WIDTH * 1.5), borderRadius: 8, overflow: 'hidden', backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
 
   emptyContainer: { paddingVertical: 40, alignItems: 'center' },
   emptyText: { color: TEXT_GREY, fontSize: 13 },
 
-  // Bottom Half-Screen Download Sheet View Container
-  bottomSheetOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
-    justifyContent: 'flex-end',
-  },
-  halfScreenSheet: {
-    width: '100%',
-    height: Math.floor(SCREEN_HEIGHT * 0.54),
-    backgroundColor: BLACK,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 18,
-    borderTopWidth: 1.5,
-    borderTopColor: BORDER_GREY,
-    elevation: 25,
-  },
-  sheetGrabHandle: {
-    width: 42,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    alignSelf: 'center',
-    marginBottom: 12,
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
+  bottomSheetOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.72)', justifyContent: 'flex-end' },
+  halfScreenSheet: { width: '100%', height: Math.floor(SCREEN_HEIGHT * 0.54), backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 18, borderTopWidth: 1.5, borderTopColor: BORDER_GREY, elevation: 25 },
+  sheetGrabHandle: { width: 42, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.25)', alignSelf: 'center', marginBottom: 12 },
+  modalHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   modalTitle: { color: WHITE, fontSize: 17, fontWeight: '900' },
   modalSubHeader: { color: 'rgba(255,255,255,0.6)', fontSize: 12, marginTop: 2 },
-  modalCloseBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: DARK_GREY,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  multiEpSelectTopBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  selectAllToggleBtn: {
-    backgroundColor: DARK_GREY,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: PURE_RED,
-  },
-  selectAllToggleText: {
-    color: PURE_RED,
-    fontSize: 11,
-    fontWeight: '900',
-  },
-  multiEpGridContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    paddingBottom: 14,
-  },
-  multiEpPill: {
-    width: '23%',
-    paddingVertical: 10,
-    backgroundColor: DARK_GREY,
-    borderRadius: 4,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  multiEpPillActive: {
-    backgroundColor: PURE_RED,
-    borderColor: PURE_RED,
-  },
-  multiEpPillText: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  multiEpPillTextActive: {
-    color: WHITE,
-    fontWeight: '900',
-  },
-  sheetScrollArea: {
-    flex: 1,
-  },
-  sheetScrollContent: {
-    paddingBottom: 14,
-  },
-  sheetSectionLabel: {
-    color: 'rgba(255,255,255,0.65)',
-    fontSize: 11,
-    fontWeight: '800',
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-    marginTop: 10,
-    marginBottom: 8,
-  },
-  sheetPillRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  sheetHorizontalPills: {
-    gap: 8,
-    paddingRight: 12,
-  },
-  sheetRectPill: {
-    backgroundColor: DARK_GREY,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 4,
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  sheetRectPillActive: {
-    backgroundColor: PURE_RED,
-    borderColor: PURE_RED,
-  },
-  sheetRectPillText: {
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  sheetRectPillTextActive: {
-    color: WHITE,
-    fontWeight: '900',
-  },
-  step2FooterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 10,
-  },
-  step2BackBtn: {
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-  },
-  step2BackText: {
-    color: TEXT_GREY,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  sheetDownloadSubmitBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: PURE_RED,
-    paddingVertical: 14,
-    borderRadius: 6,
-    marginTop: 10,
-  },
-  sheetDownloadSubmitText: {
-    color: WHITE,
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0.4,
-  },
+  modalCloseBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: DARK_GREY, justifyContent: 'center', alignItems: 'center' },
+  multiEpSelectTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  selectAllToggleBtn: { backgroundColor: DARK_GREY, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 4, borderWidth: 1, borderColor: PURE_RED },
+  selectAllToggleText: { color: PURE_RED, fontSize: 11, fontWeight: '900' },
+  multiEpGridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 14 },
+  multiEpPill: { width: '23%', paddingVertical: 10, backgroundColor: DARK_GREY, borderRadius: 4, alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
+  multiEpPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
+  multiEpPillText: { color: 'rgba(255,255,255,0.75)', fontSize: 12, fontWeight: '700' },
+  multiEpPillTextActive: { color: WHITE, fontWeight: '900' },
+  sheetScrollArea: { flex: 1 },
+  sheetScrollContent: { paddingBottom: 14 },
+  sheetSectionLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.6, marginTop: 10, marginBottom: 8 },
+  sheetPillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  sheetHorizontalPills: { gap: 8, paddingRight: 12 },
+  sheetRectPill: { backgroundColor: DARK_GREY, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY },
+  sheetRectPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
+  sheetRectPillText: { color: 'rgba(255,255,255,0.75)', fontSize: 13, fontWeight: '700' },
+  sheetRectPillTextActive: { color: WHITE, fontWeight: '900' },
+  step2FooterRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
+  step2BackBtn: { paddingVertical: 12, paddingHorizontal: 10 },
+  step2BackText: { color: TEXT_GREY, fontSize: 13, fontWeight: '800' },
+  sheetDownloadSubmitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 14, borderRadius: 6, marginTop: 10 },
+  sheetDownloadSubmitText: { color: WHITE, fontSize: 15, fontWeight: '900', letterSpacing: 0.4 },
 });
