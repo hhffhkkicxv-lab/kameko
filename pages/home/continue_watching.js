@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, Animated, Modal, StatusBar, Platform 
+  TouchableOpacity, Animated, StatusBar, Platform, BackHandler
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import * as NavigationBar from 'expo-navigation-bar';
@@ -21,7 +21,13 @@ try {
   } catch (__) {}
 }
 
+// --- STRICT PALETTE ---
 const BRAND_RED = '#E50914';
+const BLACK = '#000000';
+const WHITE = '#FFFFFF';
+const DARK_GREY = '#18181C';
+const BORDER_GREY = '#26262C';
+const TEXT_GREY = '#8E8E93';
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
 // --- Helper for Timestamp Formatting ---
@@ -35,27 +41,20 @@ const formatSeconds = (seconds) => {
 };
 
 // --- Premium SVGs ---
-const IconClose = ({ size = 16, color = "#FFF" }) => (
+const IconClose = ({ size = 16, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
     <Path d="M18 6L6 18M6 6l12 12" />
   </Svg>
 );
 
-const IconTrash = ({ size = 18, color = "#FFF" }) => (
+const IconTrash = ({ size = 18, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
     <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
   </Svg>
 );
 
 // --- Individual Animated Card Component ---
-const ContinueCard = ({ item, onPlayDirect, onDeleteAnime }) => {
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-
-  const fadeAnim = useRef(new Animated.Value(1)).current;
-  const scaleAnim = useRef(new Animated.Value(1)).current;
-  const confirmScale = useRef(new Animated.Value(0)).current;
-
+const ContinueCard = ({ item, isBulkDeleteMode, isSelectedForDelete, toggleBulkDeleteSelection, handleLongPressCard, onPlayDirect }) => {
   const animeId = String(item.animeId || item.id || '');
   const displayTitle = item.animeTitle || item.title || `Anime ${animeId}`;
   const epNum = item.episodeNum ?? item.lastWatchedEp ?? 1;
@@ -70,58 +69,37 @@ const ContinueCard = ({ item, onPlayDirect, onDeleteAnime }) => {
   const currentTimeStr = item.formattedTimestamp || formatSeconds(progressSecs);
   const totalTimeStr = item.formattedDuration || formatSeconds(durationSecs);
 
-  const triggerConfirm = () => {
-    setShowConfirm(true);
-    Animated.spring(confirmScale, {
-      toValue: 1,
-      friction: 5,
-      useNativeDriver: true,
-    }).start();
-  };
-
-  const cancelConfirm = () => {
-    Animated.timing(confirmScale, {
-      toValue: 0,
-      duration: 200,
-      useNativeDriver: true,
-    }).start(() => setShowConfirm(false));
-  };
-
-  const handleConfirmDelete = () => {
-    if (isDeleting) return;
-    setIsDeleting(true);
-
-    Animated.parallel([
-      Animated.timing(scaleAnim, { toValue: 0.8, duration: 240, useNativeDriver: true }),
-      Animated.timing(fadeAnim, { toValue: 0, duration: 240, useNativeDriver: true }),
-    ]).start(() => {
-      onDeleteAnime(animeId, item._docIds || [animeId]);
-    });
-  };
-
   return (
-    <Animated.View style={[styles.cardWrapper, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
+    <View style={styles.cardWrapper}>
       <TouchableOpacity 
-        style={styles.cardContent} 
-        activeOpacity={0.85} 
-        onPress={() => onPlayDirect({
-          animeId: animeId,
-          id: animeId,
-          providerId: item.providerId || animeId,
-          animeTitle: displayTitle,
-          title: displayTitle,
-          animeBackdrop: displayBackdrop,
-          backdropUrl: displayBackdrop,
-          backdrop: displayBackdrop,
-          coverImage: displayBackdrop,
-          episodeNum: Number(epNum),
-          episodeTitle: rawEpTitle || `Episode ${epNum}`,
-          epTitle: rawEpTitle || `Episode ${epNum}`,
-          slug: String(item.slug || epNum),
-          progress: progressSecs,
-          duration: durationSecs,
-          targetType: item.audioType || 'sub',
-        })}
+        style={[styles.cardContent, isBulkDeleteMode && isSelectedForDelete && styles.cardSelectedDelete]} 
+        activeOpacity={0.85}
+        delayLongPress={320}
+        onLongPress={() => handleLongPressCard(animeId)}
+        onPress={() => {
+          if (isBulkDeleteMode) {
+            toggleBulkDeleteSelection(animeId);
+          } else {
+            onPlayDirect({
+              animeId: animeId,
+              id: animeId,
+              providerId: item.providerId || animeId,
+              animeTitle: displayTitle,
+              title: displayTitle,
+              animeBackdrop: displayBackdrop,
+              backdropUrl: displayBackdrop,
+              backdrop: displayBackdrop,
+              coverImage: displayBackdrop,
+              episodeNum: Number(epNum),
+              episodeTitle: rawEpTitle || `Episode ${epNum}`,
+              epTitle: rawEpTitle || `Episode ${epNum}`,
+              slug: String(item.slug || epNum),
+              progress: progressSecs,
+              duration: durationSecs,
+              targetType: item.audioType || 'sub',
+            });
+          }
+        }}
       >
         <ProxyImage 
           source={{ uri: displayBackdrop }} 
@@ -140,12 +118,16 @@ const ContinueCard = ({ item, onPlayDirect, onDeleteAnime }) => {
           <Rect width="100%" height="100%" fill="url(#botGrad)" />
         </Svg>
 
-        {/* Top Right "X" Button */}
-        <TouchableOpacity style={styles.cutBtn} activeOpacity={0.7} onPress={triggerConfirm}>
-          <IconClose />
-        </TouchableOpacity>
+        {isBulkDeleteMode && (
+          <View style={[styles.bulkCheckCircle, isSelectedForDelete && styles.bulkCheckCircleActive]}>
+            {isSelectedForDelete && (
+              <Svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={WHITE} strokeWidth="3">
+                <Path d="M20 6L9 17l-5-5" />
+              </Svg>
+            )}
+          </View>
+        )}
 
-        {/* Bottom Details, Episode Title, Timestamps & Progress Bar */}
         <View style={styles.bottomData}>
           <Text style={styles.animeTitle} numberOfLines={1}>{displayTitle}</Text>
 
@@ -163,37 +145,23 @@ const ContinueCard = ({ item, onPlayDirect, onDeleteAnime }) => {
           </View>
         </View>
       </TouchableOpacity>
-
-      {/* Delete Confirmation Overlay */}
-      {showConfirm && (
-        <Animated.View style={[styles.confirmOverlay, { transform: [{ scale: confirmScale }] }]}>
-          <Text style={styles.confirmText}>Remove from watch history?</Text>
-          <View style={styles.confirmActions}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={cancelConfirm}>
-              <Text style={styles.cancelText}>Cancel</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.deleteBtn} onPress={handleConfirmDelete}>
-              <IconTrash size={14} />
-              <Text style={styles.deleteText}>Delete</Text>
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
-      )}
-    </Animated.View>
+    </View>
   );
 };
 
 export default function ContinueWatching({ user, activeProfile, onSelectAnime }) {
   const [historyList, setHistoryList] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false);
+  
+  // Bulk Delete State
+  const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
+  const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
+  const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false); // Used as "confirm dialog" for both delete all & delete selected
 
   // Direct Fullscreen Player State
   const [directPlaybackParams, setDirectPlaybackParams] = useState(null);
 
-  // Track deleted animeIds locally so snapshot updates never flash or glitch deleted cards
   const deletedIdsRef = useRef(new Set());
-  // Cache AniList backdrops so we don't re-fetch on every snapshot tick
   const backdropCacheRef = useRef({});
 
   useEffect(() => {
@@ -220,19 +188,16 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
           return;
         }
 
-        // Group all docs (both `{animeId}` and `{animeId}_ep_{num}`) by animeId
         const historyMap = new Map();
 
         snap.forEach((doc) => {
           const data = doc.data();
           if (!data) return;
 
-          // Extract base animeId even if doc.id is `{animeId}_ep_1`
           const rawAnimeId = String(
             data.animeId || String(doc.id).split('_ep_')[0] || doc.id
           );
 
-          // Skip if user just deleted this anime
           if (deletedIdsRef.current.has(rawAnimeId)) return;
 
           const existing = historyMap.get(rawAnimeId);
@@ -251,7 +216,6 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
           }
         });
 
-        // Filter out completed episodes unless they are still in progress
         const activeItems = Array.from(historyMap.values()).filter(
           (item) => !item.finishedEp
         );
@@ -301,7 +265,6 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
           })
         );
 
-        // Final filter against any deletion that happened while awaiting AniList
         setHistoryList(
           enriched.filter((i) => !deletedIdsRef.current.has(String(i.animeId)))
         );
@@ -314,13 +277,47 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
     return () => unsubscribe();
   }, [user?.uid, activeProfile?.id]);
 
-  // Permanently delete BOTH the series summary doc (`{animeId}`) AND all episode docs (`{animeId}_ep_*`)
-  const handleDeleteSingleAnime = async (targetAnimeId, knownDocIds = []) => {
-    const cleanId = String(targetAnimeId);
-    deletedIdsRef.current.add(cleanId);
 
-    // Immediately remove from UI state so it never glitches
-    setHistoryList((prev) => prev.filter((item) => String(item.animeId) !== cleanId));
+  // --- BULK DELETE LOGIC ---
+  const handleLongPressCard = (animeId) => {
+    setIsBulkDeleteMode(true);
+    setBulkDeleteSelectedMap((prev) => ({
+      ...prev,
+      [animeId]: true,
+    }));
+  };
+
+  const toggleBulkDeleteSelection = (animeId) => {
+    setBulkDeleteSelectedMap((prev) => {
+      const next = { ...prev, [animeId]: !prev[animeId] };
+      const anyLeft = Object.keys(next).some((k) => next[k]);
+      if (!anyLeft) setIsBulkDeleteMode(false);
+      return next;
+    });
+  };
+
+  const executeDeleteSelected = async () => {
+    const selectedIds = Object.keys(bulkDeleteSelectedMap).filter(k => bulkDeleteSelectedMap[k]);
+    if (selectedIds.length === 0) {
+      setDeleteAllModalVisible(false);
+      return;
+    }
+
+    setDeleteAllModalVisible(false);
+
+    // Collect all doc IDs to delete based on the selected animeIds
+    const allDocIdsToDelete = new Set();
+    historyList.forEach(item => {
+      if (selectedIds.includes(String(item.animeId))) {
+        deletedIdsRef.current.add(String(item.animeId)); // Block from snapshot
+        (item._docIds || [item.animeId]).forEach(id => allDocIdsToDelete.add(id));
+      }
+    });
+
+    // Optimistically update UI
+    setHistoryList((prev) => prev.filter((item) => !selectedIds.includes(String(item.animeId))));
+    setIsBulkDeleteMode(false);
+    setBulkDeleteSelectedMap({});
 
     if (!user?.uid || !activeProfile?.id) return;
 
@@ -333,25 +330,26 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         .collection(WATCH_HISTORY_COLLECTION);
 
       const batch = firestore().batch();
-      const refsToDelete = new Set([cleanId, ...knownDocIds]);
-
-      // Also query any episode docs matching animeId == cleanId
-      const matchingSnap = await colRef.where('animeId', '==', cleanId).get().catch(() => null);
-      if (matchingSnap && !matchingSnap.empty) {
-        matchingSnap.forEach((d) => refsToDelete.add(d.id));
+      
+      // Also query to catch any missed episode docs for these animeIds
+      for (const cleanId of selectedIds) {
+        allDocIdsToDelete.add(cleanId);
+        const matchingSnap = await colRef.where('animeId', '==', cleanId).get().catch(() => null);
+        if (matchingSnap && !matchingSnap.empty) {
+          matchingSnap.forEach((d) => allDocIdsToDelete.add(d.id));
+        }
       }
 
-      refsToDelete.forEach((docId) => {
+      allDocIdsToDelete.forEach((docId) => {
         if (docId) batch.delete(colRef.doc(String(docId)));
       });
 
       await batch.commit();
     } catch (err) {
-      console.warn("Failed to delete watch history item:", err);
+      console.warn("Failed to delete watch history items:", err);
     } finally {
-      // Release lock after Firestore settles
       setTimeout(() => {
-        deletedIdsRef.current.delete(cleanId);
+        selectedIds.forEach(id => deletedIdsRef.current.delete(String(id)));
       }, 4000);
     }
   };
@@ -359,6 +357,8 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
   const executeDeleteAll = async () => {
     setDeleteAllModalVisible(false);
     setHistoryList([]);
+    setIsBulkDeleteMode(false);
+    setBulkDeleteSelectedMap({});
 
     if (!user?.uid || !activeProfile?.id) return;
     try {
@@ -385,10 +385,10 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
     }
   };
 
-  // Launch pages/play/player.js Directly in Fullscreen Immersive Mode
+
+  // --- PLAYER MOUNTING / UNMOUNTING ---
   const handleLaunchDirectPlayer = async (episodePayload) => {
     if (!PlayerComponent) {
-      // Fallback if PlayerComponent path couldn't be resolved
       if (onSelectAnime) onSelectAnime(episodePayload);
       return;
     }
@@ -425,7 +425,23 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
     } catch (_) {}
   };
 
+  // Hardware back intercepts Modals & Players
+  useEffect(() => {
+    const onHardwareBack = () => {
+      if (directPlaybackParams) { handleCloseDirectPlayer(); return true; }
+      if (deleteAllModalVisible) { setDeleteAllModalVisible(false); return true; }
+      if (isBulkDeleteMode) { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); return true; }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+    return () => sub.remove();
+  }, [directPlaybackParams, deleteAllModalVisible, isBulkDeleteMode]);
+
+
   if (loading || (historyList.length === 0 && !directPlaybackParams)) return null;
+
+  const selectedCount = Object.keys(bulkDeleteSelectedMap).filter(k => bulkDeleteSelectedMap[k]).length;
+  const isAllSelected = historyList.length > 0 && selectedCount === historyList.length;
 
   return (
     <View style={styles.sectionContainer}>
@@ -436,9 +452,22 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
             <TouchableOpacity 
               style={styles.deleteAllBtn} 
               activeOpacity={0.7} 
-              onPress={() => setDeleteAllModalVisible(true)}
+              onPress={() => {
+                if (isBulkDeleteMode) {
+                  if (isAllSelected) setBulkDeleteSelectedMap({});
+                  else {
+                    const allMap = {};
+                    historyList.forEach(item => { allMap[item.animeId] = true; });
+                    setBulkDeleteSelectedMap(allMap);
+                  }
+                } else {
+                  setDeleteAllModalVisible('all'); 
+                }
+              }}
             >
-              <Text style={styles.deleteAllText}>Delete All</Text>
+              <Text style={styles.deleteAllText}>
+                {isBulkDeleteMode ? (isAllSelected ? 'Deselect All' : 'Select All') : 'Delete All'}
+              </Text>
             </TouchableOpacity>
           </View>
 
@@ -453,74 +482,98 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
             renderItem={({ item }) => (
               <ContinueCard 
                 item={item} 
+                isBulkDeleteMode={isBulkDeleteMode}
+                isSelectedForDelete={Boolean(bulkDeleteSelectedMap[item.animeId])}
+                toggleBulkDeleteSelection={toggleBulkDeleteSelection}
+                handleLongPressCard={handleLongPressCard}
                 onPlayDirect={handleLaunchDirectPlayer}
-                onDeleteAnime={handleDeleteSingleAnime}
               />
             )}
           />
+
+          {/* FLOATING BULK DELETE BAR (Appears when in select mode) */}
+          {isBulkDeleteMode && (
+            <View style={styles.bulkDeleteFloatingBar}>
+              <View style={styles.bulkDeleteBarTopRow}>
+                <Text style={styles.bulkDeleteCountText}>
+                  {selectedCount} Selected
+                </Text>
+                <TouchableOpacity
+                  style={styles.bulkCancelBtn}
+                  onPress={() => {
+                    setIsBulkDeleteMode(false);
+                    setBulkDeleteSelectedMap({});
+                  }}
+                >
+                  <Text style={styles.bulkCancelText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.bulkConfirmDeleteBtn,
+                  selectedCount === 0 && { opacity: 0.45 },
+                ]}
+                disabled={selectedCount === 0}
+                activeOpacity={0.85}
+                onPress={() => setDeleteAllModalVisible('selected')}
+              >
+                <IconTrash size={18} color={WHITE} />
+                <Text style={styles.bulkConfirmDeleteText}>
+                  Delete Selected ({selectedCount})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          )}
         </>
       )}
 
-      {/* Delete All Confirmation Modal */}
-      <Modal
-        visible={deleteAllModalVisible}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => setDeleteAllModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Clear Watch History</Text>
-            <Text style={styles.modalMessage}>Are you sure you want to remove all items from your continue watching list?</Text>
-            <View style={styles.modalActions}>
-              <TouchableOpacity 
-                style={styles.modalCancelBtn} 
-                onPress={() => setDeleteAllModalVisible(false)}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.modalConfirmBtn} 
-                onPress={executeDeleteAll}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.modalConfirmText}>Delete All</Text>
-              </TouchableOpacity>
+      {/* Reusable Absolute View Bottom Sheet Modal for Deletions */}
+      {Boolean(deleteAllModalVisible) && (
+        <View style={styles.absoluteOverlay}>
+          <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setDeleteAllModalVisible(false)} />
+          <View style={styles.bottomSheetWrapper}>
+            <View style={styles.bottomSheetCard}>
+              <View style={{ alignItems: 'center' }}>
+                <View style={styles.confirmIconWrap}><IconTrash size={24} color={PURE_RED} /></View>
+                <Text style={styles.confirmPopupTitle}>
+                  {deleteAllModalVisible === 'all' ? 'Clear Watch History' : 'Delete Selected Anime'}
+                </Text>
+                <Text style={styles.confirmPopupMessage}>
+                  {deleteAllModalVisible === 'all' 
+                    ? 'Are you sure you want to completely clear your continue watching history?' 
+                    : `Remove these ${selectedCount} items from your watch history?`}
+                </Text>
+                <View style={styles.confirmBtnsRow}>
+                  <TouchableOpacity style={styles.confirmCancelBtn} activeOpacity={0.85} onPress={() => setDeleteAllModalVisible(false)}>
+                    <Text style={styles.confirmCancelBtnText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity 
+                    style={styles.confirmDangerBtn} 
+                    activeOpacity={0.85} 
+                    onPress={deleteAllModalVisible === 'all' ? executeDeleteAll : executeDeleteSelected}
+                  >
+                    <Text style={styles.confirmDangerBtnText}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </View>
           </View>
         </View>
-      </Modal>
+      )}
 
-      {/* DIRECT FULLSCREEN PLAYER.JS MODAL (No Notification Bar & No Navigation Bar) */}
+      {/* DIRECT FULLSCREEN PLAYER.JS (<View> instead of Modal) */}
       {PlayerComponent && directPlaybackParams && (
-        <Modal
-          visible={Boolean(directPlaybackParams)}
-          animationType="fade"
-          transparent={false}
-          hardwareAccelerated={true}
-          statusBarTranslucent={true}
-          onShow={async () => {
-            try {
-              StatusBar.setHidden(true, 'none');
-              if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-                await NavigationBar.setVisibilityAsync('hidden');
-              }
-            } catch (_) {}
-          }}
-          onRequestClose={handleCloseDirectPlayer}
-        >
-          <View style={styles.fullscreenPlayerRoot}>
-            <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-            <PlayerComponent
-              route={{ params: directPlaybackParams }}
-              navigation={{ goBack: handleCloseDirectPlayer }}
-              user={user}
-              activeProfile={activeProfile}
-              activeProfileId={activeProfile?.id}
-            />
-          </View>
-        </Modal>
+        <View style={styles.fullScreenPlayerOverlay}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          <PlayerComponent
+            route={{ params: directPlaybackParams }}
+            navigation={{ goBack: handleCloseDirectPlayer }}
+            user={user}
+            activeProfile={activeProfile}
+            activeProfileId={activeProfile?.id}
+          />
+        </View>
       )}
     </View>
   );
@@ -528,12 +581,6 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
 
 const styles = StyleSheet.create({
   sectionContainer: { marginTop: 5, marginBottom: 25 },
-  fullscreenPlayerRoot: {
-    flex: 1,
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#000000',
-  },
   headerRow: { 
     flexDirection: 'row', 
     alignItems: 'center', 
@@ -541,33 +588,33 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20, 
     marginBottom: 12 
   },
-  sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  sectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
   deleteAllBtn: { paddingVertical: 4, paddingHorizontal: 8 },
-  deleteAllText: { color: '#888888', fontSize: 13, fontWeight: '700' },
-
+  deleteAllText: { color: TEXT_GREY, fontSize: 13, fontWeight: '700' },
   listPadding: { paddingHorizontal: 20 },
 
-  cardWrapper: { width: 265, height: 150, marginRight: 15, borderRadius: 8, overflow: 'hidden' },
-  cardContent: { flex: 1, backgroundColor: '#1A1A1A', borderRadius: 8, borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  cardWrapper: { width: 265, height: 150, marginRight: 15 },
+  cardContent: { flex: 1, backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY, overflow: 'hidden' },
+  cardSelectedDelete: { borderColor: PURE_RED, backgroundColor: DARK_GREY },
   backdropImage: { width: '100%', height: '100%', opacity: 0.85 },
 
-  cutBtn: { 
+  bulkCheckCircle: { 
     position: 'absolute', 
     top: 8, 
     right: 8, 
-    width: 28, 
-    height: 28, 
-    backgroundColor: 'rgba(0,0,0,0.6)', 
-    borderRadius: 14, 
+    width: 22, 
+    height: 22, 
+    borderRadius: 11, 
+    borderWidth: 2, 
+    borderColor: 'rgba(255,255,255,0.6)', 
     justifyContent: 'center', 
-    alignItems: 'center', 
-    zIndex: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.2)'
+    alignItems: 'center',
+    zIndex: 10
   },
+  bulkCheckCircleActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
 
   bottomData: { position: 'absolute', bottom: 0, width: '100%', padding: 12, paddingTop: 30, zIndex: 6 },
-  animeTitle: { color: '#FFF', fontSize: 13, fontWeight: '800', textShadowColor: '#000', textShadowRadius: 4, marginBottom: 2 },
+  animeTitle: { color: WHITE, fontSize: 13, fontWeight: '800', textShadowColor: BLACK, textShadowRadius: 4, marginBottom: 2 },
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7, gap: 8 },
   epSubTitle: { flex: 1, color: '#CCC', fontSize: 11, fontWeight: '600' },
   timestampText: { color: 'rgba(255,255,255,0.75)', fontSize: 10, fontFamily: 'monospace', fontWeight: '700' },
@@ -575,30 +622,29 @@ const styles = StyleSheet.create({
   progressBarBg: { width: '100%', height: 3, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: BRAND_RED, borderRadius: 2 },
 
-  // Confirmation Overlay (Individual Card)
-  confirmOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(15,15,15,0.95)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 20,
-    padding: 15,
-  },
-  confirmText: { color: '#FFF', fontSize: 14, fontWeight: '700', marginBottom: 15 },
-  confirmActions: { flexDirection: 'row', gap: 10 },
-  cancelBtn: { paddingVertical: 8, paddingHorizontal: 16, backgroundColor: '#333', borderRadius: 6 },
-  cancelText: { color: '#FFF', fontSize: 12, fontWeight: '700' },
-  deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 8, paddingHorizontal: 16, backgroundColor: BRAND_RED, borderRadius: 6 },
-  deleteText: { color: '#FFF', fontSize: 12, fontWeight: '800' },
+  // Floating Bulk Delete Bar
+  bulkDeleteFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: BLACK, borderTopWidth: 1.5, borderTopColor: BORDER_GREY, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 18, zIndex: 900, elevation: 25 },
+  bulkDeleteBarTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  bulkDeleteCountText: { color: WHITE, fontSize: 13, fontWeight: '800' },
+  bulkCancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: DARK_GREY },
+  bulkCancelText: { color: WHITE, fontSize: 11, fontWeight: '700' },
+  bulkConfirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 13, borderRadius: 6 },
+  bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900' },
 
-  // Delete All Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalBox: { width: '85%', maxWidth: 360, backgroundColor: '#1C1C1C', borderRadius: 12, padding: 22, borderWidth: 1, borderColor: '#303030' },
-  modalTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: 'bold', marginBottom: 8 },
-  modalMessage: { color: '#AAAAAA', fontSize: 13, lineHeight: 19, marginBottom: 22 },
-  modalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12 },
-  modalCancelBtn: { paddingVertical: 9, paddingHorizontal: 14, backgroundColor: '#333', borderRadius: 6 },
-  modalCancelText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' },
-  modalConfirmBtn: { backgroundColor: BRAND_RED, paddingVertical: 9, paddingHorizontal: 18, borderRadius: 6 },
-  modalConfirmText: { color: '#FFF', fontSize: 13, fontWeight: 'bold' }
+  // Absolute Overlay (Bottom Sheet)
+  absoluteOverlay: { position: 'absolute', top: -1000, left: -1000, right: -1000, bottom: -1000, zIndex: 9999, elevation: 9999, justifyContent: 'center', alignItems: 'center' },
+  overlayBackground: { position: 'absolute', width: '300%', height: '300%', backgroundColor: 'rgba(0,0,0,0.85)' },
+  bottomSheetWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0 },
+  bottomSheetCard: { width: '100%', backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 22, paddingTop: 24, paddingBottom: 34, borderTopWidth: 1, borderColor: BORDER_GREY, alignItems: 'center' },
+  confirmIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
+  confirmPopupTitle: { color: WHITE, fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
+  confirmPopupMessage: { color: TEXT_GREY, fontSize: 13, lineHeight: 19, fontWeight: '500', textAlign: 'center', marginTop: 8, marginBottom: 20 },
+  confirmBtnsRow: { flexDirection: 'row', width: '100%', gap: 12 },
+  confirmCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center' },
+  confirmCancelBtnText: { color: WHITE, fontSize: 13, fontWeight: '700' },
+  confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center' },
+  confirmDangerBtnText: { color: WHITE, fontSize: 13, fontWeight: '800' },
+
+  // Player Absolute Fullscreen
+  fullScreenPlayerOverlay: { position: 'absolute', top: -1000, left: -1000, right: -1000, bottom: -1000, zIndex: 10000, elevation: 10000, backgroundColor: BLACK },
 });
