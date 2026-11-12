@@ -1,12 +1,24 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, TouchableOpacity, 
-  ActivityIndicator, Dimensions, StatusBar, Platform 
+  ActivityIndicator, Dimensions, StatusBar, Platform, BackHandler 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path } from 'react-native-svg';
 import * as NavigationBar from 'expo-navigation-bar';
 import ProxyImage from '../../components/ProxyImage';
+
+// Safely resolve Play.js regardless of folder depth
+let PlayComponent = null;
+try {
+  const mod = require('../../pages/play');
+  PlayComponent = mod?.default || mod;
+} catch (_) {
+  try {
+    const fallbackMod = require('../pages/play');
+    PlayComponent = fallbackMod?.default || fallbackMod;
+  } catch (__) {}
+}
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('screen');
 
@@ -34,13 +46,16 @@ const BookmarkIcon = ({ filled }) => (
   </Svg>
 );
 
-export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
+export default function GenreGrid({ genre, user, activeProfile, activeProfileId, onBack }) {
   const [animeList, setAnimeList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasNextPage, setHasNextPage] = useState(true);
   const [librarySet, setLibrarySet] = useState(new Set());
+  
+  // Local state to open Play.js directly above the grid
+  const [activePlayAnime, setActivePlayAnime] = useState(null);
 
   // Enforce Immersive Mode
   useEffect(() => {
@@ -54,7 +69,21 @@ export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
       } catch (_) {}
     };
     enforceImmersive();
-  }, []);
+  }, [activePlayAnime]); // Re-run when Play opens/closes
+
+  // Hardware Back Handler
+  useEffect(() => {
+    const onHardwareBack = () => {
+      if (activePlayAnime) {
+        setActivePlayAnime(null);
+        return true;
+      }
+      onBack();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+    return () => sub.remove();
+  }, [activePlayAnime, onBack]);
 
   // Sync Library for Bookmarks
   useEffect(() => {
@@ -124,6 +153,7 @@ export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
 
         return {
           id: streamId,
+          animeId: streamId,
           title: titleEng,
           image: anime.coverImage?.extraLarge,
           backdrop: anime.bannerImage || anime.coverImage?.extraLarge,
@@ -139,7 +169,6 @@ export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
 
       setAnimeList(prev => {
         if (isInitial) return validResults;
-        // Filter out duplicates just in case AniList shifts pages
         const existingIds = new Set(prev.map(i => i.id));
         const novel = validResults.filter(i => !existingIds.has(i.id));
         return [...prev, ...novel];
@@ -163,6 +192,16 @@ export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
     if (!loading && !loadingMore && hasNextPage) {
       fetchGenreAnime(page + 1, false);
     }
+  };
+
+  const handlePlayAnime = (anime) => {
+    setActivePlayAnime({
+      ...anime,
+      userUid: user?.uid,
+      activeProfileId: activeProfileId,
+      activeProfile: activeProfile,
+      currentProfile: activeProfile
+    });
   };
 
   const toggleLibrary = async (anime) => {
@@ -222,7 +261,7 @@ export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
               <TouchableOpacity 
                 style={styles.cardContainer} 
                 activeOpacity={0.85} 
-                onPress={() => onSelectAnime(item)}
+                onPress={() => handlePlayAnime(item)}
               >
                 <View style={styles.imageBox}>
                   <ProxyImage source={{ uri: item.image }} style={styles.coverImage} resizeMode="cover" />
@@ -253,6 +292,21 @@ export default function GenreGrid({ genre, user, onBack, onSelectAnime }) {
           }}
         />
       )}
+
+      {/* DIRECT PLAY.JS FULLSCREEN OVERLAY */}
+      {activePlayAnime && PlayComponent && (
+        <View style={styles.playOverlayScreen}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          <PlayComponent 
+            anime={activePlayAnime} 
+            user={user} 
+            activeProfile={activeProfile} 
+            currentProfile={activeProfile} 
+            activeProfileId={activeProfileId} 
+            onBack={() => setActivePlayAnime(null)} 
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -263,6 +317,12 @@ const styles = StyleSheet.create({
     backgroundColor: BLACK,
     zIndex: 9000,
     elevation: 9000,
+  },
+  playOverlayScreen: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: BLACK,
+    zIndex: 10000,
+    elevation: 10000,
   },
   header: {
     flexDirection: 'row',
@@ -296,7 +356,7 @@ const styles = StyleSheet.create({
   listPadding: {
     paddingHorizontal: 20,
     paddingTop: 20,
-    paddingBottom: 120, // Clear the bottom area
+    paddingBottom: 120,
   },
   columnWrapper: {
     justifyContent: 'flex-start',
