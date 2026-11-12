@@ -37,47 +37,83 @@ export default function AllTimePopularSlider({ user, onSelectAnime }) {
 
   useEffect(() => {
     let isMounted = true;
-    const fetchData = async () => {
+    const fetchInstantData = async () => {
       try {
-        const query = `query { Page(page: 1, perPage: 12) { media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) { title { romaji english } bannerImage coverImage { extraLarge } description genres status format episodes } } }`;
+        // 1. FAST INITIAL LOAD: Fetch directly from AniList and show cards immediately
+        const query = `query { Page(page: 1, perPage: 12) { media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) { id title { romaji english } bannerImage coverImage { extraLarge } description genres status format episodes } } }`;
         const res = await fetch('https://graphql.anilist.co', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
         const data = (await res.json())?.data?.Page?.media || [];
-        
-        // Sliced to 10 to prevent TMDB API rate-limiting issues
-        const verified = await Promise.all(data.slice(0, 10).map(async (anime) => {
+
+        const initialMapped = data.map(anime => {
           const title = anime.title.english || anime.title.romaji;
+          return {
+            id: String(anime.id),
+            title,
+            image: anime.coverImage?.extraLarge,
+            backdrop: anime.bannerImage || anime.coverImage?.extraLarge,
+            logo: null, // Will load lazily
+            description: anime.description?.replace(/<[^>]*>?/gm, '').trim() || '',
+            genres: anime.genres || ['Anime'],
+            status: anime.status,
+            format: anime.format,
+            sub: anime.episodes || '?',
+            dub: 0
+          };
+        });
+
+        if (isMounted) {
+          setAnimeList(initialMapped);
+          setLoading(false); // UI is now fully rendered and responsive!
+        }
+
+        // 2. BACKGROUND HYDRATION: Fetch Vercel IDs and TMDB logos concurrently without blocking UI
+        initialMapped.forEach(async (item, index) => {
           try {
-            const vRes = await fetch(`https://anikoto-api-lyart.vercel.app/api/search?keyword=${encodeURIComponent(title)}`);
-            if (!vRes.ok) return null;
-            const exactMatch = (await vRes.json())?.data?.[0];
-            if (!exactMatch) return null;
+            // Fetch Vercel Play ID
+            const vRes = await fetch(`https://anikoto-api-lyart.vercel.app/api/search?keyword=${encodeURIComponent(item.title)}`);
+            const vData = await vRes.json();
+            const exactMatch = (vData?.data || vData?.results || [])[0];
+            const resolvedId = exactMatch?.id || item.id;
+            const resolvedSub = exactMatch?.sub || item.sub;
+            const resolvedDub = exactMatch?.dub || 0;
 
             // Fetch TMDB Logo
             let tmdbLogo = null;
-            try {
-              const searchType = anime.format === 'MOVIE' ? 'movie' : 'tv';
-              const tRes = await fetch(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(title)}`);
-              const tData = await tRes.json();
-              if (tData?.results?.[0]) {
-                const imgRes = await fetch(`https://api.themoviedb.org/3/${searchType}/${tData.results[0].id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
-                const imgData = await imgRes.json();
-                const logos = imgData?.images?.logos || [];
-                const bestLogo = logos.find(l => l.iso_639_1 === 'en') || logos.find(l => l.iso_639_1 === 'ja') || logos[0];
-                if (bestLogo) tmdbLogo = `https://image.tmdb.org/t/p/w300${bestLogo.file_path}`;
-              }
-            } catch(e) {}
+            const searchType = item.format === 'MOVIE' ? 'movie' : 'tv';
+            const tRes = await fetch(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(item.title)}`);
+            const tData = await tRes.json();
+            if (tData?.results?.[0]) {
+              const imgRes = await fetch(`https://api.themoviedb.org/3/${searchType}/${tData.results[0].id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
+              const imgData = await imgRes.json();
+              const logos = imgData?.images?.logos || [];
+              const bestLogo = logos.find(l => l.iso_639_1 === 'en') || logos.find(l => l.iso_639_1 === 'ja') || logos[0];
+              if (bestLogo) tmdbLogo = `https://image.tmdb.org/t/p/w300${bestLogo.file_path}`;
+            }
 
-            return {
-              id: exactMatch.id, title, image: anime.coverImage?.extraLarge, backdrop: anime.bannerImage || anime.coverImage?.extraLarge,
-              logo: tmdbLogo, description: anime.description?.replace(/<[^>]*>?/gm, '').trim() || '', genres: anime.genres || ['Anime'],
-              status: anime.status, format: anime.format, sub: exactMatch.sub || anime.episodes || '?', dub: exactMatch.dub || 0
-            };
-          } catch(e) { return null; }
-        }));
-        if (isMounted) { setAnimeList(verified.filter(i => i !== null)); setLoading(false); }
-      } catch (err) { if (isMounted) setLoading(false); }
+            if (isMounted) {
+              setAnimeList(prevList => {
+                const updated = [...prevList];
+                if (updated[index]) {
+                  updated[index] = {
+                    ...updated[index],
+                    id: resolvedId,
+                    logo: tmdbLogo,
+                    sub: resolvedSub,
+                    dub: resolvedDub
+                  };
+                }
+                return updated;
+              });
+            }
+          } catch (_) {}
+        });
+
+      } catch (err) {
+        if (isMounted) setLoading(false);
+      }
     };
-    fetchData();
+
+    fetchInstantData();
     return () => { isMounted = false; };
   }, []);
 
@@ -95,39 +131,52 @@ export default function AllTimePopularSlider({ user, onSelectAnime }) {
   return (
     <View style={styles.sectionContainer}>
       <View style={styles.headerRow}><Text style={styles.sectionTitle}>All-Time Popular</Text></View>
-      <FlatList data={animeList} horizontal showsHorizontalScrollIndicator={false} keyExtractor={i => i.id} contentContainerStyle={styles.listPadding} snapToInterval={295} decelerationRate="fast" renderItem={({ item }) => {
-        const isAdded = librarySet.has(item.id);
-        return (
-          <TouchableOpacity style={styles.cardContainer} activeOpacity={0.88} onPress={() => handleSelect(item)}>
-            <ProxyImage source={{ uri: item.backdrop || item.image }} style={styles.bgImage} resizeMode="cover" />
-            
-            <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject}>
-              <Defs><LinearGradient id="grad" x1="0" y1="0" x2="0" y2="1"><Stop offset="0" stopColor="#000" stopOpacity="0.1" /><Stop offset="0.5" stopColor="#000" stopOpacity="0.5" /><Stop offset="1" stopColor="#000" stopOpacity="0.95" /></LinearGradient></Defs>
-              <Rect width="100%" height="100%" fill="url(#grad)" />
-            </Svg>
+      <FlatList 
+        data={animeList} 
+        horizontal 
+        showsHorizontalScrollIndicator={false} 
+        keyExtractor={i => i.id} 
+        contentContainerStyle={styles.listPadding} 
+        snapToInterval={295} 
+        decelerationRate="fast"
+        windowSize={5}
+        maxToRenderPerBatch={4}
+        initialNumToRender={3}
+        removeClippedSubviews={true}
+        renderItem={({ item }) => {
+          const isAdded = librarySet.has(item.id);
+          return (
+            <TouchableOpacity style={styles.cardContainer} activeOpacity={0.88} onPress={() => handleSelect(item)}>
+              <ProxyImage source={{ uri: item.backdrop || item.image }} style={styles.bgImage} resizeMode="cover" />
+              
+              <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject}>
+                <Defs><LinearGradient id="grad" x1="0" y1="0" x2="0" y2="1"><Stop offset="0" stopColor="#000" stopOpacity="0.1" /><Stop offset="0.5" stopColor="#000" stopOpacity="0.5" /><Stop offset="1" stopColor="#000" stopOpacity="0.95" /></LinearGradient></Defs>
+                <Rect width="100%" height="100%" fill="url(#grad)" />
+              </Svg>
 
-            {/* Top Badges */}
-            <View style={styles.topBadgesRow}>
-              <View style={styles.ccBadge}><Text style={styles.ccBadgeText}>CC {item.sub}</Text></View>
-              {item.dub > 0 && <View style={styles.dubBadge}><Text style={styles.dubBadgeText}>DUB {item.dub}</Text></View>}
-            </View>
+              {/* Top Badges */}
+              <View style={styles.topBadgesRow}>
+                <View style={styles.ccBadge}><Text style={styles.ccBadgeText}>CC {item.sub}</Text></View>
+                {item.dub > 0 && <View style={styles.dubBadge}><Text style={styles.dubBadgeText}>DUB {item.dub}</Text></View>}
+              </View>
 
-            {/* Save Button */}
-            <TouchableOpacity style={[styles.saveBtn, isAdded && styles.saveBtnActive]} onPress={() => toggleLib(item)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}><BookmarkIcon filled={isAdded} /></TouchableOpacity>
+              {/* Save Button */}
+              <TouchableOpacity style={[styles.saveBtn, isAdded && styles.saveBtnActive]} onPress={() => toggleLib(item)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}><BookmarkIcon filled={isAdded} /></TouchableOpacity>
 
-            {/* Bottom Content */}
-            <View style={styles.bottomContent}>
-              {item.logo ? (
-                <ProxyImage source={{ uri: item.logo }} style={styles.titleLogo} resizeMode="contain" />
-              ) : (
-                <Text style={styles.titleText} numberOfLines={1}>{item.title}</Text>
-              )}
-              <Text style={styles.synopsisText} numberOfLines={2}>{item.description}</Text>
-              <Text style={styles.genresText} numberOfLines={1}>{item.genres.join(' • ')}</Text>
-            </View>
-          </TouchableOpacity>
-        );
-      }} />
+              {/* Bottom Content */}
+              <View style={styles.bottomContent}>
+                {item.logo ? (
+                  <ProxyImage source={{ uri: item.logo }} style={styles.titleLogo} resizeMode="contain" />
+                ) : (
+                  <Text style={styles.titleText} numberOfLines={1}>{item.title}</Text>
+                )}
+                <Text style={styles.synopsisText} numberOfLines={2}>{item.description}</Text>
+                <Text style={styles.genresText} numberOfLines={1}>{item.genres.join(' • ')}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        }} 
+      />
     </View>
   );
 }
