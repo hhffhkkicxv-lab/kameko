@@ -1,9 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Image, StatusBar, Platform } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  View, Text, StyleSheet, ScrollView, TouchableOpacity, 
+  Image, StatusBar, Platform, BackHandler 
+} from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Defs, LinearGradient, Stop, Rect, Path, Circle } from 'react-native-svg';
 import * as NavigationBar from 'expo-navigation-bar';
+import * as ScreenOrientation from 'expo-screen-orientation';
 
 // --- SLIDER IMPORTS ---
 import Carousel from './home/carousel';
@@ -24,13 +28,23 @@ import EditorsChoiceSlider from './home/editors_choice_slider';
 import TopRomanceSlider from './home/top_romance_slider';
 import DubsSlider from './home/dubs_slider';
 
-// --- OVERLAY IMPORTS ---
+// --- OVERLAY & PLAYER IMPORTS ---
 import GenreGrid from './home/genre_grid';             
 import Play from '../pages/play';
+import PlayerComponent from '../pages/play/player';
 import ProfileSettings from './profile'; 
 import Search from '../components/search'; 
 import Downloads from '../pages/downloads'; 
 import BottomNav from './home/bottomnav'; 
+
+// --- STRICT PALETTE ---
+const BRAND_RED = '#E50914';
+const PURE_RED = '#FF0000';
+const BLACK = '#000000';
+const WHITE = '#FFFFFF';
+const DARK_GREY = '#18181C';
+const BORDER_GREY = '#26262C';
+const TEXT_GREY = '#8E8E93';
 
 const AVATARS = {
   'pfp1.jpg': require('../assets/pfp1.jpg'),
@@ -41,10 +55,16 @@ const AVATARS = {
   'pfp6.jpg': require('../assets/pfp6.jpg'),
 };
 
-const IconSearch = ({ size = 26, color = "#FFF" }) => (
+const IconSearch = ({ size = 26, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <Circle cx="11" cy="11" r="8" />
     <Path d="M21 21l-4.35-4.35" />
+  </Svg>
+);
+
+const IconTrash = ({ size = 24, color = PURE_RED }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
+    <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
   </Svg>
 );
 
@@ -59,6 +79,10 @@ export default function Home({
   const [activeTab, setActiveTab] = useState('Home');
   const [selectedAnime, setSelectedAnime] = useState(null);
   const [activeGenre, setActiveGenre] = useState(null); 
+
+  // Root-level states for ContinueWatching Fullscreen <View> Player & Delete Popup
+  const [directPlaybackParams, setDirectPlaybackParams] = useState(null);
+  const [cwDeleteDialog, setCwDeleteDialog] = useState(null);
 
   const resolvedUser = propUser || route?.params?.user || auth().currentUser || null;
   const incomingProfile = propActiveProfile || propCurrentProfile || route?.params?.activeProfile || route?.params?.currentProfile || null;
@@ -93,19 +117,20 @@ export default function Home({
     return () => { isMounted = false; };
   }, [resolvedUser?.uid, currentProfile?.id]);
 
+  // Strictly enforce immersive mode (hide status bar & bottom navigation bar)
+  const enforceImmersive = useCallback(async () => {
+    try {
+      StatusBar.setHidden(true, 'none');
+      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
+        await NavigationBar.setVisibilityAsync('hidden');
+        await NavigationBar.setBehaviorAsync('overlay-swipe');
+      }
+    } catch (_) {}
+  }, []);
+
   useEffect(() => {
-    const manageImmersive = async () => {
-      try {
-        if (selectedAnime || activeGenre) {
-          if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-            await NavigationBar.setVisibilityAsync('hidden');
-            await NavigationBar.setBehaviorAsync('overlay-swipe');
-          }
-        }
-      } catch (_) {}
-    };
-    manageImmersive();
-  }, [selectedAnime, activeGenre]);
+    enforceImmersive();
+  }, [selectedAnime, activeGenre, directPlaybackParams, cwDeleteDialog, activeTab, enforceImmersive]);
 
   const activeProfileId = currentProfile?.id ? String(currentProfile.id) : null;
 
@@ -114,7 +139,57 @@ export default function Home({
     setSelectedAnime({ ...anime, userUid: resolvedUser?.uid || null, activeProfileId, activeProfile: currentProfile, currentProfile });
   };
 
-  const isOverlayActive = selectedAnime !== null || activeGenre !== null || activeTab === 'Search' || activeTab === 'Settings' || activeTab === 'Downloads';
+  // Launch Player.js in a root-level <View>
+  const handleLaunchDirectPlayer = async (episodePayload) => {
+    await enforceImmersive();
+    try {
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
+    } catch (_) {}
+
+    setDirectPlaybackParams({
+      ...episodePayload,
+      userUid: resolvedUser?.uid || null,
+      uid: resolvedUser?.uid || null,
+      user: resolvedUser || null,
+      activeProfileId: activeProfileId,
+      profileId: activeProfileId,
+      activeProfile: currentProfile || null,
+      currentProfile: currentProfile || null,
+    });
+  };
+
+  const handleCloseDirectPlayer = async () => {
+    setDirectPlaybackParams(null);
+    await enforceImmersive();
+    try {
+      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+    } catch (_) {}
+  };
+
+  // Hardware Back Button Interceptor for Root Overlays
+  useEffect(() => {
+    const onHardwareBack = () => {
+      if (directPlaybackParams) {
+        handleCloseDirectPlayer();
+        return true;
+      }
+      if (cwDeleteDialog) {
+        setCwDeleteDialog(null);
+        return true;
+      }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+    return () => sub.remove();
+  }, [directPlaybackParams, cwDeleteDialog]);
+
+  const isOverlayActive = 
+    selectedAnime !== null || 
+    activeGenre !== null || 
+    directPlaybackParams !== null ||
+    activeTab === 'Search' || 
+    activeTab === 'Settings' || 
+    activeTab === 'Downloads';
 
   return (
     <View style={styles.masterContainer}>
@@ -127,7 +202,15 @@ export default function Home({
           <Carousel user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
           
           <View style={styles.contentPadding}>
-            <ContinueWatching user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
+            <ContinueWatching 
+              user={resolvedUser} 
+              activeProfile={currentProfile} 
+              currentProfile={currentProfile} 
+              activeProfileId={activeProfileId} 
+              onSelectAnime={handleSelectAnime}
+              onPlayDirect={handleLaunchDirectPlayer}
+              onRequestDeleteDialog={(dialogConfig) => setCwDeleteDialog(dialogConfig)}
+            />
           </View>
 
           <RecentSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
@@ -136,7 +219,6 @@ export default function Home({
 
           <Top10Slider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* Genres moved below Top 10 */}
           <GenresSlider onSelectGenre={(genre) => setActiveGenre(genre)} />
           
           <ForYouSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
@@ -147,7 +229,6 @@ export default function Home({
           
           <ShortsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* All Time Popular moved above Isekai and Underrated */}
           <AllTimePopularSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
           <IsekaiSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
@@ -162,7 +243,6 @@ export default function Home({
 
           <DubsSlider user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onSelectAnime={handleSelectAnime} />
 
-          {/* Bottom spacer to clear absolute BottomNav */}
           <View style={{ height: 110 }} />
         </ScrollView>
 
@@ -192,6 +272,9 @@ export default function Home({
       {activeGenre && (
         <GenreGrid 
           genre={activeGenre} 
+          user={resolvedUser}               
+          activeProfile={currentProfile}
+          activeProfileId={activeProfileId} 
           onBack={() => setActiveGenre(null)} 
           onSelectAnime={handleSelectAnime} 
         />
@@ -222,9 +305,63 @@ export default function Home({
       )}
 
       {/* GLOBAL BOTTOM NAV */}
-      {!selectedAnime && !activeGenre && (
+      {!selectedAnime && !activeGenre && !directPlaybackParams && !cwDeleteDialog && (
         <View style={styles.bottomNavWrapper}>
           <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
+        </View>
+      )}
+
+      {/* --- ROOT-LEVEL <VIEW> DELETE POPUP FOR CONTINUE WATCHING --- */}
+      {Boolean(cwDeleteDialog) && (
+        <View style={styles.rootPopupOverlay}>
+          <TouchableOpacity 
+            style={styles.rootPopupBackdrop} 
+            activeOpacity={1} 
+            onPress={() => setCwDeleteDialog(null)} 
+          />
+          <View style={styles.bottomSheetCard}>
+            <View style={styles.confirmIconWrap}>
+              <IconTrash size={24} color={PURE_RED} />
+            </View>
+            <Text style={styles.confirmPopupTitle}>{cwDeleteDialog.title}</Text>
+            <Text style={styles.confirmPopupMessage}>{cwDeleteDialog.message}</Text>
+            <View style={styles.confirmBtnsRow}>
+              <TouchableOpacity 
+                style={styles.confirmCancelBtn} 
+                activeOpacity={0.85} 
+                onPress={() => setCwDeleteDialog(null)}
+              >
+                <Text style={styles.confirmCancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.confirmDangerBtn} 
+                activeOpacity={0.85} 
+                onPress={async () => {
+                  const confirmAction = cwDeleteDialog.onConfirm;
+                  setCwDeleteDialog(null);
+                  if (confirmAction) await confirmAction();
+                }}
+              >
+                <Text style={styles.confirmDangerBtnText}>
+                  {cwDeleteDialog.confirmText || 'Delete'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* --- ROOT-LEVEL <VIEW> FULLSCREEN PLAYER FOR CONTINUE WATCHING --- */}
+      {directPlaybackParams && PlayerComponent && (
+        <View style={styles.rootPlayerOverlay}>
+          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
+          <PlayerComponent
+            route={{ params: directPlaybackParams }}
+            navigation={{ goBack: handleCloseDirectPlayer }}
+            user={resolvedUser}
+            activeProfile={currentProfile}
+            activeProfileId={activeProfileId}
+          />
         </View>
       )}
 
@@ -233,17 +370,108 @@ export default function Home({
 }
 
 const styles = StyleSheet.create({
-  masterContainer: { flex: 1, backgroundColor: '#000000' },
-  container: { flex: 1, backgroundColor: '#000000' },
-  overlayScreen: { ...StyleSheet.absoluteFillObject, backgroundColor: '#000000', zIndex: 50 },
+  masterContainer: { flex: 1, backgroundColor: BLACK },
+  container: { flex: 1, backgroundColor: BLACK },
+  overlayScreen: { ...StyleSheet.absoluteFillObject, backgroundColor: BLACK, zIndex: 50 },
   bottomNavWrapper: { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 100, elevation: 100 },
   floatingHeader: { position: 'absolute', top: 0, left: 0, right: 0, height: 110, zIndex: 100 },
   headerContent: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 32 },
-  headerLogoImage: { width: 175, height: 48, tintColor: '#E50914' },
+  headerLogoImage: { width: 175, height: 48, tintColor: BRAND_RED },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
-  searchBtn: { padding: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 4 },
+  searchBtn: { padding: 4, shadowColor: BLACK, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 4 },
   profileSwitcher: { borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.3)', borderRadius: 6, overflow: 'hidden', backgroundColor: 'rgba(0,0,0,0.5)', elevation: 5 },
   headerAvatar: { width: 38, height: 38, borderRadius: 5 },
   scroll: { flex: 1 },
   contentPadding: { paddingTop: 10 },
+
+  // Root-Level <View> Overlays (Above ScrollView & BottomNav)
+  rootPopupOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 99998,
+    elevation: 99998,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+  },
+  rootPopupBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.84)',
+  },
+  bottomSheetCard: {
+    width: '100%',
+    backgroundColor: BLACK,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 22,
+    paddingTop: 24,
+    paddingBottom: 34,
+    borderTopWidth: 1,
+    borderColor: BORDER_GREY,
+    alignItems: 'center',
+  },
+  confirmIconWrap: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: DARK_GREY,
+    borderWidth: 1,
+    borderColor: BORDER_GREY,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 14,
+  },
+  confirmPopupTitle: {
+    color: WHITE,
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  confirmPopupMessage: {
+    color: TEXT_GREY,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  confirmBtnsRow: {
+    flexDirection: 'row',
+    width: '100%',
+    gap: 12,
+  },
+  confirmCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 9,
+    backgroundColor: DARK_GREY,
+    borderWidth: 1,
+    borderColor: BORDER_GREY,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmCancelBtnText: {
+    color: WHITE,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  confirmDangerBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 9,
+    backgroundColor: PURE_RED,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  confirmDangerBtnText: {
+    color: WHITE,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  rootPlayerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 99999,
+    elevation: 99999,
+    backgroundColor: BLACK,
+  },
 });
