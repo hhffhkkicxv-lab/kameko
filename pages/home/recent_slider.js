@@ -8,9 +8,13 @@ import Svg, { Path } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
 const BRAND_RED = '#E50914';
+const BLACK = '#000000';
+const WHITE = '#FFFFFF';
+const DARK_GREY = '#18181C';
+const BORDER_GREY = '#26262C';
 
 const BookmarkIcon = ({ filled }) => (
-  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : "#FFFFFF"} strokeWidth="2.5">
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : WHITE} strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -24,7 +28,7 @@ const RecentSkeleton = () => {
         Animated.timing(shimmer, { toValue: 0.3, duration: 800, useNativeDriver: true })
       ])
     ).start();
-  }, []);
+  }, [shimmer]);
 
   return (
     <View style={styles.sectionContainer}>
@@ -51,39 +55,61 @@ export default function RecentSlider({ user, onSelectAnime }) {
       .collection('library')
       .onSnapshot((snap) => {
         const currentLib = new Set();
-        snap.forEach((doc) => currentLib.add(doc.id));
+        snap?.forEach((doc) => currentLib.add(doc.id));
         setLibrarySet(currentLib);
       });
     return () => unsubscribe();
   }, [user]);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchRecentReleases = async () => {
       try {
         const baseUrl = 'https://anikoto-api-lyart.vercel.app';
+        // 1. Fetch initial fast data
         const rawRes = await fetch(`${baseUrl}/api/latest-episodes`);
         const response = await rawRes.json();
         
         const recentEpisodes = response.data || response.results || [];
-        const topRecent = recentEpisodes.slice(0, 20);
+        const topRecent = recentEpisodes.slice(0, 15); // Limit to 15 to keep hydration fast
 
-        const enrichedAnime = await Promise.all(topRecent.map(async (slide) => {
+        // Map initial fast state so UI renders instantly
+        const initialFastData = topRecent.map(slide => {
           const cleanTitle = (slide.title || '').replace(/\(Dub\)|\(Sub\)|Episode \d+/gi, '').trim();
-          let finalImage = slide.image || slide.poster;
-          let finalStatus = 'RELEASING';
-          let streamId = String(slide.id);
+          return {
+            id: String(slide.id),
+            rawTitle: cleanTitle,
+            title: cleanTitle,
+            image: slide.image || slide.poster || '',
+            episode: slide.episodeNumber || slide.episode || null,
+            sub: slide.tvInfo?.sub || slide.sub || '?',
+            dub: slide.tvInfo?.dub || slide.dub || 0,
+            status: 'RELEASING'
+          };
+        });
 
+        if (isMounted) {
+          setAnimeList(initialFastData);
+          setLoading(false); // Instantly drop the skeleton loader
+        }
+
+        // 2. Background Hydration: Fetch high-quality AniList covers & verify exact Stream IDs
+        initialFastData.forEach(async (item, index) => {
           try {
-            const vercelRes = await fetch(`${baseUrl}/api/search?keyword=${encodeURIComponent(cleanTitle)}`);
-            if (!vercelRes.ok) return null;
-            const vercelData = await vercelRes.json();
-            const apiResults = vercelData.data || vercelData.results || vercelData || [];
-            
-            const exactMatch = apiResults.find(r => (r.title || '').toLowerCase() === cleanTitle.toLowerCase()) || apiResults[0];
-            if (!exactMatch) return null;
-            
-            streamId = exactMatch.id;
+            let streamId = item.id;
+            let finalImage = item.image;
+            let finalStatus = item.status;
 
+            // Resolve exact Vercel ID
+            const vercelRes = await fetch(`${baseUrl}/api/search?keyword=${encodeURIComponent(item.rawTitle)}`);
+            if (vercelRes.ok) {
+              const vercelData = await vercelRes.json();
+              const apiResults = vercelData.data || vercelData.results || vercelData || [];
+              const exactMatch = apiResults.find(r => (r.title || '').toLowerCase() === item.rawTitle.toLowerCase()) || apiResults[0];
+              if (exactMatch) streamId = exactMatch.id;
+            }
+
+            // Resolve HQ Image from AniList
             const query = `query ($search: String) { 
               Media (search: $search, type: ANIME, sort: SEARCH_MATCH) { 
                 coverImage { extraLarge } 
@@ -93,7 +119,7 @@ export default function RecentSlider({ user, onSelectAnime }) {
             const aniRes = await fetch('https://graphql.anilist.co', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ query, variables: { search: cleanTitle } })
+              body: JSON.stringify({ query, variables: { search: item.rawTitle } })
             });
             const aniData = await aniRes.json();
             
@@ -101,36 +127,40 @@ export default function RecentSlider({ user, onSelectAnime }) {
               if (aniData.data.Media.coverImage?.extraLarge) finalImage = aniData.data.Media.coverImage.extraLarge;
               if (aniData.data.Media.status) finalStatus = aniData.data.Media.status;
             }
-          } catch(e) {
-            return null;
+
+            if (isMounted) {
+              setAnimeList(prevList => {
+                const updated = [...prevList];
+                if (updated[index]) {
+                  updated[index] = {
+                    ...updated[index],
+                    id: streamId,
+                    image: finalImage,
+                    status: finalStatus
+                  };
+                }
+                return updated;
+              });
+            }
+          } catch (e) {
+            // Silently fail hydration for single items
           }
+        });
 
-          return {
-            id: streamId,
-            title: cleanTitle,
-            image: finalImage,
-            episode: slide.episodeNumber || slide.episode || null,
-            sub: slide.tvInfo?.sub || slide.sub || '?',
-            dub: slide.tvInfo?.dub || slide.dub || 0,
-            status: finalStatus
-          };
-        }));
-
-        setAnimeList(enrichedAnime.filter(item => item !== null));
       } catch (error) {
-        console.error("Recent Slider fetch error:", error);
-      } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     };
 
     fetchRecentReleases();
+    return () => { isMounted = false; };
   }, []);
 
   const handleNavigateToPlay = (anime) => {
     if (onSelectAnime) {
       onSelectAnime({ 
         id: anime.id,
+        animeId: anime.id,
         title: anime.title,
         coverImage: anime.image,
         backdrop: anime.image,
@@ -146,8 +176,8 @@ export default function RecentSlider({ user, onSelectAnime }) {
   const toggleLibrary = async (anime) => {
     if (!user) return;
     const ref = firestore().collection('users').doc(user.uid).collection('library').doc(anime.id);
-    if (librarySet.has(anime.id)) await ref.delete();
-    else await ref.set({ id: anime.id, title: anime.title, img: anime.image, addedAt: firestore.FieldValue.serverTimestamp() });
+    if (librarySet.has(anime.id)) await ref.delete().catch(() => {});
+    else await ref.set({ id: anime.id, title: anime.title, img: anime.image, addedAt: Date.now() }).catch(() => {});
   };
 
   if (loading) return <RecentSkeleton />;
@@ -160,7 +190,7 @@ export default function RecentSlider({ user, onSelectAnime }) {
         data={animeList}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => String(item.id)}
         contentContainerStyle={styles.listPadding}
         snapToInterval={155} 
         decelerationRate="fast"
@@ -197,18 +227,18 @@ export default function RecentSlider({ user, onSelectAnime }) {
 const styles = StyleSheet.create({
   sectionContainer: { marginTop: 15, marginBottom: 25 },
   headerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
-  sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  sectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
   listPadding: { paddingHorizontal: 20 },
   cardContainer: { width: 140, marginRight: 15 },
-  imageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: '#2A2A2A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  imageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
   coverImage: { width: '100%', height: '100%' },
   badgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
-  epBadge: { backgroundColor: '#FFFFFF', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: '#000', shadowOpacity: 0.5, shadowRadius: 3 },
-  epBadgeText: { color: '#000000', fontSize: 10, fontWeight: '900' },
-  ccBadge: { backgroundColor: 'rgba(229,9,20,0.9)', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-  ccBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: 'bold' },
-  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
+  epBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
+  epBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
+  ccBadge: { backgroundColor: DARK_GREY, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY },
+  ccBadgeText: { color: WHITE, fontSize: 9, fontWeight: 'bold' },
+  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
   saveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: BRAND_RED },
   animeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
-  skeletonCard: { width: 140, height: 210, backgroundColor: '#2A2A2A', borderRadius: 8 }
+  skeletonCard: { width: 140, height: 210, backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY }
 });
