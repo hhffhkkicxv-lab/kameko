@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, Animated, 
-  StatusBar, BackHandler, Platform 
+  StatusBar, BackHandler, Platform, AppState 
 } from 'react-native';
-import { Video, ResizeMode } from 'expo-av';
+import { Video, ResizeMode, Audio } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import * as NavigationBar from 'expo-navigation-bar';
 import * as FileSystem from 'expo-file-system';
@@ -29,7 +29,7 @@ const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_downloads_queue.json`
   : null;
 
-// Instant Local Watch-Progress Cache (Guarantees 0ms timestamp lookup & offline resume)
+// Instant Local Watch-Progress Cache
 const LOCAL_WATCH_CACHE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_watch_progress_cache.json`
   : null;
@@ -75,7 +75,6 @@ const parseVttTextToCues = (rawText) => {
   return cues.filter((c) => c.text.length > 0);
 };
 
-// Fast O(log n) binary search for active subtitle cue
 const findActiveSubtitleCue = (cues, timeSec) => {
   let low = 0;
   let high = cues.length - 1;
@@ -143,7 +142,6 @@ const writeLocalWatchCacheEntry = async (key, payload) => {
   } catch (_) {}
 };
 
-// Helper to extract valid millisecond timestamp from any progress object
 const extractResumeMillis = (dataObj) => {
   if (!dataObj) return { resumeMs: 0, durationMs: 0, timestamp: 0 };
   const durMs =
@@ -160,7 +158,6 @@ const extractResumeMillis = (dataObj) => {
       ? Number(dataObj.progress) * 1000
       : 0;
 
-  // If the episode was finished (>= 98%), restart from 00:00; otherwise resume exact spot
   const isAtVeryEnd = durMs > 10000 && rawPosMs >= durMs * 0.98;
   return {
     resumeMs: isAtVeryEnd ? 0 : Math.max(0, Math.floor(rawPosMs)),
@@ -178,7 +175,7 @@ const formatTime = (millis) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-// --- MEMOIZED ICONS & CINEMATIC GRADIENTS (Zero Re-render Cost) ---
+// --- MEMOIZED ICONS & CINEMATIC GRADIENTS ---
 const IconBack = React.memo(({ size = 28 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M19 12H5M12 19l-7-7 7-7" />
@@ -274,7 +271,6 @@ export default function Player({
   const [offlineMetaUri, setOfflineMetaUri] = useState(paramLocalMetaUri || null);
   const [offlineSubUri, setOfflineSubUri] = useState(paramLocalSubtitleUri || null);
 
-  // 1. Resolve User UID & Current Profile ID
   const [resolvedUid] = useState(() =>
     userUid || paramUid || paramUser?.uid || propUser?.uid || auth().currentUser?.uid || null
   );
@@ -324,7 +320,6 @@ export default function Player({
     return () => { isMounted = false; };
   }, [resolvedUid, currentProfileId]);
 
-  // SEAMLESS BINGE STATE
   const [currentEpNum, setCurrentEpNum] = useState(Number(params.episodeNum || 1));
   const [currentSlug, setCurrentSlug] = useState(params.slug || null);
   const [currentEpTitle, setCurrentEpTitle] = useState(params.episodeTitle || params.epTitle || '');
@@ -335,7 +330,6 @@ export default function Player({
 
   const initialParamResume = useMemo(() => extractResumeMillis(params), []);
 
-  // Lightweight playback state
   const [isLoaded, setIsLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
   const [initialStartMillis, setInitialStartMillis] = useState(initialParamResume.resumeMs);
@@ -352,7 +346,6 @@ export default function Player({
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [is2xActive, setIs2xActive] = useState(false);
 
-  // Episode session guard prevents old episode's progress from bleeding into Next Episode
   const episodeSessionIdRef = useRef(1);
   const isInitialMountRef = useRef(true);
   const hasRestoredPositionOnLoadRef = useRef(false);
@@ -430,7 +423,6 @@ export default function Player({
     selectedAudioType,
   ]);
 
-  // --- DUAL-LAYER (LOCAL + FIRESTORE) NON-BLOCKING PROGRESS SAVE ---
   const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false, customMeta = null) => {
     const meta = customMeta || latestMetaRef.current;
     if (!meta.animeId || meta.animeId === 'unknown') return;
@@ -471,12 +463,10 @@ export default function Player({
       timestamp: now,
     };
 
-    // 1. Always save immediately to local disk cache (works 100% offline & zero latency)
     const localKey = `${meta.profileId || 'default'}_${epDocId}`;
     writeLocalWatchCacheEntry(localKey, episodePayload);
     writeLocalWatchCacheEntry(`any_${epDocId}`, episodePayload);
 
-    // 2. Sync to Firestore if signed in
     if (!meta.uid || !meta.profileId) return;
 
     const seriesPayload = {
@@ -523,13 +513,14 @@ export default function Player({
   useEffect(() => { navigationRef.current = navigation; }, [navigation]);
   useEffect(() => { saveHistoryRef.current = saveWatchHistory; }, [saveWatchHistory]);
 
-  // 1. Full Screen Immersive Lock & Hardware Back Handler
   useEffect(() => {
     const enterImmersiveLandscape = async () => {
       try {
+        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
         StatusBar.setHidden(true, 'none');
         if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
           await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
         }
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
       } catch (_) {}
@@ -566,7 +557,6 @@ export default function Player({
     };
   }, []);
 
-  // 2. Fetch Series Episodes List ONCE
   useEffect(() => {
     let isMounted = true;
     if (isOfflineMode || !animeTitle) return;
@@ -601,7 +591,6 @@ export default function Player({
     return () => { isMounted = false; };
   }, [animeTitle, isOfflineMode]);
 
-  // 2.2 Resolve Next Episode from Cached List or Offline Queue
   useEffect(() => {
     let isMounted = true;
 
@@ -682,7 +671,6 @@ export default function Player({
     return () => { isMounted = false; };
   }, [currentEpNum, currentSlug, cachedEpisodesList, isOfflineMode, effectiveAnimeId, animeTitle]);
 
-  // 3. UNIFIED EPISODE TIMESTAMP + OFFLINE/ONLINE STREAM RESOLVER
   useEffect(() => {
     let isMounted = true;
     const currentSessionId = ++episodeSessionIdRef.current;
@@ -696,7 +684,6 @@ export default function Player({
       const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
       const localKey = `${currentProfileId || 'default'}_${epDocId}`;
 
-      // Step A: Always check 1) Route Params, 2) Local Watch Cache, and 3) Firestore to pick the latest timestamp
       let candidates = [];
 
       if (isInitialMountRef.current) {
@@ -707,7 +694,6 @@ export default function Player({
       }
       isInitialMountRef.current = false;
 
-      // Check instant local watch cache (works offline & online)
       try {
         const localCache = await readLocalWatchCache();
         const cachedEntry = localCache[localKey] || localCache[`any_${epDocId}`];
@@ -719,7 +705,6 @@ export default function Player({
         }
       } catch (_) {}
 
-      // Check Firestore watch_history (with fast 2.5s timeout so offline playback never hangs)
       if (resolvedUid && currentProfileId && effectiveAnimeId && effectiveAnimeId !== 'unknown') {
         try {
           const firestoreLookupPromise = (async () => {
@@ -765,7 +750,6 @@ export default function Player({
 
       if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
 
-      // Pick the most recent or furthest valid timestamp
       let targetResumeMs = 0;
       let targetDurationMs = 0;
       if (candidates.length > 0) {
@@ -779,7 +763,6 @@ export default function Player({
         targetDurationMs = candidates[0].durationMs;
       }
 
-      // Lock in the exact starting timestamp for THIS episode before the Video mounts
       lastPositionRef.current = targetResumeMs;
       lastDurationRef.current = targetDurationMs;
       lastSavedSecRef.current = Math.floor(targetResumeMs / 1000);
@@ -788,7 +771,6 @@ export default function Player({
       setPosMillis(targetResumeMs);
       setDurMillis(targetDurationMs);
 
-      // Step B: Check Offline Downloaded Episode First (Supports both local file:// and cached streamUri)
       let targetLocalVideoUri = offlineStreamUri;
       let targetLocalMeta = offlineMetaUri;
       let targetLocalSub = offlineSubUri;
@@ -820,7 +802,6 @@ export default function Player({
                 targetLocalVideoUri = candidateUri;
               }
             } else if (String(candidateUri).startsWith('http')) {
-              // Direct pre-resolved stream URI saved during download
               targetLocalVideoUri = candidateUri;
             }
           }
@@ -867,7 +848,6 @@ export default function Player({
             } catch (_) {}
           }
 
-          // Load subtitles from local file or saved subtitle URL
           try {
             const subCandidate =
               targetLocalSub ||
@@ -915,7 +895,6 @@ export default function Player({
         }
       }
 
-      // Step C: Online Stream Resolution
       const effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
@@ -926,6 +905,7 @@ export default function Player({
         return;
       }
 
+      // --- GUARANTEED INSTANT LOAD: AGGRESSIVE FALLBACK ENGINE ---
       const servers = ['hd-1', 'hd-2', 'vidstream-2'];
       let finalStreamData = null;
 
@@ -944,7 +924,7 @@ export default function Player({
               : null;
           if (manifest) {
             finalStreamData = manifest;
-            break;
+            break; // Stop immediately upon finding a working stream
           }
         } catch (_) {}
       }
@@ -957,6 +937,16 @@ export default function Player({
 
       const masterUrl = finalStreamData.m3u8 || finalStreamData.streamingLink;
 
+      // Unblock UI immediately with Auto quality
+      if (isMounted && currentSessionId === episodeSessionIdRef.current) {
+        setIsOfflineMode(false);
+        setStreamData(finalStreamData);
+        setQualityList([{ label: 'Auto', uri: masterUrl }]);
+        setActiveUrl(masterUrl);
+        setLoadingStream(false);
+      }
+
+      // Lazily resolve specific qualities in background
       try {
         const m3Res = await fetch(masterUrl, {
           headers: { Referer: finalStreamData.referer || 'https://vidwish.live/' },
@@ -985,17 +975,10 @@ export default function Player({
             uniqueQualities.push(q);
           }
         }
-        setQualityList(uniqueQualities);
-      } catch (_) {
-        setQualityList([{ label: 'Auto', uri: masterUrl }]);
-      }
-
-      if (isMounted && currentSessionId === episodeSessionIdRef.current) {
-        setIsOfflineMode(false);
-        setStreamData(finalStreamData);
-        setActiveUrl(masterUrl);
-        setLoadingStream(false);
-      }
+        if (isMounted && currentSessionId === episodeSessionIdRef.current) {
+          setQualityList(uniqueQualities);
+        }
+      } catch (_) {}
     };
 
     loadEpisodeProgressAndStream();
@@ -1016,7 +999,6 @@ export default function Player({
     currentProfileId,
   ]);
 
-  // 4. ULTRA-LIGHTWEIGHT PLAYBACK CALLBACK (Binary Subtitle Lookup + Safe Resume Guard)
   const handlePlaybackStatusUpdate = useCallback(
     (st, sessionToken) => {
       if (!st?.isLoaded || sessionToken !== episodeSessionIdRef.current) return;
@@ -1026,7 +1008,6 @@ export default function Player({
       const currentTimeSec = currentMs / 1000;
       const wholeSec = Math.floor(currentTimeSec);
 
-      // Do not let an initial 0ms status tick overwrite our saved resume position before onLoad seek finishes
       if (hasRestoredPositionOnLoadRef.current || currentMs > 1000) {
         if (currentMs > 0) lastPositionRef.current = currentMs;
       }
@@ -1037,7 +1018,6 @@ export default function Player({
         setCurrentAutoRes((prev) => (prev === resLabel ? prev : resLabel));
       }
 
-      // 1. O(log n) Binary Search Subtitle Cue Lookup
       if (subtitlesEnabledRef.current && parsedSubsRef.current.length > 0) {
         const nextText = findActiveSubtitleCue(parsedSubsRef.current, currentTimeSec);
         if (nextText !== currentSubTextRef.current) {
@@ -1049,7 +1029,6 @@ export default function Player({
         setCurrentSubText('');
       }
 
-      // 2. Only update React state once per whole second or when play/pause toggles
       if (wholeSec !== lastRenderedSecRef.current || Boolean(st.isPlaying) !== isPlayingRef.current) {
         lastRenderedSecRef.current = wholeSec;
         setIsLoaded(true);
@@ -1062,7 +1041,6 @@ export default function Player({
         }
       }
 
-      // 3. Throttled background save every 4 seconds
       if (
         hasRestoredPositionOnLoadRef.current &&
         st.isPlaying &&
@@ -1080,7 +1058,6 @@ export default function Player({
     [isSeeking, saveWatchHistory]
   );
 
-  // 5. SEAMLESS NEXT EPISODE HANDLER
   const handleNextEpisode = useCallback(async () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
 
@@ -1129,7 +1106,6 @@ export default function Player({
     setCurrentSlug(String(nextEpisodeData.slug));
   }, [hasNextEpisode, nextEpisodeData, saveWatchHistory]);
 
-  // --- UI VISIBILITY: SHOW ON TAP & HIDE ON TAP + AUTO-HIDE TIMER ---
   const hideUINow = useCallback(() => {
     if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
     Animated.timing(uiOpacity, {
@@ -1249,7 +1225,6 @@ export default function Player({
     [isLoaded, isPlaying, displayPosMillis, displayDurMillis]
   );
 
-  // Buffer-less source builder: avoids forcing 'm3u8' on local .mp4/.mkv/.ts files
   const videoSource = useMemo(() => {
     if (!activeUrl) return null;
     const cleanUrl = String(activeUrl);
@@ -1303,7 +1278,6 @@ export default function Player({
             const currentLoadedPos = loadStatus?.positionMillis || 0;
 
             if (videoRef.current) {
-              // Enforce exact seek if native positionMillis prop didn't land within 1.5s of saved spot
               if (targetStartMs > 0 && Math.abs(currentLoadedPos - targetStartMs) > 1500) {
                 await videoRef.current
                   .setPositionAsync(targetStartMs, { toleranceMillisBefore: 0, toleranceMillisAfter: 0 })
@@ -1323,7 +1297,6 @@ export default function Player({
         />
       ) : null}
 
-      {/* Fullscreen Tap Catcher */}
       <TouchableOpacity
         style={styles.tapSurface}
         activeOpacity={1}
@@ -1512,7 +1485,6 @@ export default function Player({
           selectedQuality={selectedQuality}
           setSelectedQuality={setSelectedQuality}
           setActiveUrl={(newQualityUri) => {
-            // Preserve exact playback position when switching quality
             setInitialStartMillis(lastPositionRef.current);
             hasRestoredPositionOnLoadRef.current = false;
             setActiveUrl(newQualityUri);
@@ -1555,7 +1527,6 @@ export default function Player({
           slug={currentSlug || currentEpNum}
           currentTargetType={selectedAudioType}
           onSelectAudioType={(newAudioType) => {
-            // Preserve exact playback position when switching SUB <-> DUB
             setInitialStartMillis(lastPositionRef.current);
             hasRestoredPositionOnLoadRef.current = false;
             setSelectedAudioType(newAudioType);
