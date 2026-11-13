@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { 
   View, Text, StyleSheet, Dimensions, 
   TouchableOpacity, Share, StatusBar, 
-  ActivityIndicator, FlatList, ScrollView, BackHandler, Platform
+  ActivityIndicator, FlatList, ScrollView, BackHandler, Platform, AppState
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -771,147 +771,39 @@ export default function Play({
     await updateLocalPreferences({ preferredDownloadType: selectedDownloadType, preferredSubtitleLang: selectedSubTrack?.label || selectedSubTrack?.lang || 'Off', preferredDownloadQuality: finalQuality.label, lastDownload: newRecords[0] });
   };
 
+  // =======================================================================
+  // LIGHTNING FAST BACKGROUND FETCHING LOGIC
+  // =======================================================================
   useEffect(() => {
     let isMounted = true;
-    const loadTMDB = async () => {
-      try {
-        const cleanTitle = String(resolvedTitle || '').replace(/\(Dub\)|\(Sub\)/gi, '').trim();
-        if (!cleanTitle) return;
-        const searchType = currentAnime?.format === 'MOVIE' ? 'movie' : 'tv';
-        const tmdbRes = await fetchWithTimeout(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`);
-        const tmdbJson = await tmdbRes.json();
-        const show = tmdbJson?.results?.[0];
-
-        if (show && isMounted) {
-          const detailRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${searchType}/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
-          const detailJson = await detailRes.json();
-          if (detailJson?.overview && isMounted) setTmdbSynopsis(detailJson.overview);
-
-          const logos = detailJson?.images?.logos || [];
-          const bestLogo = logos.find((l) => l.iso_639_1 === 'en') || logos.find((l) => l.iso_639_1 === 'ja') || logos[0];
-          if (bestLogo && isMounted) setTitleLogo(`https://image.tmdb.org/t/p/w500${bestLogo.file_path}`);
-        }
-      } catch (_) {}
-    };
-
-    const loadRelationsAndMoreLikeThis = async () => {
-      try {
-        if (!resolvedTitle) return;
-        const aniQuery = `
-          query ($search: String) {
-            Media (search: $search, type: ANIME) {
-              status
-              recommendations (sort: RATING_DESC, perPage: 25) {
-                nodes {
-                  mediaRecommendation {
-                    id type title { romaji english } bannerImage coverImage { extraLarge large }
-                    format episodes seasonYear averageScore status description
-                  }
-                }
-              }
-              relations {
-                edges {
-                  relationType
-                  node {
-                    id type title { romaji english } bannerImage coverImage { extraLarge large }
-                    format episodes seasonYear averageScore status description
-                  }
-                }
-              }
-            }
-          }
-        `;
-        const aRes = await fetchWithTimeout('https://graphql.anilist.co', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: aniQuery, variables: { search: resolvedTitle } })
-        });
-        const aJson = await aRes.json();
-        const media = aJson?.data?.Media;
-
-        const isValidMedia = (node) => {
-          if (!node) return false;
-          if (node.type && node.type !== 'ANIME') return false; 
-          if (node.format === 'MUSIC' || node.format === 'NOVEL' || node.format === 'ONE_SHOT' || node.format === 'MANGA') return false;
-          return true;
-        };
-
-        const relationEdges = (media?.relations?.edges || []).filter(
-          (e) => e?.node && isValidMedia(e.node)
-        );
-
-        const relationPriority = { SEQUEL: 1, PREQUEL: 2, PARENT: 3, SIDE_STORY: 4, SPIN_OFF: 5, ALTERNATIVE: 6, SUMMARY: 7, OTHER: 8 };
-
-        const formattedRelations = relationEdges
-          .map((edge) => {
-            const node = edge.node;
-            const relType = edge.relationType || 'RELATED';
-            return {
-              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
-              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
-              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
-              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
-              status: node.status || 'FINISHED', relationType: String(relType).replace(/_/g, ' '), priority: relationPriority[relType] || 99,
-              description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
-            };
-          })
-          .sort((a, b) => a.priority - b.priority);
-
-        const recNodes = (media?.recommendations?.nodes || [])
-          .map((n) => n?.mediaRecommendation)
-          .filter((node) => isValidMedia(node));
-
-        const combinedMore = [
-          ...recNodes.map((node) => ({
-            id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
-            image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
-            backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
-            episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
-            status: node.status || 'FINISHED', relationType: node.format || 'TV', description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
-          })),
-          ...formattedRelations,
-        ];
-
-        const uniqueMore = [];
-        const seenMoreIds = new Set();
-        for (const item of combinedMore) {
-          if (!seenMoreIds.has(item.id)) { seenMoreIds.add(item.id); uniqueMore.push(item); }
-        }
-
-        const sequelSliderItems = formattedRelations.length > 0 ? formattedRelations : uniqueMore.slice(0, 10);
-
-        if (isMounted) {
-          setSequelsAndRelated(sequelSliderItems);
-          setMoreLikeThis(uniqueMore);
-        }
-      } catch (_) {}
-    };
-
-    loadTMDB();
-    loadRelationsAndMoreLikeThis();
-    return () => { isMounted = false; };
-  }, [resolvedTitle, currentAnime?.format]);
-
-  useEffect(() => {
-    let isMounted = true;
-    const fetchEpisodes = async () => {
+    
+    const loadFastEpisodes = async () => {
       setEpisodesLoading(true);
       if (isUpcoming) {
         if (isMounted) setEpisodesLoading(false);
         return;
       }
+      
       try {
         let targetId = animeDocId;
-        const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`);
-        const searchJson = await searchRes.json();
-        const matches = searchJson?.data || [];
-        if (matches.length > 0) {
-          const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
-          if (exact?.id) targetId = exact.id;
-        }
-        if (isMounted) setVercelAnimeId(targetId);
+        setVercelAnimeId(targetId);
 
-        const res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
+        let res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`, {}, 3000);
+        
+        if (!res.ok) {
+          const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`, {}, 4000);
+          const searchJson = await searchRes.json();
+          const matches = searchJson?.data || [];
+          if (matches.length > 0) {
+            const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
+            if (exact?.id) {
+              targetId = exact.id;
+              if (isMounted) setVercelAnimeId(targetId);
+              res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
+            }
+          }
+        }
+
         const json = await res.json();
         const list = json?.data || [];
 
@@ -929,9 +821,89 @@ export default function Play({
       }
     };
 
-    fetchEpisodes();
+    const loadTMDBandAniList = async () => {
+      try {
+        const cleanTitle = String(resolvedTitle || '').replace(/\(Dub\)|\(Sub\)/gi, '').trim();
+        if (!cleanTitle) return;
+        const searchType = currentAnime?.format === 'MOVIE' ? 'movie' : 'tv';
+        
+        fetchWithTimeout(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`)
+          .then(res => res.json())
+          .then(async (tmdbJson) => {
+            const show = tmdbJson?.results?.[0];
+            if (show && isMounted) {
+              const detailRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${searchType}/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
+              const detailJson = await detailRes.json();
+              if (detailJson?.overview && isMounted) setTmdbSynopsis(detailJson.overview);
+
+              const logos = detailJson?.images?.logos || [];
+              const bestLogo = logos.find((l) => l.iso_639_1 === 'en') || logos.find((l) => l.iso_639_1 === 'ja') || logos[0];
+              if (bestLogo && isMounted) setTitleLogo(`https://image.tmdb.org/t/p/w500${bestLogo.file_path}`);
+            }
+          }).catch(() => {});
+
+        const aniQuery = `
+          query ($search: String) {
+            Media (search: $search, type: ANIME) {
+              recommendations (sort: RATING_DESC, perPage: 25) { nodes { mediaRecommendation { id type title { romaji english } bannerImage coverImage { extraLarge large } format episodes seasonYear averageScore status description } } }
+              relations { edges { relationType node { id type title { romaji english } bannerImage coverImage { extraLarge large } format episodes seasonYear averageScore status description } } }
+            }
+          }
+        `;
+        fetchWithTimeout('https://graphql.anilist.co', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: aniQuery, variables: { search: resolvedTitle } })
+        }).then(res => res.json()).then(aJson => {
+          const media = aJson?.data?.Media;
+          if (!media) return;
+
+          const isValidMedia = (node) => node && (!node.type || node.type === 'ANIME') && !['MUSIC', 'NOVEL', 'ONE_SHOT', 'MANGA'].includes(node.format);
+          
+          const relationEdges = (media.relations?.edges || []).filter(e => e?.node && isValidMedia(e.node));
+          const relationPriority = { SEQUEL: 1, PREQUEL: 2, PARENT: 3, SIDE_STORY: 4, SPIN_OFF: 5, ALTERNATIVE: 6, SUMMARY: 7, OTHER: 8 };
+
+          const formattedRelations = relationEdges.map((edge) => {
+            const node = edge.node;
+            return {
+              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
+              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
+              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
+              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
+              status: node.status || 'FINISHED', relationType: String(edge.relationType || 'RELATED').replace(/_/g, ' '), priority: relationPriority[edge.relationType] || 99,
+              description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
+            };
+          }).sort((a, b) => a.priority - b.priority);
+
+          const recNodes = (media.recommendations?.nodes || []).map(n => n?.mediaRecommendation).filter(node => isValidMedia(node));
+          const combinedMore = [
+            ...recNodes.map((node) => ({
+              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
+              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
+              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
+              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
+              status: node.status || 'FINISHED', relationType: node.format || 'TV', description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
+            })),
+            ...formattedRelations,
+          ];
+
+          const uniqueMore = [];
+          const seenMoreIds = new Set();
+          for (const item of combinedMore) {
+            if (!seenMoreIds.has(item.id)) { seenMoreIds.add(item.id); uniqueMore.push(item); }
+          }
+
+          if (isMounted) {
+            setSequelsAndRelated(formattedRelations.length > 0 ? formattedRelations : uniqueMore.slice(0, 10));
+            setMoreLikeThis(uniqueMore);
+          }
+        }).catch(() => {});
+      } catch (_) {}
+    };
+
+    loadFastEpisodes();
+    loadTMDBandAniList();
+
     return () => { isMounted = false; };
-  }, [animeDocId, resolvedTitle, isUpcoming]);
+  }, [animeDocId, resolvedTitle, isUpcoming, currentAnime?.format]);
 
   const episodeChunks = useMemo(() => {
     const chunks = [];
@@ -950,25 +922,16 @@ export default function Play({
       const safeEp = encodeURIComponent(String(episodeItem.slug));
       const downloadedRecord = downloadedEpMap[episodeItem.num] || null;
       const offlineFileUri = downloadedRecord?.localUri || downloadedRecord?.fileUri || downloadedRecord?.streamUri || null;
-      let streamManifest = null;
       
-      if (!offlineFileUri || !String(offlineFileUri).startsWith('file://')) {
-        try {
-          const streamUrl = `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=hd-1&type=sub`;
-          const res = await fetchWithTimeout(streamUrl, {}, 8000);
-          const json = await res.json();
-          streamManifest = json?.data || json?.results || null;
-        } catch (_) {}
-      }
-
       const savedEpProgress = userProgressMap[String(episodeItem.slug)] || userProgressMap[`ep_${episodeItem.num}`] || null;
       const playbackPayload = {
-        streamUrl: offlineFileUri || streamManifest?.m3u8 || streamManifest?.streamingLink || null,
+        streamUrl: offlineFileUri, 
         localUri: offlineFileUri && String(offlineFileUri).startsWith('file://') ? offlineFileUri : null,
         localMetaUri: downloadedRecord?.localMetaUri || null, localSubtitleUri: downloadedRecord?.localSubtitleUri || downloadedRecord?.subtitle?.file || null,
         isOffline: Boolean(offlineFileUri && String(offlineFileUri).startsWith('file://')),
-        referer: downloadedRecord?.referer || streamManifest?.referer || 'https://vidwish.live/',
-        subtitles: streamManifest?.subtitles || [], animeTitle: resolvedTitle, title: resolvedTitle, animeBackdrop: resolvedBackdrop, backdropUrl: resolvedBackdrop, backdrop: resolvedBackdrop,
+        referer: downloadedRecord?.referer || 'https://vidwish.live/',
+        subtitles: [], 
+        animeTitle: resolvedTitle, title: resolvedTitle, animeBackdrop: resolvedBackdrop, backdropUrl: resolvedBackdrop, backdrop: resolvedBackdrop,
         coverImage: currentAnime?.coverImage || resolvedBackdrop, episodeNum: Number(episodeItem.num), episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`,
         epTitle: episodeItem.title || `Episode ${episodeItem.num}`, animeId: animeDocId, providerId: vercelAnimeId || animeDocId,
         slug: String(episodeItem.slug), progress: savedEpProgress ? Number(savedEpProgress.progress || 0) : 0, duration: savedEpProgress ? Number(savedEpProgress.duration || 0) : 0,
@@ -988,7 +951,6 @@ export default function Play({
     } finally { setLoadingEpisode(null); }
   };
 
-  // --- NESTED PLAY OVERLAY LOGIC ---
   const handleSelectRelatedAnime = useCallback((item) => {
     if (!item) return;
     const enrichedTarget = {
@@ -999,7 +961,6 @@ export default function Play({
       currentProfile: resolvedProfile,
     };
     
-    // Instead of replacing the current page content, push a completely new play.js layer on top
     setNestedAnime(enrichedTarget);
   }, [resolvedUid, resolvedProfileId, resolvedProfile]);
 
@@ -1365,7 +1326,6 @@ export default function Play({
       )}
 
       {/* --- NESTED PLAY OVERLAY --- */}
-      {/* Recursively renders a new Play component completely over the current one */}
       {nestedAnime && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 10000, elevation: 10000, backgroundColor: BLACK }]}>
           <Play
