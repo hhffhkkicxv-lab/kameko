@@ -29,10 +29,12 @@ const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_downloads_queue.json`
   : null;
 
+// Instant Local Watch-Progress Cache
 const LOCAL_WATCH_CACHE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_watch_progress_cache.json`
   : null;
 
+// --- OFFLINE SUBTITLE (.VTT / .SRT) PARSER ---
 const parseTimeToSeconds = (timeStr) => {
   const cleanTimeStr = (timeStr || '').trim().split(/\s+/)[0].replace(',', '.');
   const parts = cleanTimeStr.split(':');
@@ -107,6 +109,7 @@ const readLocalDownloadsQueue = async () => {
 };
 
 let inMemoryWatchCache = null;
+
 const readLocalWatchCache = async () => {
   if (inMemoryWatchCache) return inMemoryWatchCache;
   try {
@@ -172,6 +175,7 @@ const formatTime = (millis) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
+// --- MEMOIZED ICONS & CINEMATIC GRADIENTS ---
 const IconBack = React.memo(({ size = 28 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M19 12H5M12 19l-7-7 7-7" />
@@ -256,7 +260,8 @@ export default function Player({
   } = params;
 
   const initialOfflineUri =
-    paramLocalUri || paramFileUri ||
+    paramLocalUri ||
+    paramFileUri ||
     (paramActiveUrl && String(paramActiveUrl).startsWith('file://') ? paramActiveUrl : null) ||
     (paramStreamUrl && String(paramStreamUrl).startsWith('file://') ? paramStreamUrl : null) ||
     null;
@@ -271,8 +276,15 @@ export default function Player({
   );
 
   const [currentProfileId, setCurrentProfileId] = useState(() =>
-    activeProfileId || paramProfileId || paramCurrentProfileId || propActiveProfileId ||
-    paramActiveProfile?.id || paramCurrentProfile?.id || propActiveProfile?.id || propCurrentProfile?.id || null
+    activeProfileId ||
+    paramProfileId ||
+    paramCurrentProfileId ||
+    propActiveProfileId ||
+    paramActiveProfile?.id ||
+    paramCurrentProfile?.id ||
+    propActiveProfile?.id ||
+    propCurrentProfile?.id ||
+    null
   );
 
   const [resolvedBackdrop, setResolvedBackdrop] = useState(
@@ -293,7 +305,12 @@ export default function Player({
             return;
           }
         }
-        const profSnap = await firestore().collection('users').doc(String(uid)).collection('profiles').limit(1).get();
+        const profSnap = await firestore()
+          .collection('users')
+          .doc(String(uid))
+          .collection('profiles')
+          .limit(1)
+          .get();
         if (!profSnap.empty && isMounted) {
           setCurrentProfileId(String(profSnap.docs[0].id));
         }
@@ -477,6 +494,7 @@ export default function Player({
   useEffect(() => { navigationRef.current = navigation; }, [navigation]);
   useEffect(() => { saveHistoryRef.current = saveWatchHistory; }, [saveWatchHistory]);
 
+  // HARDWARE CONTROLS & APP STATE
   useEffect(() => {
     const enterImmersiveLandscape = async () => {
       try {
@@ -520,6 +538,7 @@ export default function Player({
     };
   }, []);
 
+  // Fetch cached episodes to determine "Next Episode"
   useEffect(() => {
     let isMounted = true;
     if (isOfflineMode || !animeTitle) return;
@@ -634,6 +653,9 @@ export default function Player({
     return () => { isMounted = false; };
   }, [currentEpNum, currentSlug, cachedEpisodesList, isOfflineMode, effectiveAnimeId, animeTitle]);
 
+  // =======================================================================
+  // 100% INSTANT LOAD STREAM RESOLUTION
+  // =======================================================================
   useEffect(() => {
     let isMounted = true;
     const currentSessionId = ++episodeSessionIdRef.current;
@@ -648,7 +670,6 @@ export default function Player({
       const localKey = `${currentProfileId || 'default'}_${epDocId}`;
 
       let candidates = [];
-
       if (isInitialMountRef.current) {
         const paramRes = extractResumeMillis(params);
         if (paramRes.resumeMs > 0) {
@@ -662,29 +683,19 @@ export default function Player({
         const cachedEntry = localCache[localKey] || localCache[`any_${epDocId}`];
         if (cachedEntry) {
           const localRes = extractResumeMillis(cachedEntry);
-          if (localRes.resumeMs > 0) {
-            candidates.push({ ...localRes, source: 'local' });
-          }
+          if (localRes.resumeMs > 0) candidates.push({ ...localRes, source: 'local' });
         }
       } catch (_) {}
 
       if (resolvedUid && currentProfileId && effectiveAnimeId && effectiveAnimeId !== 'unknown') {
         try {
           const firestoreLookupPromise = (async () => {
-            const profileRef = firestore()
-              .collection('users')
-              .doc(String(resolvedUid))
-              .collection('profiles')
-              .doc(String(currentProfileId));
-
+            const profileRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(currentProfileId));
             let epDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get();
             let epData = epDoc.exists ? epDoc.data() : null;
 
             if (!epData) {
-              const seriesDoc = await profileRef
-                .collection(WATCH_HISTORY_COLLECTION)
-                .doc(String(effectiveAnimeId))
-                .get();
+              const seriesDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(String(effectiveAnimeId)).get();
               if (seriesDoc.exists) {
                 const sData = seriesDoc.data();
                 if (sData?.episodes?.[String(currentEpNum)]) {
@@ -704,9 +715,7 @@ export default function Player({
 
           if (epData) {
             const fsRes = extractResumeMillis(epData);
-            if (fsRes.resumeMs > 0) {
-              candidates.push({ ...fsRes, source: 'firestore' });
-            }
+            if (fsRes.resumeMs > 0) candidates.push({ ...fsRes, source: 'firestore' });
           }
         } catch (_) {}
       }
@@ -717,9 +726,7 @@ export default function Player({
       let targetDurationMs = 0;
       if (candidates.length > 0) {
         candidates.sort((a, b) => {
-          if (b.timestamp && a.timestamp && Math.abs(b.timestamp - a.timestamp) > 2000) {
-            return b.timestamp - a.timestamp;
-          }
+          if (b.timestamp && a.timestamp && Math.abs(b.timestamp - a.timestamp) > 2000) return b.timestamp - a.timestamp;
           return b.resumeMs - a.resumeMs;
         });
         targetResumeMs = candidates[0].resumeMs;
@@ -734,6 +741,7 @@ export default function Player({
       setPosMillis(targetResumeMs);
       setDurMillis(targetDurationMs);
 
+      // OFFLINE FILE CHECK (Local Cache)
       let targetLocalVideoUri = offlineStreamUri;
       let targetLocalMeta = offlineMetaUri;
       let targetLocalSub = offlineSubUri;
@@ -751,31 +759,17 @@ export default function Player({
         });
 
         if (matchedQueueRecord) {
-          const candidateUri =
-            targetLocalVideoUri ||
-            matchedQueueRecord.localUri ||
-            matchedQueueRecord.fileUri ||
-            matchedQueueRecord.streamUri ||
-            null;
-
+          const candidateUri = targetLocalVideoUri || matchedQueueRecord.localUri || matchedQueueRecord.fileUri || matchedQueueRecord.streamUri || null;
           if (candidateUri) {
             if (String(candidateUri).startsWith('file://')) {
               const fileCheck = await FileSystem.getInfoAsync(candidateUri);
-              if (fileCheck?.exists) {
-                targetLocalVideoUri = candidateUri;
-              }
+              if (fileCheck?.exists) targetLocalVideoUri = candidateUri;
             } else if (String(candidateUri).startsWith('http')) {
               targetLocalVideoUri = candidateUri;
             }
           }
-
           targetLocalMeta = targetLocalMeta || matchedQueueRecord.localMetaUri || null;
-          targetLocalSub =
-            targetLocalSub ||
-            matchedQueueRecord.localSubtitleUri ||
-            matchedQueueRecord.subtitle?.localUri ||
-            matchedQueueRecord.subtitle?.file ||
-            null;
+          targetLocalSub = targetLocalSub || matchedQueueRecord.localSubtitleUri || matchedQueueRecord.subtitle?.localUri || matchedQueueRecord.subtitle?.file || null;
           offlineQualityLabel = matchedQueueRecord.quality || offlineQualityLabel;
         }
       } catch (_) {}
@@ -794,9 +788,7 @@ export default function Player({
         }
 
         if (canPlayDirectly) {
-          const inferredFolder = isLocalDiskFile
-            ? targetLocalVideoUri.substring(0, targetLocalVideoUri.lastIndexOf('/') + 1)
-            : null;
+          const inferredFolder = isLocalDiskFile ? targetLocalVideoUri.substring(0, targetLocalVideoUri.lastIndexOf('/') + 1) : null;
           let metaJson = null;
 
           if (inferredFolder || targetLocalMeta) {
@@ -804,26 +796,18 @@ export default function Player({
               const metaCandidate = targetLocalMeta || `${inferredFolder}metadata.json`;
               if (String(metaCandidate).startsWith('file://')) {
                 const metaInfo = await FileSystem.getInfoAsync(metaCandidate);
-                if (metaInfo?.exists) {
-                  metaJson = JSON.parse(await FileSystem.readAsStringAsync(metaCandidate));
-                }
+                if (metaInfo?.exists) metaJson = JSON.parse(await FileSystem.readAsStringAsync(metaCandidate));
               }
             } catch (_) {}
           }
 
           try {
-            const subCandidate =
-              targetLocalSub ||
-              metaJson?.subtitle?.localUri ||
-              (inferredFolder ? `${inferredFolder}subtitle.vtt` : null);
-
+            const subCandidate = targetLocalSub || metaJson?.subtitle?.localUri || (inferredFolder ? `${inferredFolder}subtitle.vtt` : null);
             if (subCandidate) {
               let rawVtt = '';
               if (String(subCandidate).startsWith('file://')) {
                 const subInfo = await FileSystem.getInfoAsync(subCandidate);
-                if (subInfo?.exists) {
-                  rawVtt = await FileSystem.readAsStringAsync(subCandidate);
-                }
+                if (subInfo?.exists) rawVtt = await FileSystem.readAsStringAsync(subCandidate);
               } else if (String(subCandidate).startsWith('http')) {
                 const subRes = await fetch(subCandidate);
                 rawVtt = await subRes.text();
@@ -858,14 +842,12 @@ export default function Player({
         }
       }
 
-      // STREAM RESOLVER: Exhaustive search across response properties
+      // ONLINE STREAM RESOLVER (GUARANTEED INSTANT LOAD)
       const effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
       if (!effectiveId || !effectiveSlug) {
-        if (isMounted && currentSessionId === episodeSessionIdRef.current) {
-          setLoadingStream(false);
-        }
+        if (isMounted && currentSessionId === episodeSessionIdRef.current) setLoadingStream(false);
         return;
       }
 
@@ -878,7 +860,6 @@ export default function Player({
           const res = await fetch(url);
           const json = await res.json();
           
-          // Exhaustive check for the stream URI
           let extractedUrl = null;
           if (json?.data?.m3u8) extractedUrl = json.data.m3u8;
           else if (json?.data?.streamingLink) extractedUrl = json.data.streamingLink;
@@ -892,8 +873,9 @@ export default function Player({
               referer: json?.data?.referer || json?.results?.referer || 'https://vidwish.live/',
               intro: json?.data?.intro || null,
               outro: json?.data?.outro || null,
+              subtitles: json?.data?.subtitles || json?.results?.subtitles || []
             };
-            break;
+            break; 
           }
         } catch (_) {}
       }
@@ -906,45 +888,65 @@ export default function Player({
 
       const masterUrl = finalStreamData.m3u8;
 
-      try {
-        const m3Res = await fetch(masterUrl, {
-          headers: { Referer: finalStreamData.referer || 'https://vidwish.live/' },
-        });
-        const m3Text = await m3Res.text();
-        const lines = m3Text.split('\n');
-        const qualities = [{ label: 'Auto', uri: masterUrl }];
-
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes('RESOLUTION=')) {
-            const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
-            if (resMatch && lines[i + 1]) {
-              let streamUri = lines[i + 1].trim();
-              if (!streamUri.startsWith('http')) {
-                streamUri = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1) + streamUri;
-              }
-              qualities.push({ label: `${resMatch[1]}p`, uri: streamUri });
-            }
-          }
-        }
-        const uniqueQualities = [];
-        const seenLabels = new Set();
-        for (const q of qualities) {
-          if (!seenLabels.has(q.label)) {
-            seenLabels.add(q.label);
-            uniqueQualities.push(q);
-          }
-        }
-        setQualityList(uniqueQualities);
-      } catch (_) {
-        setQualityList([{ label: 'Auto', uri: masterUrl }]);
-      }
-
+      // 1. INSTANTLY DROP LOADING SCREEN AND PLAY THE MASTER M3U8 STREAM
       if (isMounted && currentSessionId === episodeSessionIdRef.current) {
         setIsOfflineMode(false);
         setStreamData(finalStreamData);
+        setQualityList([{ label: 'Auto', uri: masterUrl }]); // Set a default to prevent crash
         setActiveUrl(masterUrl);
         setLoadingStream(false);
       }
+
+      // 2. BACKGROUND M3U8 QUALITY PARSING (Does NOT block video playback)
+      fetch(masterUrl, { headers: { Referer: finalStreamData.referer || 'https://vidwish.live/' } })
+        .then(res => res.text())
+        .then(m3Text => {
+          if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
+          const lines = m3Text.split('\n');
+          const qualities = [{ label: 'Auto', uri: masterUrl }];
+
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('RESOLUTION=')) {
+              const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
+              if (resMatch && lines[i + 1]) {
+                let streamUri = lines[i + 1].trim();
+                if (!streamUri.startsWith('http')) {
+                  streamUri = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1) + streamUri;
+                }
+                qualities.push({ label: `${resMatch[1]}p`, uri: streamUri });
+              }
+            }
+          }
+          const uniqueQualities = [];
+          const seenLabels = new Set();
+          for (const q of qualities) {
+            if (!seenLabels.has(q.label)) {
+              seenLabels.add(q.label);
+              uniqueQualities.push(q);
+            }
+          }
+          setQualityList(uniqueQualities);
+        })
+        .catch(() => {});
+
+      // 3. BACKGROUND AUTO-SUBTITLE FETCH (If online VTT exists)
+      if (finalStreamData.subtitles && finalStreamData.subtitles.length > 0) {
+        const engSub = finalStreamData.subtitles.find(s => String(s.label || s.lang).toLowerCase().includes('eng')) || finalStreamData.subtitles[0];
+        if (engSub && engSub.file) {
+          fetch(engSub.file)
+            .then(r => r.text())
+            .then(vtt => {
+               if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
+               const cues = parseVttTextToCues(vtt);
+               if (cues.length > 0) {
+                 setParsedSubs(cues);
+                 setSubtitlesEnabled(true);
+               }
+            })
+            .catch(()=>{});
+        }
+      }
+
     };
 
     loadEpisodeProgressAndStream();
