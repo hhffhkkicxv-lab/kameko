@@ -15,7 +15,7 @@ const TMDB_API_KEY = 'f39f02a34ded84924626dd5ec7de1f29';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const BRAND_RED = '#E50914';
 
-// --- Safe Fetch Helper to Prevent Infinite Hangs ---
+// --- Safe Fetch Helper ---
 const fetchWithTimeout = async (url, options = {}, timeoutMs = 4000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
@@ -54,76 +54,38 @@ const IconShare = ({ size = 16, color = "#FFFFFF" }) => (
   </Svg>
 );
 
-// --- SKELETON LOADER ---
-const CarouselSkeleton = () => {
-  const shimmer = useRef(new Animated.Value(0.3)).current;
-
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(shimmer, { toValue: 0.6, duration: 800, useNativeDriver: true }),
-        Animated.timing(shimmer, { toValue: 0.3, duration: 800, useNativeDriver: true })
-      ])
-    ).start();
-  }, [shimmer]);
-
-  return (
-    <View style={styles.container}>
-      <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: '#2A2A2A', opacity: shimmer }]} />
-      
-      <Svg height="100%" width="100%" style={styles.permanentGradient}>
-        <Defs>
-          <LinearGradient id="heroGradient" x1="0" y1="1" x2="0" y2="0">
-            <Stop offset="0" stopColor="#000000" stopOpacity="1" />
-            <Stop offset="0.32" stopColor="#000000" stopOpacity="0.9" />
-            <Stop offset="0.65" stopColor="#000000" stopOpacity="0.5" />
-            <Stop offset="1" stopColor="#000000" stopOpacity="0.08" />
-          </LinearGradient>
-        </Defs>
-        <Rect width="100%" height="100%" fill="url(#heroGradient)" />
-      </Svg>
-
-      <View style={styles.uiContainer}>
-        <View style={styles.titleWrapper}>
-          <Animated.View style={[styles.skeletonBlock, { width: 220, height: 75, opacity: shimmer }]} />
-          
-          <View style={styles.metaRow}>
-            <Animated.View style={[styles.skeletonBlock, { width: 55, height: 20, borderRadius: 4, opacity: shimmer }]} />
-            <Animated.View style={[styles.skeletonBlock, { width: 45, height: 20, borderRadius: 4, opacity: shimmer }]} />
-            <Animated.View style={[styles.skeletonBlock, { width: 50, height: 20, borderRadius: 4, opacity: shimmer }]} />
-            <Animated.View style={[styles.skeletonBlock, { width: 40, height: 20, borderRadius: 4, opacity: shimmer }]} />
-          </View>
-
-          <View style={styles.genreRow}>
-            <Animated.View style={[styles.skeletonBlock, { width: 60, height: 22, borderRadius: 12, opacity: shimmer }]} />
-            <Animated.View style={[styles.skeletonBlock, { width: 70, height: 22, borderRadius: 12, opacity: shimmer }]} />
-            <Animated.View style={[styles.skeletonBlock, { width: 55, height: 22, borderRadius: 12, opacity: shimmer }]} />
-          </View>
-        </View>
-
-        <Animated.View style={[styles.skeletonBlock, { width: '88%', height: 12, opacity: shimmer, marginBottom: 8 }]} />
-        <Animated.View style={[styles.skeletonBlock, { width: '65%', height: 12, opacity: shimmer, marginBottom: 20 }]} />
-
-        <View style={styles.buttonRow}>
-          <Animated.View style={[styles.skeletonBlock, { width: 105, height: 42, borderRadius: 6, opacity: shimmer }]} />
-          <Animated.View style={[styles.skeletonBlock, { width: 110, height: 42, borderRadius: 6, opacity: shimmer }]} />
-          <Animated.View style={[styles.skeletonBlock, { width: 42, height: 42, borderRadius: 6, opacity: shimmer }]} />
-        </View>
-      </View>
-    </View>
-  );
-};
+// PRE-LOADED INSTANT HERO SLIDE to completely eliminate skeleton wait times
+const INSTANT_SLIDES = [
+  {
+    id: 'solo-leveling',
+    rawTitle: 'Solo Leveling',
+    title: 'Solo Leveling',
+    description: 'They say whatever doesn’t kill you makes you stronger, but that’s not the case for the world’s weakest hunter Sung Jinwoo.',
+    score: 85,
+    genres: ['Action', 'Adventure', 'Fantasy'],
+    format: 'TV',
+    episodes: 12,
+    status: 'FINISHED',
+    coverImage: 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/bx151807-m1gX3iqITmI6.png',
+    backdrop: 'https://image.tmdb.org/t/p/original/vIgyYkXkg6NC2whRbYjBD7eb3Er.jpg',
+    logo: 'https://image.tmdb.org/t/p/w500/y6L4o67x0X7UvWdE2p4d3j0B2G3.png',
+    contentRating: 'U/A 13+'
+  }
+];
 
 export default function Carousel({ user, onSelectAnime }) {
-  const [slides, setSlides] = useState([]);
+  // Initialize with fast hardcoded slide so it renders instantly
+  const [slides, setSlides] = useState(INSTANT_SLIDES);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [loading, setLoading] = useState(true);
+  
+  // Set loading to FALSE immediately so it renders without skeleton
+  const [loading, setLoading] = useState(false); 
   const [isNavigating, setIsNavigating] = useState(false);
   const [librarySet, setLibrarySet] = useState(new Set());
   const [shareData, setShareData] = useState({ visible: false, title: '', id: '' });
 
-  const fadeAnims = useRef([]).current;
-  const scaleAnims = useRef([]).current;
+  const fadeAnims = useRef([new Animated.Value(1)]).current;
+  const scaleAnims = useRef([new Animated.Value(1.05)]).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
 
   // 1. Navigation Progress Bar
@@ -162,7 +124,7 @@ export default function Carousel({ user, onSelectAnime }) {
     return () => unsubscribe();
   }, [user]);
 
-  // 3. Fast Metadata Engine
+  // 3. Fast Metadata Engine (Background Hydration)
   useEffect(() => {
     let isMounted = true;
 
@@ -197,7 +159,6 @@ export default function Carousel({ user, onSelectAnime }) {
         const aniData = await aniRes.json();
         const aniListMedia = aniData?.data?.Page?.media || [];
 
-        // Instantly format with Fallback data so UI renders immediately
         const fastSlides = aniListMedia.map((anime) => {
           const primaryTitle = anime.title.english || anime.title.romaji || 'Unknown Anime';
           return {
@@ -218,56 +179,44 @@ export default function Carousel({ user, onSelectAnime }) {
           };
         }).slice(0, 7);
 
-        if (!isMounted) return;
-
-        // Initialize Animations
-        fastSlides.forEach((_, i) => {
-          fadeAnims[i] = new Animated.Value(i === 0 ? 1 : 0);
-          scaleAnims[i] = new Animated.Value(i === 0 ? 1.05 : 1);
-        });
-
-        // Set state immediately to unblock UI
-        setSlides(fastSlides);
-        setLoading(false);
+        if (!isMounted || fastSlides.length === 0) return;
 
         // --- BACKGROUND RESOLUTION FOR LOGOS & VERCEL IDs ---
-        // This won't block the UI if it's slow
-        const resolveBackgroundData = async () => {
-          const resolvedSlides = await Promise.all(
-            fastSlides.map(async (slide) => {
-              let streamId = slide.id;
-              let tmdbLogo = slide.logo;
-              let tmdbBackdrop = slide.backdrop;
-              let rating = slide.contentRating;
+        const resolvedSlides = await Promise.all(
+          fastSlides.map(async (slide) => {
+            let streamId = slide.id;
+            let tmdbLogo = slide.logo;
+            let tmdbBackdrop = slide.backdrop;
+            let rating = slide.contentRating;
 
-              try {
-                // Vercel Resolution
-                const vRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(slide.rawTitle)}`, {}, 3000);
-                if (vRes.ok) {
-                  const vJson = await vRes.json();
-                  const matches = vJson.data || vJson.results || [];
-                  if (matches.length > 0) {
-                    const exact = matches.find(r => (r.title || '').toLowerCase() === slide.rawTitle.toLowerCase()) || matches[0];
-                    streamId = exact.id;
-                  }
+            try {
+              const vRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(slide.rawTitle)}`, {}, 3000);
+              if (vRes.ok) {
+                const vJson = await vRes.json();
+                const matches = vJson.data || vJson.results || [];
+                if (matches.length > 0) {
+                  const exact = matches.find(r => (r.title || '').toLowerCase() === slide.rawTitle.toLowerCase()) || matches[0];
+                  streamId = exact.id;
                 }
+              }
 
-                // TMDB Resolution
-                const tSearch = await fetchWithTimeout(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(slide.rawTitle)}`, {}, 3000);
-                if (tSearch.ok) {
-                  const tJson = await tSearch.json();
-                  const tmdbItem = tJson.results?.[0];
+              const searchType = slide.format === 'MOVIE' ? 'movie' : 'tv';
+              const tSearch = await fetchWithTimeout(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(slide.rawTitle)}`, {}, 3000);
+              if (tSearch.ok) {
+                const tJson = await tSearch.json();
+                const tmdbItem = tJson.results?.[0];
+                
+                if (tmdbItem) {
+                  if (tmdbItem.backdrop_path) tmdbBackdrop = `https://image.tmdb.org/t/p/original${tmdbItem.backdrop_path}`;
                   
-                  if (tmdbItem) {
-                    if (tmdbItem.backdrop_path) tmdbBackdrop = `https://image.tmdb.org/t/p/original${tmdbItem.backdrop_path}`;
-                    
-                    const imgRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${tmdbItem.id}/images?api_key=${TMDB_API_KEY}`, {}, 3000);
-                    if (imgRes.ok) {
-                      const imgJson = await imgRes.json();
-                      const logoObj = imgJson.logos?.find(l => l.iso_639_1 === 'en' || l.iso_639_1 === 'ja');
-                      if (logoObj) tmdbLogo = `https://image.tmdb.org/t/p/w500${logoObj.file_path}`;
-                    }
+                  const imgRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${searchType}/${tmdbItem.id}/images?api_key=${TMDB_API_KEY}`, {}, 3000);
+                  if (imgRes.ok) {
+                    const imgJson = await imgRes.json();
+                    const logoObj = imgJson.logos?.find(l => l.iso_639_1 === 'en' || l.iso_639_1 === 'ja');
+                    if (logoObj) tmdbLogo = `https://image.tmdb.org/t/p/w500${logoObj.file_path}`;
+                  }
 
+                  if (searchType === 'tv') {
                     const rateRes = await fetchWithTimeout(`https://api.themoviedb.org/3/tv/${tmdbItem.id}/content_ratings?api_key=${TMDB_API_KEY}`, {}, 3000);
                     if (rateRes.ok) {
                       const rateJson = await rateRes.json();
@@ -276,26 +225,31 @@ export default function Carousel({ user, onSelectAnime }) {
                     }
                   }
                 }
-              } catch (_) {}
+              }
+            } catch (_) {}
 
-              return {
-                ...slide,
-                id: streamId,
-                backdrop: tmdbBackdrop,
-                logo: tmdbLogo,
-                contentRating: rating
-              };
-            })
-          );
+            return {
+              ...slide,
+              id: streamId,
+              backdrop: tmdbBackdrop,
+              logo: tmdbLogo,
+              contentRating: rating
+            };
+          })
+        );
+        
+        if (isMounted) {
+          // Add animation nodes for the new slides
+          resolvedSlides.forEach((_, i) => {
+            if (!fadeAnims[i]) fadeAnims[i] = new Animated.Value(i === 0 ? 1 : 0);
+            if (!scaleAnims[i]) scaleAnims[i] = new Animated.Value(i === 0 ? 1.05 : 1);
+          });
           
-          if (isMounted) setSlides(resolvedSlides);
-        };
-
-        resolveBackgroundData();
+          setSlides(resolvedSlides);
+        }
 
       } catch (err) {
         console.error('Carousel network error:', err);
-        if (isMounted) setLoading(false);
       }
     };
 
@@ -305,7 +259,7 @@ export default function Carousel({ user, onSelectAnime }) {
 
   // 4. Auto-Rotation
   useEffect(() => {
-    if (slides.length === 0) return;
+    if (slides.length <= 1) return;
     const interval = setInterval(() => {
       const nextIndex = (currentIndex + 1) % slides.length;
       transitionSlide(currentIndex, nextIndex);
@@ -361,10 +315,7 @@ export default function Carousel({ user, onSelectAnime }) {
     }
   };
 
-  if (loading) return <CarouselSkeleton />;
-  if (slides.length === 0) return null;
-
-  const activeSlide = slides[currentIndex];
+  const activeSlide = slides[currentIndex] || slides[0];
 
   return (
     <View style={styles.container}>
@@ -518,19 +469,21 @@ export default function Carousel({ user, onSelectAnime }) {
       ))}
 
       {/* Right Vertical Pagination Indicators */}
-      <View style={styles.paginationContainer}>
-        {slides.map((_, i) => (
-          <TouchableOpacity
-            key={`page-dot-${i}`}
-            onPress={() => {
-              transitionSlide(currentIndex, i);
-              setCurrentIndex(i);
-            }}
-            style={[styles.dot, currentIndex === i && styles.dotActive]}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          />
-        ))}
-      </View>
+      {slides.length > 1 && (
+        <View style={styles.paginationContainer}>
+          {slides.map((_, i) => (
+            <TouchableOpacity
+              key={`page-dot-${i}`}
+              onPress={() => {
+                transitionSlide(currentIndex, i);
+                setCurrentIndex(i);
+              }}
+              style={[styles.dot, currentIndex === i && styles.dotActive]}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            />
+          ))}
+        </View>
+      )}
     </View>
   );
 }
@@ -644,6 +597,5 @@ const styles = StyleSheet.create({
     zIndex: 20 
   },
   dot: { width: 4, height: 4, borderRadius: 2, backgroundColor: 'rgba(255,255,255,0.3)' },
-  dotActive: { height: 20, backgroundColor: BRAND_RED },
-  skeletonBlock: { backgroundColor: '#2A2A2A', borderRadius: 4 }
+  dotActive: { height: 20, backgroundColor: BRAND_RED }
 });
