@@ -1,16 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, ActivityIndicator, Animated 
+  TouchableOpacity, Animated 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
 
+// --- STRICT PALETTE ---
 const BRAND_RED = '#E50914';
+const PURE_RED = '#FF0000';
+const BLACK = '#000000';
+const WHITE = '#FFFFFF';
+const DARK_GREY = '#18181C';
+const BORDER_GREY = '#26262C';
+const TEXT_GREY = '#8E8E93';
 
 const BookmarkIcon = ({ filled }) => (
-  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? BRAND_RED : "none"} stroke={filled ? BRAND_RED : "#FFFFFF"} strokeWidth="2.5">
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill={filled ? PURE_RED : "none"} stroke={filled ? PURE_RED : WHITE} strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
   </Svg>
 );
@@ -24,7 +31,7 @@ const TrendingSkeleton = () => {
         Animated.timing(shimmer, { toValue: 0.3, duration: 800, useNativeDriver: true })
       ])
     ).start();
-  }, []);
+  }, [shimmer]);
 
   return (
     <View style={styles.sectionContainer}>
@@ -51,18 +58,19 @@ export default function TrendingSlider({ user, onSelectAnime }) {
       .collection('library')
       .onSnapshot((snap) => {
         const currentLib = new Set();
-        snap.forEach((doc) => currentLib.add(doc.id));
+        snap?.forEach((doc) => currentLib.add(doc.id));
         setLibrarySet(currentLib);
       });
     return () => unsubscribe();
   }, [user]);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchTrending = async () => {
       try {
         const query = `
           query { 
-            Page(page: 1, perPage: 25) { 
+            Page(page: 1, perPage: 15) { 
               media(type: ANIME, sort: TRENDING_DESC, isAdult: false) { 
                 id title { romaji english } coverImage { extraLarge }
                 bannerImage description genres episodes status format averageScore
@@ -80,33 +88,12 @@ export default function TrendingSlider({ user, onSelectAnime }) {
         const json = await response.json();
         const aniListMedia = json?.data?.Page?.media || [];
 
-        const verifiedTrending = await Promise.all(aniListMedia.map(async (anime) => {
+        // 1. FAST INITIAL LOAD: Render UI instantly using AniList data
+        const initialFastData = aniListMedia.map(anime => {
           const titleEng = anime.title.english || anime.title.romaji;
-          const titleRom = anime.title.romaji || titleEng;
-          let streamId = null;
-
-          try {
-            const baseUrl = 'https://anikoto-api-lyart.vercel.app';
-            const vercelRes = await fetch(`${baseUrl}/api/search?keyword=${encodeURIComponent(titleEng)}`);
-            if (!vercelRes.ok) return null;
-            
-            const vercelData = await vercelRes.json();
-            const apiResults = vercelData.data || vercelData.results || vercelData || [];
-            
-            const exactMatch = apiResults.find(r => {
-              const rTitle = (r.title || '').toLowerCase();
-              return rTitle === titleEng.toLowerCase() || rTitle === titleRom.toLowerCase();
-            }) || apiResults[0];
-
-            if (!exactMatch) return null;
-
-            streamId = exactMatch.id;
-          } catch(e) {
-            return null;
-          }
-
           return {
-            id: streamId,
+            id: String(anime.id), // Temporary ID until Vercel resolves
+            rawTitle: titleEng,
             title: titleEng,
             image: anime.coverImage?.extraLarge,
             backdrop: anime.bannerImage || anime.coverImage?.extraLarge,
@@ -117,23 +104,53 @@ export default function TrendingSlider({ user, onSelectAnime }) {
             status: anime.status,
             format: anime.format
           };
-        }));
+        });
 
-        setTrendingList(verifiedTrending.filter(item => item !== null).slice(0, 15));
+        if (isMounted) {
+          setTrendingList(initialFastData);
+          setLoading(false); // Instantly drop skeleton loader
+        }
+
+        // 2. BACKGROUND HYDRATION: Fetch exact stream IDs from Vercel silently
+        initialFastData.forEach(async (item, index) => {
+          try {
+            const baseUrl = 'https://anikoto-api-lyart.vercel.app';
+            const vercelRes = await fetch(`${baseUrl}/api/search?keyword=${encodeURIComponent(item.rawTitle)}`);
+            if (vercelRes.ok) {
+              const vercelData = await vercelRes.json();
+              const apiResults = vercelData.data || vercelData.results || vercelData || [];
+              const exactMatch = apiResults.find(r => (r.title || '').toLowerCase() === item.rawTitle.toLowerCase()) || apiResults[0];
+              
+              if (exactMatch && isMounted) {
+                setTrendingList(prevList => {
+                  const updated = [...prevList];
+                  if (updated[index]) {
+                    updated[index] = { ...updated[index], id: exactMatch.id };
+                  }
+                  return updated;
+                });
+              }
+            }
+          } catch(e) {
+            // Silently fail, card will use temporary ID
+          }
+        });
+
       } catch (error) {
         console.error("Trending Slider fetch error:", error);
-      } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     };
 
     fetchTrending();
+    return () => { isMounted = false; };
   }, []);
 
   const handleNavigateToPlay = (anime) => {
     if (onSelectAnime) {
       onSelectAnime({ 
         id: anime.id,
+        animeId: anime.id,
         title: anime.title,
         coverImage: anime.image,
         backdrop: anime.backdrop,
@@ -150,9 +167,9 @@ export default function TrendingSlider({ user, onSelectAnime }) {
     if (!user) return;
     const ref = firestore().collection('users').doc(user.uid).collection('library').doc(anime.id);
     if (librarySet.has(anime.id)) {
-      await ref.delete();
+      await ref.delete().catch(() => {});
     } else {
-      await ref.set({ id: anime.id, title: anime.title, img: anime.image, addedAt: firestore.FieldValue.serverTimestamp() });
+      await ref.set({ id: anime.id, title: anime.title, img: anime.image, addedAt: Date.now() }).catch(() => {});
     }
   };
 
@@ -166,10 +183,13 @@ export default function TrendingSlider({ user, onSelectAnime }) {
         data={trendingList}
         horizontal
         showsHorizontalScrollIndicator={false}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item, index) => `${item.id}-${index}`}
         contentContainerStyle={styles.listPadding}
         snapToInterval={155} 
         decelerationRate="fast"
+        windowSize={5}
+        maxToRenderPerBatch={4}
+        initialNumToRender={4}
         renderItem={({ item, index }) => {
           const isAdded = librarySet.has(item.id);
           return (
@@ -202,20 +222,19 @@ export default function TrendingSlider({ user, onSelectAnime }) {
 
 const styles = StyleSheet.create({
   sectionContainer: { marginTop: 10, marginBottom: 25 },
-  loadingContainer: { height: 200, justifyContent: 'center', alignItems: 'center' },
   headerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, marginBottom: 12 },
-  sectionTitle: { color: '#FFFFFF', fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  sectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
   listPadding: { paddingHorizontal: 20 },
   cardContainer: { width: 140, marginRight: 15 },
-  imageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: '#2A2A2A', borderWidth: 1, borderColor: 'rgba(255,255,255,0.08)' },
+  imageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
   coverImage: { width: '100%', height: '100%' },
   badgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
   rankBadge: { backgroundColor: BRAND_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  rankBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: '900' },
-  epBadge: { backgroundColor: '#FFFFFF', paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
-  epBadgeText: { color: '#000000', fontSize: 10, fontWeight: '900' },
-  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
-  saveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: BRAND_RED },
+  rankBadgeText: { color: WHITE, fontSize: 10, fontWeight: '900' },
+  epBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
+  epBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
+  saveBtn: { position: 'absolute', top: 8, right: 8, backgroundColor: 'rgba(0,0,0,0.65)', width: 32, height: 32, borderRadius: 8, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
+  saveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: PURE_RED },
   animeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
-  skeletonCard: { width: 140, height: 210, backgroundColor: '#2A2A2A', borderRadius: 8 }
+  skeletonCard: { width: 140, height: 210, backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY }
 });
