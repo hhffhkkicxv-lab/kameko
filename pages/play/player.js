@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, Animated, 
-  StatusBar, BackHandler, Platform, AppState 
+  StatusBar, BackHandler, Platform, AppState, useWindowDimensions 
 } from 'react-native';
 import { Video, ResizeMode, Audio } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -187,7 +187,7 @@ const formatTime = (millis) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-// --- MEMOIZED ICONS & CINEMATIC GRADIENTS ---
+// --- MEMOIZED ICONS & ORIENTATION-SAFE FULL-WIDTH GRADIENTS ---
 const IconBack = React.memo(({ size = 28 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M19 12H5M12 19l-7-7 7-7" />
@@ -211,27 +211,49 @@ const IconNextEp = React.memo(({ size = 22, color = "#FFF" }) => (
   </Svg>
 ));
 
-const TopGradientOverlay = React.memo(() => (
-  <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
+// FIX: Uses explicit landscape width + viewBox="0 0 100 100" + preserveAspectRatio="none"
+// so Android's SVG LinearGradient never clips mid-screen after portrait->landscape rotation!
+const TopGradientOverlay = React.memo(({ screenWidth }) => (
+  <Svg
+    key={`top-grad-${screenWidth}`}
+    width={screenWidth}
+    height={130}
+    viewBox="0 0 100 100"
+    preserveAspectRatio="none"
+    style={styles.topGradientSvg}
+    pointerEvents="none"
+  >
     <Defs>
-      <LinearGradient id="topCinematic" x1="0" y1="0" x2="0" y2="1">
-        <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
-        <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+      <LinearGradient id="topCinematic" x1="0%" y1="0%" x2="0%" y2="100%">
+        <Stop offset="0%" stopColor="#000000" stopOpacity="0.88" />
+        <Stop offset="45%" stopColor="#000000" stopOpacity="0.45" />
+        <Stop offset="80%" stopColor="#000000" stopOpacity="0.12" />
+        <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
       </LinearGradient>
     </Defs>
-    <Rect width="100%" height="100%" fill="url(#topCinematic)" />
+    <Rect x="0" y="0" width="100" height="100" fill="url(#topCinematic)" />
   </Svg>
 ));
 
-const BottomGradientOverlay = React.memo(() => (
-  <Svg height="100%" width="100%" style={StyleSheet.absoluteFillObject} pointerEvents="none">
+const BottomGradientOverlay = React.memo(({ screenWidth }) => (
+  <Svg
+    key={`bot-grad-${screenWidth}`}
+    width={screenWidth}
+    height={130}
+    viewBox="0 0 100 100"
+    preserveAspectRatio="none"
+    style={styles.bottomGradientSvg}
+    pointerEvents="none"
+  >
     <Defs>
-      <LinearGradient id="botCinematic" x1="0" y1="1" x2="0" y2="0">
-        <Stop offset="0" stopColor="#000000" stopOpacity="0.95" />
-        <Stop offset="1" stopColor="#000000" stopOpacity="0" />
+      <LinearGradient id="botCinematic" x1="0%" y1="100%" x2="0%" y2="0%">
+        <Stop offset="0%" stopColor="#000000" stopOpacity="0.90" />
+        <Stop offset="45%" stopColor="#000000" stopOpacity="0.45" />
+        <Stop offset="80%" stopColor="#000000" stopOpacity="0.12" />
+        <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
       </LinearGradient>
     </Defs>
-    <Rect width="100%" height="100%" fill="url(#botCinematic)" />
+    <Rect x="0" y="0" width="100" height="100" fill="url(#botCinematic)" />
   </Svg>
 ));
 
@@ -243,6 +265,10 @@ export default function Player({
   currentProfile: propCurrentProfile,
   activeProfileId: propActiveProfileId,
 }) {
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  // Always guarantee full landscape span even during the 1st frame of rotation
+  const landscapeWidth = Math.max(winWidth, winHeight);
+
   const params = route?.params || {};
 
   const { 
@@ -278,7 +304,6 @@ export default function Player({
     (paramStreamUrl && String(paramStreamUrl).startsWith('file://') ? paramStreamUrl : null) ||
     null;
 
-  // If Play.js already passed a remote streamUrl, proxy it immediately for 0ms boot!
   const initialPassedRemoteUrl =
     !initialOfflineUri && (paramStreamUrl || paramActiveUrl)
       ? buildProxiedUrl(paramStreamUrl || paramActiveUrl, params.referer || 'https://vidwish.live/')
@@ -610,11 +635,10 @@ export default function Player({
       try {
         let targetId = providerId || animeId || paramId;
 
-        // If targetId is a pure number (AniList ID), resolve the slug first
         if (!targetId || /^\d+$/.test(String(targetId))) {
           const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
           const searchJson = await searchRes.json();
-          const matches = searchJson?.data || [];
+          const matches = searchJson?.data || searchJson?.results || [];
           if (matches.length > 0) {
             const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
             if (exact?.id) targetId = exact.id;
@@ -629,7 +653,7 @@ export default function Player({
 
         const epRes = await fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
         const epJson = await epRes.json();
-        const list = epJson?.data || [];
+        const list = epJson?.data || epJson?.results || [];
         if (isMounted && Array.isArray(list)) {
           setCachedEpisodesList(list);
         }
@@ -690,7 +714,7 @@ export default function Player({
           (ep) =>
             (currentSlug && String(ep.slug) === String(currentSlug)) ||
             (ep.id && String(ep.id) === String(currentSlug)) ||
-            Number(ep.num) === Number(currentEpNum)
+            Number(ep.num || ep.episode_no) === Number(currentEpNum)
         );
 
         if (currentEpIndex !== -1) {
@@ -702,10 +726,11 @@ export default function Player({
 
         if (currentEpIndex !== -1 && currentEpIndex + 1 < cachedEpisodesList.length) {
           const nextEp = cachedEpisodesList[currentEpIndex + 1];
+          const nextNum = Number(nextEp.num || nextEp.episode_no || currentEpNum + 1);
           setNextEpisodeData({
-            num: Number(nextEp.num),
-            title: nextEp.title || `Episode ${nextEp.num}`,
-            slug: String(nextEp.slug || nextEp.id || nextEp.num),
+            num: nextNum,
+            title: nextEp.title || `Episode ${nextNum}`,
+            slug: String(nextEp.slug || nextEp.id || nextNum),
             isOffline: false,
           });
           setHasNextEpisode(true);
@@ -735,7 +760,7 @@ export default function Player({
       const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
       const localKey = `${currentProfileId || 'default'}_${epDocId}`;
 
-      // Step A: Instant Local Resume Lookup (Never blocks stream fetching!)
+      // Step A: Instant Local Resume Lookup
       let candidates = [];
       if (isInitialMountRef.current) {
         const paramRes = extractResumeMillis(params);
@@ -768,7 +793,6 @@ export default function Player({
       setPosMillis(targetResumeMs);
       setDurMillis(targetDurationMs);
 
-      // Async Firestore progress check in parallel (if user hasn't scrubbed yet)
       if (resolvedUid && currentProfileId && effectiveAnimeId && effectiveAnimeId !== 'unknown') {
         firestore()
           .collection('users')
@@ -892,7 +916,6 @@ export default function Player({
             setLoadingStream(false);
           }
 
-          // Load offline subtitles non-blockingly
           try {
             const subCandidate =
               targetLocalSub ||
@@ -922,74 +945,58 @@ export default function Player({
         }
       }
 
-      // Step C: BLAZE-X ONLINE STREAM ENGINE (/api/servers -> /api/stream -> Cloudflare Worker Proxy)
+      // Step C: BLAZE-X WEB-PARITY ONLINE STREAM ENGINE
       let effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
-      if (!effectiveId || !effectiveSlug) {
+      if (!effectiveId && !effectiveSlug) {
         if (isMounted && currentSessionId === episodeSessionIdRef.current) {
           setLoadingStream(false);
         }
         return;
       }
 
-      // If effectiveId is an AniList numeric ID, resolve the Anikoto slug first
-      if (/^\d+$/.test(String(effectiveId)) && animeTitle) {
+      // Fast probe helper matching your web's resolveEpisodeStreamAndRoute
+      const tryStreamUrl = async (url) => {
         try {
-          const sRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
-          const sJson = await sRes.json();
-          const matches = sJson?.data || [];
-          if (matches.length > 0) {
-            const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
-            if (exact?.id) {
-              effectiveId = exact.id;
-              if (isMounted) setProviderId(exact.id);
-            }
-          }
-        } catch (_) {}
-      }
-
-      // Mirror Blaze-X Web Player: Fetch available servers or use default priority order
-      let typeServers = ['hd-1', 'hd-2', 'vidstream-2'];
-      try {
-        const srvRes = await fetch(
-          `${VERCEL_API_BASE}/api/servers?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}`
-        );
-        const srvJson = await srvRes.json();
-        if (srvJson?.success && Array.isArray(srvJson.data) && srvJson.data.length > 0) {
-          const matchedType = srvJson.data
-            .filter((s) => s.type === selectedAudioType)
-            .map((s) => s.serverName)
-            .filter(Boolean);
-          if (matchedType.length > 0) {
-            typeServers = matchedType.includes('hd-1')
-              ? ['hd-1', ...matchedType.filter((s) => s !== 'hd-1')]
-              : matchedType;
-          }
-        }
-      } catch (_) {}
-
-      let finalStreamData = null;
-
-      for (const srv of typeServers) {
-        try {
-          const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${encodeURIComponent(srv)}&type=${selectedAudioType}`;
           const res = await fetch(url);
           const json = await res.json();
           const dataObj = json?.data || json?.results || {};
           const rawM3u8 = dataObj.m3u8 || dataObj.streamingLink || null;
-
           if (rawM3u8) {
-            finalStreamData = {
+            return {
               m3u8: rawM3u8,
               referer: dataObj.referer || 'https://vidwish.live/',
               intro: dataObj.intro || { start: 0, end: 0 },
               outro: dataObj.outro || { start: 0, end: 0 },
               subtitles: Array.isArray(dataObj.subtitles) ? dataObj.subtitles : [],
             };
-            break;
           }
         } catch (_) {}
+        return null;
+      };
+
+      let finalStreamData = null;
+      const defaultServers = ['hd-1', 'hd-2', 'vidstream-2'];
+
+      // 1. Try direct episode slug immediately (like web info.js: /api/stream?id=${episodeSlug})
+      for (const srv of defaultServers) {
+        finalStreamData = await tryStreamUrl(
+          `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`
+        );
+        if (finalStreamData) break;
+
+        finalStreamData = await tryStreamUrl(
+          `${VERCEL_API_BASE}/api/stream/fallback?id=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`
+        );
+        if (finalStreamData) break;
+
+        if (effectiveId) {
+          finalStreamData = await tryStreamUrl(
+            `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`
+          );
+          if (finalStreamData) break;
+        }
       }
 
       if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
@@ -1001,10 +1008,9 @@ export default function Player({
 
       const rawUrl = finalStreamData.m3u8;
       const targetReferer = finalStreamData.referer || 'https://vidwish.live/';
-      // Wrap in your Blaze-X Cloudflare Worker Proxy for instant playback!
       const proxiedMasterUrl = buildProxiedUrl(rawUrl, targetReferer);
 
-      // 1. IMMEDIATELY MOUNT VIDEO PLAYER (0ms delay - no waiting for quality or subtitle parsing!)
+      // 1. IMMEDIATELY MOUNT VIDEO PLAYER
       setIsOfflineMode(false);
       setRawMasterUrl(rawUrl);
       setStreamData(finalStreamData);
@@ -1013,7 +1019,7 @@ export default function Player({
       setActiveUrl(proxiedMasterUrl);
       setLoadingStream(false);
 
-      // 2. NON-BLOCKING BACKGROUND QUALITY PARSER (Via Cloudflare Worker Proxy)
+      // 2. NON-BLOCKING BACKGROUND QUALITY PARSER
       fetch(proxiedMasterUrl)
         .then((r) => r.text())
         .then((m3Text) => {
@@ -1052,7 +1058,7 @@ export default function Player({
         })
         .catch(() => {});
 
-      // 3. NON-BLOCKING BACKGROUND SUBTITLE PARSER (Via Cloudflare Worker Proxy)
+      // 3. NON-BLOCKING BACKGROUND SUBTITLE PARSER
       if (Array.isArray(finalStreamData.subtitles) && finalStreamData.subtitles.length > 0) {
         const captions = finalStreamData.subtitles.filter(
           (t) => !t.kind || t.kind === 'captions' || t.kind === 'subtitles'
@@ -1152,7 +1158,7 @@ export default function Player({
         }
       }
 
-      // 3. Throttled background save every 5 seconds (matches Blaze-X web player)
+      // 3. Throttled background save every 5 seconds
       if (
         hasRestoredPositionOnLoadRef.current &&
         st.isPlaying &&
@@ -1317,7 +1323,6 @@ export default function Player({
   const displayPosMillis = isSeeking ? seekPreviewMillis : posMillis;
   const displayDurMillis = durMillis || lastDurationRef.current || 100;
 
-  // Passed to PlayPauseSkip so the center spinner rotates while fetching or buffering
   const lightStatus = useMemo(
     () => ({
       isLoaded: isLoaded && !loadingStream,
@@ -1329,7 +1334,6 @@ export default function Player({
     [isLoaded, loadingStream, isBuffering, isPlaying, displayPosMillis, displayDurMillis]
   );
 
-  // Source builder compatible with Cloudflare Worker Proxy & local files
   const videoSource = useMemo(() => {
     if (!activeUrl) return null;
     const cleanUrl = String(activeUrl);
@@ -1374,7 +1378,6 @@ export default function Player({
           progressUpdateIntervalMillis={isOfflineMode ? 500 : 750}
           onPlaybackStatusUpdate={(st) => handlePlaybackStatusUpdate(st, activeSessionToken)}
           onError={() => {
-            // Automatic fallback if proxy or direct URL hiccups
             if (streamErrorRetryCount === 0 && rawMasterUrl && activeUrl !== rawMasterUrl) {
               setStreamErrorRetryCount(1);
               setActiveUrl(rawMasterUrl);
@@ -1469,11 +1472,11 @@ export default function Player({
         onSkipOutro={hasNextEpisode ? handleNextEpisode : null}
       />
 
-      {/* TOP & BOTTOM PLAYER UI LAYER (MOUNTED AT 0MS) */}
+      {/* TOP & BOTTOM PLAYER UI LAYER (FULL LANDSCAPE SPAN - ZERO SPLIT LINE) */}
       <Animated.View style={[styles.uiLayer, { opacity: uiOpacity }]} pointerEvents={showUI ? 'box-none' : 'none'}>
         {!isLocked && (
           <View style={styles.topBarWrapper} pointerEvents="box-none">
-            <TopGradientOverlay />
+            <TopGradientOverlay screenWidth={landscapeWidth} />
             <View style={styles.topBarContent} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
                 <TouchableOpacity
@@ -1518,7 +1521,7 @@ export default function Player({
         )}
 
         <View style={styles.bottomBarWrapper} pointerEvents="box-none">
-          <BottomGradientOverlay />
+          <BottomGradientOverlay screenWidth={landscapeWidth} />
           <View style={styles.bottomContent} pointerEvents="box-none">
             <View style={styles.bottomToolsRow} pointerEvents="box-none">
               <View style={styles.toolsLeft}>
@@ -1671,7 +1674,8 @@ const styles = StyleSheet.create({
   subtitleContainer: { position: 'absolute', width: '100%', alignItems: 'center', zIndex: 25, elevation: 10, paddingHorizontal: 25 },
   subtitleText: { fontWeight: '800', textAlign: 'center', textShadowColor: '#000', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
   uiLayer: { ...StyleSheet.absoluteFillObject, zIndex: 10, justifyContent: 'space-between' },
-  topBarWrapper: { width: '100%', position: 'absolute', top: 0, height: 120 },
+  topBarWrapper: { width: '100%', position: 'absolute', top: 0, left: 0, right: 0, height: 130 },
+  topGradientSvg: { position: 'absolute', top: 0, left: 0, right: 0 },
   topBarContent: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 28, paddingTop: 16 },
   topLeftGroup: { flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 16 },
   titleColumn: { paddingHorizontal: 10, flex: 1 },
@@ -1685,7 +1689,8 @@ const styles = StyleSheet.create({
   iconBtn: { padding: 4, opacity: 0.9 },
   hdBtn: { borderWidth: 1.5, borderColor: '#FFF', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, height: 20, justifyContent: 'center', alignItems: 'center' },
   hdBtnText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  bottomBarWrapper: { width: '100%', position: 'absolute', bottom: 0, height: 120, justifyContent: 'flex-end' },
+  bottomBarWrapper: { width: '100%', position: 'absolute', bottom: 0, left: 0, right: 0, height: 130, justifyContent: 'flex-end' },
+  bottomGradientSvg: { position: 'absolute', bottom: 0, left: 0, right: 0 },
   bottomContent: { paddingHorizontal: 28, paddingBottom: 16 },
   bottomToolsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 4 },
   toolsLeft: { flexDirection: 'row', alignItems: 'center' },
