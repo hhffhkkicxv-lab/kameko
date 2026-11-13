@@ -1,16 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   View, Text, StyleSheet, FlatList, 
-  TouchableOpacity, StatusBar, Platform, BackHandler, Modal
+  TouchableOpacity, BackHandler 
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
-import * as NavigationBar from 'expo-navigation-bar';
-import * as ScreenOrientation from 'expo-screen-orientation';
 import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 import ProxyImage from '../../components/ProxyImage';
-
-// --- STRICT STATIC IMPORT (CRASH-PROOF) ---
-import PlayerComponent from '../../pages/play/player';
 
 // --- STRICT PALETTE ---
 const BRAND_RED = '#E50914';
@@ -31,13 +26,27 @@ const formatSeconds = (seconds) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-const IconTrash = ({ size = 18, color = WHITE }) => (
+const IconClose = ({ size = 14, color = WHITE }) => (
+  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
+    <Path d="M18 6L6 18M6 6l12 12" />
+  </Svg>
+);
+
+const IconTrash = ({ size = 16, color = WHITE }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round">
     <Path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
   </Svg>
 );
 
-const ContinueCard = ({ item, isBulkDeleteMode, isSelectedForDelete, toggleBulkDeleteSelection, handleLongPressCard, onPlayDirect }) => {
+const ContinueCard = ({ 
+  item, 
+  isBulkDeleteMode, 
+  isSelectedForDelete, 
+  toggleBulkDeleteSelection, 
+  handleLongPressCard, 
+  onPlayDirect, 
+  onRequestSingleDelete 
+}) => {
   const animeId = String(item.animeId || item.id || '');
   const displayTitle = item.animeTitle || item.title || `Anime ${animeId}`;
   const epNum = item.episodeNum ?? item.lastWatchedEp ?? 1;
@@ -101,7 +110,7 @@ const ContinueCard = ({ item, isBulkDeleteMode, isSelectedForDelete, toggleBulkD
           <Rect width="100%" height="100%" fill="url(#botGrad)" />
         </Svg>
 
-        {isBulkDeleteMode && (
+        {isBulkDeleteMode ? (
           <View style={[styles.bulkCheckCircle, isSelectedForDelete && styles.bulkCheckCircleActive]}>
             {isSelectedForDelete && (
               <Svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={WHITE} strokeWidth="3">
@@ -109,6 +118,15 @@ const ContinueCard = ({ item, isBulkDeleteMode, isSelectedForDelete, toggleBulkD
               </Svg>
             )}
           </View>
+        ) : (
+          <TouchableOpacity 
+            style={styles.cutBtn} 
+            activeOpacity={0.75} 
+            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            onPress={() => onRequestSingleDelete(animeId, displayTitle, item._docIds || [animeId])}
+          >
+            <IconClose size={14} color={WHITE} />
+          </TouchableOpacity>
         )}
 
         <View style={styles.bottomData}>
@@ -132,17 +150,18 @@ const ContinueCard = ({ item, isBulkDeleteMode, isSelectedForDelete, toggleBulkD
   );
 };
 
-export default function ContinueWatching({ user, activeProfile, onSelectAnime }) {
+export default function ContinueWatching({ 
+  user, 
+  activeProfile, 
+  onSelectAnime, 
+  onPlayDirect, 
+  onRequestDeleteDialog 
+}) {
   const [historyList, setHistoryList] = useState([]);
   const [loading, setLoading] = useState(true);
   
-  // Bulk Delete State
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
-  const [deleteAllModalVisible, setDeleteAllModalVisible] = useState(false); 
-
-  // Direct Fullscreen Player State
-  const [directPlaybackParams, setDirectPlaybackParams] = useState(null);
 
   const deletedIdsRef = useRef(new Set());
   const backdropCacheRef = useRef({});
@@ -225,12 +244,25 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
 
         setHistoryList(enriched.filter((i) => !deletedIdsRef.current.has(String(i.animeId))));
         setLoading(false);
-      }, (err) => {
+      }, () => {
         setLoading(false);
       });
 
     return () => unsubscribe();
   }, [user?.uid, activeProfile?.id]);
+
+  useEffect(() => {
+    const onHardwareBack = () => {
+      if (isBulkDeleteMode) {
+        setIsBulkDeleteMode(false);
+        setBulkDeleteSelectedMap({});
+        return true;
+      }
+      return false;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
+    return () => sub.remove();
+  }, [isBulkDeleteMode]);
 
   const handleLongPressCard = (animeId) => {
     setIsBulkDeleteMode(true);
@@ -246,24 +278,19 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
     });
   };
 
-  const executeDeleteSelected = async () => {
-    const selectedIds = Object.keys(bulkDeleteSelectedMap).filter(k => bulkDeleteSelectedMap[k]);
-    if (selectedIds.length === 0) {
-      setDeleteAllModalVisible(false);
-      return;
-    }
-
-    setDeleteAllModalVisible(false);
+  const executeDeleteAnimeIds = async (targetIds) => {
+    const cleanIds = (targetIds || []).map(String).filter(Boolean);
+    if (cleanIds.length === 0) return;
 
     const allDocIdsToDelete = new Set();
     historyList.forEach(item => {
-      if (selectedIds.includes(String(item.animeId))) {
-        deletedIdsRef.current.add(String(item.animeId)); 
+      if (cleanIds.includes(String(item.animeId))) {
+        deletedIdsRef.current.add(String(item.animeId));
         (item._docIds || [item.animeId]).forEach(id => allDocIdsToDelete.add(id));
       }
     });
 
-    setHistoryList((prev) => prev.filter((item) => !selectedIds.includes(String(item.animeId))));
+    setHistoryList((prev) => prev.filter((item) => !cleanIds.includes(String(item.animeId))));
     setIsBulkDeleteMode(false);
     setBulkDeleteSelectedMap({});
 
@@ -278,8 +305,7 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         .collection(WATCH_HISTORY_COLLECTION);
 
       const batch = firestore().batch();
-      
-      for (const cleanId of selectedIds) {
+      for (const cleanId of cleanIds) {
         allDocIdsToDelete.add(cleanId);
         const matchingSnap = await colRef.where('animeId', '==', cleanId).get().catch(() => null);
         if (matchingSnap && !matchingSnap.empty) {
@@ -292,15 +318,14 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
       });
 
       await batch.commit();
-    } catch (err) {} finally {
+    } catch (_) {} finally {
       setTimeout(() => {
-        selectedIds.forEach(id => deletedIdsRef.current.delete(String(id)));
+        cleanIds.forEach(id => deletedIdsRef.current.delete(String(id)));
       }, 4000);
     }
   };
 
   const executeDeleteAll = async () => {
-    setDeleteAllModalVisible(false);
     setHistoryList([]);
     setIsBulkDeleteMode(false);
     setBulkDeleteSelectedMap({});
@@ -321,223 +346,188 @@ export default function ContinueWatching({ user, activeProfile, onSelectAnime })
         batch.delete(doc.ref);
       });
       await batch.commit();
-    } catch (e) {} finally {
+    } catch (_) {} finally {
       setTimeout(() => {
         deletedIdsRef.current.clear();
       }, 4000);
     }
   };
 
-  const handleLaunchDirectPlayer = async (episodePayload) => {
-    if (!PlayerComponent) {
-      if (onSelectAnime) onSelectAnime(episodePayload);
-      return;
+  const triggerSingleDeletePopup = (animeId, title) => {
+    if (onRequestDeleteDialog) {
+      onRequestDeleteDialog({
+        title: `Remove ${title}`,
+        message: `Are you sure you want to remove "${title}" from your continue watching list?`,
+        confirmText: 'Delete',
+        onConfirm: () => executeDeleteAnimeIds([animeId]),
+      });
+    } else {
+      executeDeleteAnimeIds([animeId]);
     }
-
-    try {
-      StatusBar.setHidden(true, 'none');
-      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-        await NavigationBar.setVisibilityAsync('hidden');
-        await NavigationBar.setBehaviorAsync('overlay-swipe');
-      }
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
-    } catch (_) {}
-
-    setDirectPlaybackParams({
-      ...episodePayload,
-      userUid: user?.uid || null,
-      uid: user?.uid || null,
-      user: user || null,
-      activeProfileId: activeProfile?.id || null,
-      profileId: activeProfile?.id || null,
-      activeProfile: activeProfile || null,
-      currentProfile: activeProfile || null,
-    });
   };
 
-  const handleCloseDirectPlayer = async () => {
-    setDirectPlaybackParams(null);
-    try {
-      StatusBar.setHidden(true, 'none');
-      if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-        await NavigationBar.setVisibilityAsync('hidden');
-      }
-      await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
-    } catch (_) {}
+  const triggerSelectedDeletePopup = (selectedIds) => {
+    if (selectedIds.length === 0) return;
+    if (onRequestDeleteDialog) {
+      onRequestDeleteDialog({
+        title: selectedIds.length === 1 ? 'Delete Selected Anime' : `Delete ${selectedIds.length} Selected Anime`,
+        message: `Are you sure you want to permanently remove ${selectedIds.length === 1 ? 'this item' : `these ${selectedIds.length} items`} from your watch history?`,
+        confirmText: `Delete (${selectedIds.length})`,
+        onConfirm: () => executeDeleteAnimeIds(selectedIds),
+      });
+    } else {
+      executeDeleteAnimeIds(selectedIds);
+    }
   };
 
-  useEffect(() => {
-    const onHardwareBack = () => {
-      if (directPlaybackParams) { handleCloseDirectPlayer(); return true; }
-      if (deleteAllModalVisible) { setDeleteAllModalVisible(false); return true; }
-      if (isBulkDeleteMode) { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); return true; }
-      return false;
-    };
-    const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
-    return () => sub.remove();
-  }, [directPlaybackParams, deleteAllModalVisible, isBulkDeleteMode]);
+  const triggerDeleteAllPopup = () => {
+    if (onRequestDeleteDialog) {
+      onRequestDeleteDialog({
+        title: 'Clear Watch History',
+        message: 'Are you sure you want to completely clear all items from your continue watching list?',
+        confirmText: 'Delete All',
+        onConfirm: executeDeleteAll,
+      });
+    } else {
+      executeDeleteAll();
+    }
+  };
 
+  if (loading || historyList.length === 0) return null;
 
-  if (loading || (historyList.length === 0 && !directPlaybackParams)) return null;
-
-  const selectedCount = Object.keys(bulkDeleteSelectedMap).filter(k => bulkDeleteSelectedMap[k]).length;
+  const selectedIds = Object.keys(bulkDeleteSelectedMap).filter(k => bulkDeleteSelectedMap[k]);
+  const selectedCount = selectedIds.length;
   const isAllSelected = historyList.length > 0 && selectedCount === historyList.length;
 
   return (
     <View style={styles.sectionContainer}>
-      {historyList.length > 0 && (
-        <>
-          <View style={styles.headerRow}>
-            <Text style={styles.sectionTitle}>Continue Watching</Text>
-            <TouchableOpacity 
-              style={styles.deleteAllBtn} 
-              activeOpacity={0.7} 
-              onPress={() => {
-                if (isBulkDeleteMode) {
+      <View style={styles.headerRow}>
+        <Text style={styles.sectionTitle}>Continue Watching</Text>
+
+        <View style={styles.headerRightActions}>
+          {isBulkDeleteMode ? (
+            <>
+              <TouchableOpacity 
+                style={styles.headerActionPill} 
+                activeOpacity={0.75}
+                onPress={() => {
                   if (isAllSelected) setBulkDeleteSelectedMap({});
                   else {
                     const allMap = {};
                     historyList.forEach(item => { allMap[item.animeId] = true; });
                     setBulkDeleteSelectedMap(allMap);
                   }
-                } else {
-                  setDeleteAllModalVisible('all'); 
-                }
-              }}
-            >
-              <Text style={styles.deleteAllText}>
-                {isBulkDeleteMode ? (isAllSelected ? 'Deselect All' : 'Select All') : 'Delete All'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <FlatList
-            data={historyList}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            keyExtractor={(item) => String(item.animeId)}
-            contentContainerStyle={styles.listPadding}
-            snapToInterval={280} 
-            decelerationRate="fast"
-            renderItem={({ item }) => (
-              <ContinueCard 
-                item={item} 
-                isBulkDeleteMode={isBulkDeleteMode}
-                isSelectedForDelete={Boolean(bulkDeleteSelectedMap[item.animeId])}
-                toggleBulkDeleteSelection={toggleBulkDeleteSelection}
-                handleLongPressCard={handleLongPressCard}
-                onPlayDirect={handleLaunchDirectPlayer}
-              />
-            )}
-          />
-
-          {isBulkDeleteMode && (
-            <View style={styles.bulkDeleteFloatingBar}>
-              <View style={styles.bulkDeleteBarTopRow}>
-                <Text style={styles.bulkDeleteCountText}>
-                  {selectedCount} Selected
-                </Text>
-                <TouchableOpacity style={styles.bulkCancelBtn} onPress={() => { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); }}>
-                  <Text style={styles.bulkCancelText}>Cancel</Text>
-                </TouchableOpacity>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.bulkConfirmDeleteBtn, selectedCount === 0 && { opacity: 0.45 }]}
-                disabled={selectedCount === 0}
-                activeOpacity={0.85}
-                onPress={() => setDeleteAllModalVisible('selected')}
+                }}
               >
-                <IconTrash size={18} color={WHITE} />
-                <Text style={styles.bulkConfirmDeleteText}>
-                  Delete Selected ({selectedCount})
+                <Text style={styles.headerActionPillText}>
+                  {isAllSelected ? 'Deselect All' : 'Select All'}
                 </Text>
               </TouchableOpacity>
-            </View>
-          )}
-        </>
-      )}
 
-      {/* REUSABLE TRANSPARENT MODAL OVERLAY FOR DELETE POPUPS (Breaks out of ScrollView perfectly) */}
-      <Modal
-        visible={Boolean(deleteAllModalVisible)}
-        transparent={true}
-        animationType="fade"
-        statusBarTranslucent={true}
-        onRequestClose={() => setDeleteAllModalVisible(false)}
-      >
-        <View style={styles.absoluteOverlay}>
-          <TouchableOpacity style={styles.overlayBackground} activeOpacity={1} onPress={() => setDeleteAllModalVisible(false)} />
-          <View style={styles.bottomSheetWrapper}>
-            <View style={styles.bottomSheetCard}>
-              <View style={{ alignItems: 'center' }}>
-                <View style={styles.confirmIconWrap}><IconTrash size={24} color={PURE_RED} /></View>
-                <Text style={styles.confirmPopupTitle}>
-                  {deleteAllModalVisible === 'all' ? 'Clear Watch History' : 'Delete Selected Anime'}
-                </Text>
-                <Text style={styles.confirmPopupMessage}>
-                  {deleteAllModalVisible === 'all' 
-                    ? 'Are you sure you want to completely clear your continue watching history?' 
-                    : `Remove these ${selectedCount} items from your watch history?`}
-                </Text>
-                <View style={styles.confirmBtnsRow}>
-                  <TouchableOpacity style={styles.confirmCancelBtn} activeOpacity={0.85} onPress={() => setDeleteAllModalVisible(false)}>
-                    <Text style={styles.confirmCancelBtnText}>Cancel</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={styles.confirmDangerBtn} 
-                    activeOpacity={0.85} 
-                    onPress={deleteAllModalVisible === 'all' ? executeDeleteAll : executeDeleteSelected}
-                  >
-                    <Text style={styles.confirmDangerBtnText}>Delete</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Modal>
+              <TouchableOpacity 
+                style={[styles.headerDeleteConfirmPill, selectedCount === 0 && { opacity: 0.4 }]} 
+                disabled={selectedCount === 0}
+                activeOpacity={0.8}
+                onPress={() => triggerSelectedDeletePopup(selectedIds)}
+              >
+                <IconTrash size={14} color={WHITE} />
+                <Text style={styles.headerDeleteConfirmText}>Delete ({selectedCount})</Text>
+              </TouchableOpacity>
 
-      {/* FULLSCREEN PLAYER MODAL (Breaks out of ScrollView perfectly) */}
-      <Modal
-        visible={Boolean(directPlaybackParams)}
-        transparent={true}
-        animationType="fade"
-        statusBarTranslucent={true}
-        supportedOrientations={['portrait', 'landscape']}
-        onRequestClose={handleCloseDirectPlayer}
-      >
-        <View style={styles.fullScreenPlayerOverlay}>
-          <StatusBar hidden={true} translucent={true} backgroundColor="transparent" />
-          {PlayerComponent && (
-            <PlayerComponent
-              route={{ params: directPlaybackParams }}
-              navigation={{ goBack: handleCloseDirectPlayer }}
-              user={user}
-              activeProfile={activeProfile}
-              activeProfileId={activeProfile?.id}
-            />
+              <TouchableOpacity 
+                style={styles.headerCancelPill} 
+                activeOpacity={0.75}
+                onPress={() => {
+                  setIsBulkDeleteMode(false);
+                  setBulkDeleteSelectedMap({});
+                }}
+              >
+                <Text style={styles.headerCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <TouchableOpacity 
+              style={styles.deleteAllBtn} 
+              activeOpacity={0.7} 
+              onPress={triggerDeleteAllPopup}
+            >
+              <Text style={styles.deleteAllText}>Delete All</Text>
+            </TouchableOpacity>
           )}
         </View>
-      </Modal>
+      </View>
+
+      <FlatList
+        data={historyList}
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        keyExtractor={(item) => String(item.animeId)}
+        contentContainerStyle={styles.listPadding}
+        snapToInterval={280} 
+        decelerationRate="fast"
+        renderItem={({ item }) => (
+          <ContinueCard 
+            item={item} 
+            isBulkDeleteMode={isBulkDeleteMode}
+            isSelectedForDelete={Boolean(bulkDeleteSelectedMap[item.animeId])}
+            toggleBulkDeleteSelection={toggleBulkDeleteSelection}
+            handleLongPressCard={handleLongPressCard}
+            onPlayDirect={(payload) => {
+              if (onPlayDirect) onPlayDirect(payload);
+              else if (onSelectAnime) onSelectAnime(payload);
+            }}
+            onRequestSingleDelete={triggerSingleDeletePopup}
+          />
+        )}
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   sectionContainer: { marginTop: 5, marginBottom: 25 },
-  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 12 },
+  headerRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'space-between', 
+    paddingHorizontal: 20, 
+    marginBottom: 12 
+  },
   sectionTitle: { color: WHITE, fontSize: 18, fontWeight: '800', borderLeftWidth: 3, borderLeftColor: BRAND_RED, paddingLeft: 8 },
+  headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   deleteAllBtn: { paddingVertical: 4, paddingHorizontal: 8 },
   deleteAllText: { color: TEXT_GREY, fontSize: 13, fontWeight: '700' },
+
+  headerActionPill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, borderWidth: 1, borderColor: PURE_RED },
+  headerActionPillText: { color: PURE_RED, fontSize: 11, fontWeight: '800' },
+  headerDeleteConfirmPill: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: PURE_RED },
+  headerDeleteConfirmText: { color: WHITE, fontSize: 11, fontWeight: '900' },
+  headerCancelPill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
+  headerCancelText: { color: WHITE, fontSize: 11, fontWeight: '700' },
+
   listPadding: { paddingHorizontal: 20 },
 
   cardWrapper: { width: 265, height: 150, marginRight: 15 },
   cardContent: { flex: 1, backgroundColor: DARK_GREY, borderRadius: 8, borderWidth: 1, borderColor: BORDER_GREY, overflow: 'hidden' },
-  cardSelectedDelete: { borderColor: PURE_RED, backgroundColor: DARK_GREY },
+  cardSelectedDelete: { borderColor: PURE_RED, borderWidth: 1.5 },
   backdropImage: { width: '100%', height: '100%', opacity: 0.85 },
 
-  bulkCheckCircle: { position: 'absolute', top: 8, right: 8, width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: 'rgba(255,255,255,0.6)', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
+  cutBtn: { 
+    position: 'absolute', 
+    top: 8, 
+    right: 8, 
+    width: 28, 
+    height: 28, 
+    backgroundColor: 'rgba(0,0,0,0.65)', 
+    borderRadius: 14, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    zIndex: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)'
+  },
+
+  bulkCheckCircle: { position: 'absolute', top: 8, right: 8, width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: 'rgba(255,255,255,0.7)', backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', zIndex: 10 },
   bulkCheckCircleActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
 
   bottomData: { position: 'absolute', bottom: 0, width: '100%', padding: 12, paddingTop: 30, zIndex: 6 },
@@ -548,27 +538,4 @@ const styles = StyleSheet.create({
 
   progressBarBg: { width: '100%', height: 3, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: BRAND_RED, borderRadius: 2 },
-
-  bulkDeleteFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: BLACK, borderTopWidth: 1.5, borderTopColor: BORDER_GREY, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 18, zIndex: 900, elevation: 25 },
-  bulkDeleteBarTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  bulkDeleteCountText: { color: WHITE, fontSize: 13, fontWeight: '800' },
-  bulkCancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: DARK_GREY },
-  bulkCancelText: { color: WHITE, fontSize: 11, fontWeight: '700' },
-  bulkConfirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 13, borderRadius: 6 },
-  bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900' },
-
-  absoluteOverlay: { flex: 1, justifyContent: 'flex-end', alignItems: 'center' },
-  overlayBackground: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.85)' },
-  bottomSheetWrapper: { width: '100%', paddingBottom: 0 },
-  bottomSheetCard: { width: '100%', backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 22, paddingTop: 24, paddingBottom: 34, borderTopWidth: 1, borderColor: BORDER_GREY, alignItems: 'center' },
-  confirmIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
-  confirmPopupTitle: { color: WHITE, fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
-  confirmPopupMessage: { color: TEXT_GREY, fontSize: 13, lineHeight: 19, fontWeight: '500', textAlign: 'center', marginTop: 8, marginBottom: 20 },
-  confirmBtnsRow: { flexDirection: 'row', width: '100%', gap: 12 },
-  confirmCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center' },
-  confirmCancelBtnText: { color: WHITE, fontSize: 13, fontWeight: '700' },
-  confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center' },
-  confirmDangerBtnText: { color: WHITE, fontSize: 13, fontWeight: '800' },
-
-  fullScreenPlayerOverlay: { flex: 1, backgroundColor: BLACK },
 });
