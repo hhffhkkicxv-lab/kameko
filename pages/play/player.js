@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, Animated, 
-  StatusBar, BackHandler, Platform, AppState, Dimensions, TouchableWithoutFeedback 
+  StatusBar, BackHandler, Platform, AppState 
 } from 'react-native';
 import { Video, ResizeMode, Audio } from 'expo-av';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -12,6 +12,7 @@ import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 
+// --- ALL EXTERNAL PLAYER SCRIPTS KEPT 100% INTACT ---
 import AspectRatioButton from './aspect-ratio';
 import LockButton from './lock';
 import VideoQualitySheet from './video_quality';
@@ -19,10 +20,12 @@ import SubtitleSheet from './subtitle';
 import AudioSheet from './audio';
 import SpeedSheet from './speed';
 import SkipIntroOutro from './intro-outro';
+import PlayPauseSkip from './play-pause-skip';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const BRAND_RED = '#E50914';
 const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
+// EXACT CLOUDFLARE WORKER PROXY FROM YOUR BLAZE-X WEB PLAYER
+const CUSTOM_PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
 const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
@@ -33,6 +36,17 @@ const LOCAL_WATCH_CACHE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_watch_progress_cache.json`
   : null;
 
+// Helper to wrap any M3U8 or VTT URL in your Blaze-X Cloudflare Worker Proxy
+const buildProxiedUrl = (rawUrl, referer = 'https://vidwish.live/') => {
+  if (!rawUrl) return null;
+  const str = String(rawUrl);
+  if (str.startsWith('file://') || str.includes('prashant-yash69.workers.dev')) {
+    return str;
+  }
+  return `${CUSTOM_PROXY_URL}${encodeURIComponent(str)}&referer=${encodeURIComponent(referer)}`;
+};
+
+// --- SUBTITLE (.VTT / .SRT) PARSER ---
 const parseTimeToSeconds = (timeStr) => {
   const cleanTimeStr = (timeStr || '').trim().split(/\s+/)[0].replace(',', '.');
   const parts = cleanTimeStr.split(':');
@@ -179,26 +193,6 @@ const IconBack = React.memo(({ size = 28 }) => (
     <Path d="M19 12H5M12 19l-7-7 7-7" />
   </Svg>
 ));
-const IconPlay = ({ size = 64 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="#FFFFFF">
-    <Path d="M8 5v14l11-7z" />
-  </Svg>
-);
-const IconPause = ({ size = 64 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="#FFFFFF">
-    <Path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
-  </Svg>
-);
-const IconBackward = ({ size = 42 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="#FFFFFF">
-    <Path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z" />
-  </Svg>
-);
-const IconForward = ({ size = 42 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="#FFFFFF">
-    <Path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z" />
-  </Svg>
-);
 const IconSubs = React.memo(({ size = 24, color = "#FFF" }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
     <Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
@@ -284,6 +278,12 @@ export default function Player({
     (paramStreamUrl && String(paramStreamUrl).startsWith('file://') ? paramStreamUrl : null) ||
     null;
 
+  // If Play.js already passed a remote streamUrl, proxy it immediately for 0ms boot!
+  const initialPassedRemoteUrl =
+    !initialOfflineUri && (paramStreamUrl || paramActiveUrl)
+      ? buildProxiedUrl(paramStreamUrl || paramActiveUrl, params.referer || 'https://vidwish.live/')
+      : null;
+
   const [isOfflineMode, setIsOfflineMode] = useState(Boolean(paramIsOffline || initialOfflineUri));
   const [offlineStreamUri, setOfflineStreamUri] = useState(initialOfflineUri);
   const [offlineMetaUri, setOfflineMetaUri] = useState(paramLocalMetaUri || null);
@@ -323,7 +323,12 @@ export default function Player({
             return;
           }
         }
-        const profSnap = await firestore().collection('users').doc(String(uid)).collection('profiles').limit(1).get();
+        const profSnap = await firestore()
+          .collection('users')
+          .doc(String(uid))
+          .collection('profiles')
+          .limit(1)
+          .get();
         if (!profSnap.empty && isMounted) {
           setCurrentProfileId(String(profSnap.docs[0].id));
         }
@@ -340,20 +345,11 @@ export default function Player({
   const videoRef = useRef(null);
   const uiOpacity = useRef(new Animated.Value(1)).current;
   const nextEpOpacity = useRef(new Animated.Value(0.25)).current;
-  
-  // Double tap animations
-  const leftAnim = useRef(new Animated.Value(0)).current;
-  const rightAnim = useRef(new Animated.Value(0)).current;
-  const rotateLeft = useRef(new Animated.Value(0)).current;
-  const rotateRight = useRef(new Animated.Value(0)).current;
-  const [skipDirection, setSkipDirection] = useState(null);
-  
-  const spinValue = useRef(new Animated.Value(0)).current;
-  const spinAnimation = useRef(null);
 
   const initialParamResume = useMemo(() => extractResumeMillis(params), []);
 
   const [isLoaded, setIsLoaded] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(true);
   const [isPlaying, setIsPlaying] = useState(true);
   const [initialStartMillis, setInitialStartMillis] = useState(initialParamResume.resumeMs);
   const [posMillis, setPosMillis] = useState(initialParamResume.resumeMs);
@@ -377,22 +373,24 @@ export default function Player({
   const lastDurationRef = useRef(initialParamResume.durationMs);
   const lastSavedSecRef = useRef(Math.floor(initialParamResume.resumeMs / 1000));
   const lastRenderedSecRef = useRef(-1);
-  
-  const lastTapRef = useRef(0);
-  const singleTapTimer = useRef(null);
-  const appState = useRef(AppState.currentState);
 
   const [providerId, setProviderId] = useState(params.providerId || null);
   const [cachedEpisodesList, setCachedEpisodesList] = useState([]);
   const [hasNextEpisode, setHasNextEpisode] = useState(false);
   const [nextEpisodeData, setNextEpisodeData] = useState(null);
 
-  const [streamData, setStreamData] = useState(null);
-  const [loadingStream, setLoadingStream] = useState(true);
-  const [activeUrl, setActiveUrl] = useState(null); 
-  const [qualityList, setQualityList] = useState([]);
+  const [streamData, setStreamData] = useState(
+    initialPassedRemoteUrl ? { m3u8: initialPassedRemoteUrl, referer: params.referer || 'https://vidwish.live/' } : null
+  );
+  const [loadingStream, setLoadingStream] = useState(!initialPassedRemoteUrl && !initialOfflineUri);
+  const [activeUrl, setActiveUrl] = useState(initialOfflineUri || initialPassedRemoteUrl || null);
+  const [rawMasterUrl, setRawMasterUrl] = useState(paramStreamUrl || paramActiveUrl || null);
+  const [qualityList, setQualityList] = useState(
+    initialPassedRemoteUrl ? [{ label: 'Auto', uri: initialPassedRemoteUrl }] : []
+  );
   const [selectedQuality, setSelectedQuality] = useState('Auto');
   const [currentAutoRes, setCurrentAutoRes] = useState('1080p');
+  const [streamErrorRetryCount, setStreamErrorRetryCount] = useState(0);
 
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
   const [parsedSubs, setParsedSubs] = useState([]);
@@ -414,6 +412,7 @@ export default function Player({
   const subtitlesEnabledRef = useRef(subtitlesEnabled);
   const parsedSubsRef = useRef(parsedSubs);
   const currentSubTextRef = useRef(currentSubText);
+  const appStateRef = useRef(AppState.currentState);
 
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
   useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
@@ -439,9 +438,29 @@ export default function Player({
       audioType: String(selectedAudioType || 'sub'),
     };
   }, [
-    resolvedUid, currentProfileId, effectiveAnimeId, animeTitle, 
-    currentEpNum, currentEpTitle, currentSlug, resolvedBackdrop, selectedAudioType
+    resolvedUid,
+    currentProfileId,
+    effectiveAnimeId,
+    animeTitle,
+    currentEpNum,
+    currentEpTitle,
+    currentSlug,
+    resolvedBackdrop,
+    selectedAudioType,
   ]);
+
+  // --- AUTO-PAUSE ON PHONE CALL / BACKGROUND ---
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (appStateRef.current.match(/active/) && nextState.match(/inactive|background/)) {
+        if (videoRef.current && isPlayingRef.current) {
+          videoRef.current.pauseAsync().catch(() => {});
+        }
+      }
+      appStateRef.current = nextState;
+    });
+    return () => sub.remove();
+  }, []);
 
   const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false, customMeta = null) => {
     const meta = customMeta || latestMetaRef.current;
@@ -509,9 +528,23 @@ export default function Player({
       },
     };
 
-    const currentProfileRef = firestore().collection('users').doc(String(meta.uid)).collection('profiles').doc(String(meta.profileId));
-    currentProfileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).set(episodePayload, { merge: true }).catch(() => {});
-    currentProfileRef.collection(WATCH_HISTORY_COLLECTION).doc(String(meta.animeId)).set(seriesPayload, { merge: true }).catch(() => {});
+    const currentProfileRef = firestore()
+      .collection('users')
+      .doc(String(meta.uid))
+      .collection('profiles')
+      .doc(String(meta.profileId));
+
+    currentProfileRef
+      .collection(WATCH_HISTORY_COLLECTION)
+      .doc(epDocId)
+      .set(episodePayload, { merge: true })
+      .catch(() => {});
+
+    currentProfileRef
+      .collection(WATCH_HISTORY_COLLECTION)
+      .doc(String(meta.animeId))
+      .set(seriesPayload, { merge: true })
+      .catch(() => {});
   }, []);
 
   const navigationRef = useRef(navigation);
@@ -519,26 +552,19 @@ export default function Player({
   useEffect(() => { navigationRef.current = navigation; }, [navigation]);
   useEffect(() => { saveHistoryRef.current = saveWatchHistory; }, [saveWatchHistory]);
 
-  // Pause on Phone Call / Backgrounding
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      if (appState.current.match(/active/) && nextAppState.match(/inactive|background/)) {
-        if (videoRef?.current && isPlayingRef.current) {
-          videoRef.current.pauseAsync();
-        }
-      }
-      appState.current = nextAppState;
-    });
-    return () => subscription.remove();
-  }, []);
-
+  // 1. Full Screen Immersive Lock & Hardware Back Handler
   useEffect(() => {
     const enterImmersiveLandscape = async () => {
       try {
-        await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
+        await Audio.setAudioModeAsync({
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: false,
+          shouldDuckAndroid: true,
+        });
         StatusBar.setHidden(true, 'none');
         if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
           await NavigationBar.setVisibilityAsync('hidden');
+          await NavigationBar.setBehaviorAsync('overlay-swipe');
         }
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
       } catch (_) {}
@@ -575,6 +601,7 @@ export default function Player({
     };
   }, []);
 
+  // 2. Fetch Series Episodes List ONCE in Background (For Next Episode Button)
   useEffect(() => {
     let isMounted = true;
     if (isOfflineMode || !animeTitle) return;
@@ -582,16 +609,21 @@ export default function Player({
     const fetchSeriesEpisodesOnce = async () => {
       try {
         let targetId = providerId || animeId || paramId;
-        const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
-        const searchJson = await searchRes.json();
-        const matches = searchJson?.data || [];
-        if (matches.length > 0) {
-          const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
-          if (exact?.id) targetId = exact.id;
-          if (!resolvedBackdrop && (exact.poster || exact.image) && isMounted) {
-            setResolvedBackdrop(exact.poster || exact.image);
+
+        // If targetId is a pure number (AniList ID), resolve the slug first
+        if (!targetId || /^\d+$/.test(String(targetId))) {
+          const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
+          const searchJson = await searchRes.json();
+          const matches = searchJson?.data || [];
+          if (matches.length > 0) {
+            const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
+            if (exact?.id) targetId = exact.id;
+            if (!resolvedBackdrop && (exact.poster || exact.image) && isMounted) {
+              setResolvedBackdrop(exact.poster || exact.image);
+            }
           }
         }
+
         if (isMounted && targetId) setProviderId(targetId);
         if (!targetId) return;
 
@@ -608,20 +640,27 @@ export default function Player({
     return () => { isMounted = false; };
   }, [animeTitle, isOfflineMode]);
 
+  // 2.2 Resolve Next Episode Pointer
   useEffect(() => {
     let isMounted = true;
+
     const updateNextEpisodePointer = async () => {
       try {
         const localDownloads = await readLocalDownloadsQueue();
         const nextOfflineEp = localDownloads.find((d) => {
           const uriCandidate = d.localUri || d.fileUri || d.streamUri;
-          const isValidOffline = (d.status === 'completed' || d.status === 'downloaded' || Boolean(uriCandidate)) && Boolean(uriCandidate);
-          const sameAnime = String(d.animeId) === String(effectiveAnimeId) || String(d.animeTitle || '').toLowerCase() === String(animeTitle || '').toLowerCase();
+          const isValidOffline =
+            (d.status === 'completed' || d.status === 'downloaded' || Boolean(uriCandidate)) &&
+            Boolean(uriCandidate);
+          const sameAnime =
+            String(d.animeId) === String(effectiveAnimeId) ||
+            String(d.animeTitle || '').toLowerCase() === String(animeTitle || '').toLowerCase();
           return isValidOffline && sameAnime && Number(d.episodeNum) === Number(currentEpNum) + 1;
         });
 
         if (nextOfflineEp && isMounted) {
-          const resolvedNextUri = nextOfflineEp.localUri || nextOfflineEp.fileUri || nextOfflineEp.streamUri;
+          const resolvedNextUri =
+            nextOfflineEp.localUri || nextOfflineEp.fileUri || nextOfflineEp.streamUri;
           setNextEpisodeData({
             num: Number(nextOfflineEp.episodeNum),
             title: nextOfflineEp.episodeTitle || `Episode ${nextOfflineEp.episodeNum}`,
@@ -648,7 +687,10 @@ export default function Player({
 
       if (cachedEpisodesList.length > 0 && isMounted) {
         const currentEpIndex = cachedEpisodesList.findIndex(
-          (ep) => (currentSlug && String(ep.slug) === String(currentSlug)) || (ep.id && String(ep.id) === String(currentSlug)) || Number(ep.num) === Number(currentEpNum)
+          (ep) =>
+            (currentSlug && String(ep.slug) === String(currentSlug)) ||
+            (ep.id && String(ep.id) === String(currentSlug)) ||
+            Number(ep.num) === Number(currentEpNum)
         );
 
         if (currentEpIndex !== -1) {
@@ -661,8 +703,10 @@ export default function Player({
         if (currentEpIndex !== -1 && currentEpIndex + 1 < cachedEpisodesList.length) {
           const nextEp = cachedEpisodesList[currentEpIndex + 1];
           setNextEpisodeData({
-            num: Number(nextEp.num), title: nextEp.title || `Episode ${nextEp.num}`,
-            slug: String(nextEp.slug || nextEp.id || nextEp.num), isOffline: false,
+            num: Number(nextEp.num),
+            title: nextEp.title || `Episode ${nextEp.num}`,
+            slug: String(nextEp.slug || nextEp.id || nextEp.num),
+            isOffline: false,
           });
           setHasNextEpisode(true);
           Animated.timing(nextEpOpacity, { toValue: 1, duration: 250, useNativeDriver: true }).start();
@@ -672,24 +716,26 @@ export default function Player({
         }
       }
     };
+
     updateNextEpisodePointer();
     return () => { isMounted = false; };
   }, [currentEpNum, currentSlug, cachedEpisodesList, isOfflineMode, effectiveAnimeId, animeTitle]);
 
-  // --- FAST 0MS DELAY STREAM RESOLVER ---
+  // =========================================================================
+  // 3. BLAZE-X INSTANT STREAM & SUBTITLE ENGINE (0MS UI BLOCKING)
+  // =========================================================================
   useEffect(() => {
     let isMounted = true;
     const currentSessionId = ++episodeSessionIdRef.current;
     hasRestoredPositionOnLoadRef.current = false;
 
     const loadEpisodeProgressAndStream = async () => {
-      setLoadingStream(true);
-      setActiveUrl(null);
-      setIsLoaded(false);
+      setIsBuffering(true);
 
       const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
       const localKey = `${currentProfileId || 'default'}_${epDocId}`;
 
+      // Step A: Instant Local Resume Lookup (Never blocks stream fetching!)
       let candidates = [];
       if (isInitialMountRef.current) {
         const paramRes = extractResumeMillis(params);
@@ -706,45 +752,10 @@ export default function Player({
         }
       } catch (_) {}
 
-      if (resolvedUid && currentProfileId && effectiveAnimeId && effectiveAnimeId !== 'unknown') {
-        try {
-          const firestoreLookupPromise = (async () => {
-            const profileRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(currentProfileId));
-            let epDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get();
-            let epData = epDoc.exists ? epDoc.data() : null;
-
-            if (!epData) {
-              const seriesDoc = await profileRef.collection(WATCH_HISTORY_COLLECTION).doc(String(effectiveAnimeId)).get();
-              if (seriesDoc.exists) {
-                const sData = seriesDoc.data();
-                if (sData?.episodes?.[String(currentEpNum)]) epData = sData.episodes[String(currentEpNum)];
-                else if (Number(sData?.episodeNum) === Number(currentEpNum)) epData = sData;
-              }
-            }
-            return epData;
-          })();
-
-          const epData = await Promise.race([
-            firestoreLookupPromise,
-            new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
-          ]);
-
-          if (epData) {
-            const fsRes = extractResumeMillis(epData);
-            if (fsRes.resumeMs > 0) candidates.push({ ...fsRes, source: 'firestore' });
-          }
-        } catch (_) {}
-      }
-
-      if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
-
       let targetResumeMs = 0;
       let targetDurationMs = 0;
       if (candidates.length > 0) {
-        candidates.sort((a, b) => {
-          if (b.timestamp && a.timestamp && Math.abs(b.timestamp - a.timestamp) > 2000) return b.timestamp - a.timestamp;
-          return b.resumeMs - a.resumeMs;
-        });
+        candidates.sort((a, b) => b.resumeMs - a.resumeMs);
         targetResumeMs = candidates[0].resumeMs;
         targetDurationMs = candidates[0].durationMs;
       }
@@ -757,7 +768,34 @@ export default function Player({
       setPosMillis(targetResumeMs);
       setDurMillis(targetDurationMs);
 
-      // Offline File Checks
+      // Async Firestore progress check in parallel (if user hasn't scrubbed yet)
+      if (resolvedUid && currentProfileId && effectiveAnimeId && effectiveAnimeId !== 'unknown') {
+        firestore()
+          .collection('users')
+          .doc(String(resolvedUid))
+          .collection('profiles')
+          .doc(String(currentProfileId))
+          .collection(WATCH_HISTORY_COLLECTION)
+          .doc(epDocId)
+          .get()
+          .then((epDoc) => {
+            if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
+            if (epDoc.exists) {
+              const fsRes = extractResumeMillis(epDoc.data());
+              if (fsRes.resumeMs > lastPositionRef.current && lastPositionRef.current < 3000) {
+                lastPositionRef.current = fsRes.resumeMs;
+                setInitialStartMillis(fsRes.resumeMs);
+                setPosMillis(fsRes.resumeMs);
+                if (videoRef.current) {
+                  videoRef.current.setPositionAsync(fsRes.resumeMs).catch(() => {});
+                }
+              }
+            }
+          })
+          .catch(() => {});
+      }
+
+      // Step B: Offline File Check First
       let targetLocalVideoUri = offlineStreamUri;
       let targetLocalMeta = offlineMetaUri;
       let targetLocalSub = offlineSubUri;
@@ -767,13 +805,21 @@ export default function Player({
       try {
         const queue = await readLocalDownloadsQueue();
         matchedQueueRecord = queue.find((item) => {
-          const sameAnime = String(item.animeId) === String(effectiveAnimeId) || String(item.animeTitle || '').toLowerCase() === String(animeTitle || '').toLowerCase();
+          const sameAnime =
+            String(item.animeId) === String(effectiveAnimeId) ||
+            String(item.animeTitle || '').toLowerCase() === String(animeTitle || '').toLowerCase();
           const sameEp = Number(item.episodeNum) === Number(currentEpNum);
           return sameAnime && sameEp;
         });
 
         if (matchedQueueRecord) {
-          const candidateUri = targetLocalVideoUri || matchedQueueRecord.localUri || matchedQueueRecord.fileUri || matchedQueueRecord.streamUri || null;
+          const candidateUri =
+            targetLocalVideoUri ||
+            matchedQueueRecord.localUri ||
+            matchedQueueRecord.fileUri ||
+            matchedQueueRecord.streamUri ||
+            null;
+
           if (candidateUri) {
             if (String(candidateUri).startsWith('file://')) {
               const fileCheck = await FileSystem.getInfoAsync(candidateUri);
@@ -782,8 +828,14 @@ export default function Player({
               targetLocalVideoUri = candidateUri;
             }
           }
+
           targetLocalMeta = targetLocalMeta || matchedQueueRecord.localMetaUri || null;
-          targetLocalSub = targetLocalSub || matchedQueueRecord.localSubtitleUri || matchedQueueRecord.subtitle?.localUri || matchedQueueRecord.subtitle?.file || null;
+          targetLocalSub =
+            targetLocalSub ||
+            matchedQueueRecord.localSubtitleUri ||
+            matchedQueueRecord.subtitle?.localUri ||
+            matchedQueueRecord.subtitle?.file ||
+            null;
           offlineQualityLabel = matchedQueueRecord.quality || offlineQualityLabel;
         }
       } catch (_) {}
@@ -802,7 +854,9 @@ export default function Player({
         }
 
         if (canPlayDirectly) {
-          const inferredFolder = isLocalDiskFile ? targetLocalVideoUri.substring(0, targetLocalVideoUri.lastIndexOf('/') + 1) : null;
+          const inferredFolder = isLocalDiskFile
+            ? targetLocalVideoUri.substring(0, targetLocalVideoUri.lastIndexOf('/') + 1)
+            : null;
           let metaJson = null;
 
           if (inferredFolder || targetLocalMeta) {
@@ -810,20 +864,48 @@ export default function Player({
               const metaCandidate = targetLocalMeta || `${inferredFolder}metadata.json`;
               if (String(metaCandidate).startsWith('file://')) {
                 const metaInfo = await FileSystem.getInfoAsync(metaCandidate);
-                if (metaInfo?.exists) metaJson = JSON.parse(await FileSystem.readAsStringAsync(metaCandidate));
+                if (metaInfo?.exists) {
+                  metaJson = JSON.parse(await FileSystem.readAsStringAsync(metaCandidate));
+                }
               }
             } catch (_) {}
           }
 
+          const resolvedOfflineQual = metaJson?.quality || offlineQualityLabel || 'Offline HD';
+          const finalOfflinePlayUri = isLocalDiskFile
+            ? targetLocalVideoUri
+            : buildProxiedUrl(targetLocalVideoUri, matchedQueueRecord?.referer || 'https://vidwish.live/');
+
+          if (isMounted && currentSessionId === episodeSessionIdRef.current) {
+            setIsOfflineMode(true);
+            setCurrentAutoRes(resolvedOfflineQual);
+            setSelectedQuality(resolvedOfflineQual);
+            setQualityList([{ label: resolvedOfflineQual, uri: finalOfflinePlayUri }]);
+            setStreamData({
+              m3u8: finalOfflinePlayUri,
+              referer: matchedQueueRecord?.referer || 'https://vidwish.live/',
+              isOffline: true,
+              intro: metaJson?.intro || null,
+              outro: metaJson?.outro || null,
+            });
+            setActiveUrl(finalOfflinePlayUri);
+            setLoadingStream(false);
+          }
+
+          // Load offline subtitles non-blockingly
           try {
-            const subCandidate = targetLocalSub || metaJson?.subtitle?.localUri || (inferredFolder ? `${inferredFolder}subtitle.vtt` : null);
+            const subCandidate =
+              targetLocalSub ||
+              metaJson?.subtitle?.localUri ||
+              (inferredFolder ? `${inferredFolder}subtitle.vtt` : null);
+
             if (subCandidate) {
               let rawVtt = '';
               if (String(subCandidate).startsWith('file://')) {
                 const subInfo = await FileSystem.getInfoAsync(subCandidate);
                 if (subInfo?.exists) rawVtt = await FileSystem.readAsStringAsync(subCandidate);
               } else if (String(subCandidate).startsWith('http')) {
-                const subRes = await fetch(subCandidate);
+                const subRes = await fetch(buildProxiedUrl(subCandidate, matchedQueueRecord?.referer || 'https://vidwish.live/'));
                 rawVtt = await subRes.text();
               }
               if (rawVtt) {
@@ -836,95 +918,128 @@ export default function Player({
             }
           } catch (_) {}
 
-          const resolvedOfflineQual = metaJson?.quality || offlineQualityLabel || 'Offline HD';
-          if (isMounted && currentSessionId === episodeSessionIdRef.current) {
-            setIsOfflineMode(true);
-            setCurrentAutoRes(resolvedOfflineQual);
-            setSelectedQuality(resolvedOfflineQual);
-            setQualityList([{ label: resolvedOfflineQual, uri: targetLocalVideoUri }]);
-            setStreamData({ m3u8: targetLocalVideoUri, referer: matchedQueueRecord?.referer || 'https://vidwish.live/', isOffline: true, intro: metaJson?.intro || null, outro: metaJson?.outro || null });
-            setActiveUrl(targetLocalVideoUri);
-            setLoadingStream(false);
-          }
           return;
         }
       }
 
-      const effectiveId = providerId || animeId || paramId;
+      // Step C: BLAZE-X ONLINE STREAM ENGINE (/api/servers -> /api/stream -> Cloudflare Worker Proxy)
+      let effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
       if (!effectiveId || !effectiveSlug) {
-        if (isMounted && currentSessionId === episodeSessionIdRef.current) setLoadingStream(false);
+        if (isMounted && currentSessionId === episodeSessionIdRef.current) {
+          setLoadingStream(false);
+        }
         return;
       }
 
-      // ONLINE STREAM RESOLVER (GUARANTEED INSTANT LOAD)
-      const servers = ['hd-1', 'hd-2', 'vidstream-2'];
+      // If effectiveId is an AniList numeric ID, resolve the Anikoto slug first
+      if (/^\d+$/.test(String(effectiveId)) && animeTitle) {
+        try {
+          const sRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
+          const sJson = await sRes.json();
+          const matches = sJson?.data || [];
+          if (matches.length > 0) {
+            const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
+            if (exact?.id) {
+              effectiveId = exact.id;
+              if (isMounted) setProviderId(exact.id);
+            }
+          }
+        } catch (_) {}
+      }
+
+      // Mirror Blaze-X Web Player: Fetch available servers or use default priority order
+      let typeServers = ['hd-1', 'hd-2', 'vidstream-2'];
+      try {
+        const srvRes = await fetch(
+          `${VERCEL_API_BASE}/api/servers?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}`
+        );
+        const srvJson = await srvRes.json();
+        if (srvJson?.success && Array.isArray(srvJson.data) && srvJson.data.length > 0) {
+          const matchedType = srvJson.data
+            .filter((s) => s.type === selectedAudioType)
+            .map((s) => s.serverName)
+            .filter(Boolean);
+          if (matchedType.length > 0) {
+            typeServers = matchedType.includes('hd-1')
+              ? ['hd-1', ...matchedType.filter((s) => s !== 'hd-1')]
+              : matchedType;
+          }
+        }
+      } catch (_) {}
+
       let finalStreamData = null;
 
-      for (const srv of servers) {
+      for (const srv of typeServers) {
         try {
-          const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`;
+          const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${encodeURIComponent(srv)}&type=${selectedAudioType}`;
           const res = await fetch(url);
           const json = await res.json();
-          
-          let extractedUrl = null;
-          if (json?.data?.m3u8) extractedUrl = json.data.m3u8;
-          else if (json?.data?.streamingLink) extractedUrl = json.data.streamingLink;
-          else if (json?.results?.m3u8) extractedUrl = json.results.m3u8;
-          else if (json?.results?.streamingLink) extractedUrl = json.results.streamingLink;
-          else if (Array.isArray(json?.data) && json.data.length > 0) extractedUrl = json.data[0].file || json.data[0].url;
+          const dataObj = json?.data || json?.results || {};
+          const rawM3u8 = dataObj.m3u8 || dataObj.streamingLink || null;
 
-          if (extractedUrl) {
+          if (rawM3u8) {
             finalStreamData = {
-              m3u8: extractedUrl,
-              referer: json?.data?.referer || json?.results?.referer || 'https://vidwish.live/',
-              intro: json?.data?.intro || null,
-              outro: json?.data?.outro || null,
-              subtitles: json?.data?.subtitles || json?.results?.subtitles || []
+              m3u8: rawM3u8,
+              referer: dataObj.referer || 'https://vidwish.live/',
+              intro: dataObj.intro || { start: 0, end: 0 },
+              outro: dataObj.outro || { start: 0, end: 0 },
+              subtitles: Array.isArray(dataObj.subtitles) ? dataObj.subtitles : [],
             };
-            break; 
+            break;
           }
         } catch (_) {}
       }
 
       if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
-      if (!finalStreamData) {
+      if (!finalStreamData || !finalStreamData.m3u8) {
         setLoadingStream(false);
+        setIsBuffering(false);
         return;
       }
 
-      const masterUrl = finalStreamData.m3u8;
+      const rawUrl = finalStreamData.m3u8;
+      const targetReferer = finalStreamData.referer || 'https://vidwish.live/';
+      // Wrap in your Blaze-X Cloudflare Worker Proxy for instant playback!
+      const proxiedMasterUrl = buildProxiedUrl(rawUrl, targetReferer);
 
-      // 1. INSTANTLY DROP LOADING SCREEN AND MOUNT VIDEO
-      if (isMounted && currentSessionId === episodeSessionIdRef.current) {
-        setIsOfflineMode(false);
-        setStreamData(finalStreamData);
-        setQualityList([{ label: 'Auto', uri: masterUrl }]); 
-        setActiveUrl(masterUrl);
-        setLoadingStream(false);
-      }
+      // 1. IMMEDIATELY MOUNT VIDEO PLAYER (0ms delay - no waiting for quality or subtitle parsing!)
+      setIsOfflineMode(false);
+      setRawMasterUrl(rawUrl);
+      setStreamData(finalStreamData);
+      setQualityList([{ label: 'Auto', uri: proxiedMasterUrl }]);
+      setSelectedQuality('Auto');
+      setActiveUrl(proxiedMasterUrl);
+      setLoadingStream(false);
 
-      // 2. BACKGROUND M3U8 QUALITY PARSING
-      fetch(masterUrl, { headers: { Referer: finalStreamData.referer || 'https://vidwish.live/' } })
-        .then(res => res.text())
-        .then(m3Text => {
+      // 2. NON-BLOCKING BACKGROUND QUALITY PARSER (Via Cloudflare Worker Proxy)
+      fetch(proxiedMasterUrl)
+        .then((r) => r.text())
+        .then((m3Text) => {
           if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
           const lines = m3Text.split('\n');
-          const qualities = [{ label: 'Auto', uri: masterUrl }];
+          const qualities = [{ label: 'Auto', uri: proxiedMasterUrl }];
 
           for (let i = 0; i < lines.length; i++) {
             if (lines[i].includes('RESOLUTION=')) {
               const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
               if (resMatch && lines[i + 1]) {
-                let streamUri = lines[i + 1].trim();
-                if (!streamUri.startsWith('http')) {
-                  streamUri = masterUrl.substring(0, masterUrl.lastIndexOf('/') + 1) + streamUri;
+                let variantLine = lines[i + 1].trim();
+                let finalVariantUri = variantLine;
+
+                if (!variantLine.startsWith('http')) {
+                  const baseRaw = rawUrl.substring(0, rawUrl.lastIndexOf('/') + 1);
+                  finalVariantUri = buildProxiedUrl(baseRaw + variantLine, targetReferer);
+                } else if (!variantLine.includes('prashant-yash69.workers.dev')) {
+                  finalVariantUri = buildProxiedUrl(variantLine, targetReferer);
                 }
-                qualities.push({ label: `${resMatch[1]}p`, uri: streamUri });
+
+                qualities.push({ label: `${resMatch[1]}p`, uri: finalVariantUri });
               }
             }
           }
+
           const uniqueQualities = [];
           const seenLabels = new Set();
           for (const q of qualities) {
@@ -937,50 +1052,65 @@ export default function Player({
         })
         .catch(() => {});
 
-      // 3. BACKGROUND AUTO-SUBTITLE FETCH
-      if (finalStreamData.subtitles && finalStreamData.subtitles.length > 0) {
-        const engSub = finalStreamData.subtitles.find(s => String(s.label || s.lang).toLowerCase().includes('eng')) || finalStreamData.subtitles[0];
-        if (engSub && engSub.file) {
-          fetch(engSub.file)
-            .then(r => r.text())
-            .then(vtt => {
-               if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
-               const cues = parseVttTextToCues(vtt);
-               if (cues.length > 0) {
-                 setParsedSubs(cues);
-                 setSubtitlesEnabled(true);
-               }
+      // 3. NON-BLOCKING BACKGROUND SUBTITLE PARSER (Via Cloudflare Worker Proxy)
+      if (Array.isArray(finalStreamData.subtitles) && finalStreamData.subtitles.length > 0) {
+        const captions = finalStreamData.subtitles.filter(
+          (t) => !t.kind || t.kind === 'captions' || t.kind === 'subtitles'
+        );
+        const bestSub =
+          captions.find((s) => String(s.label || s.lang || '').toLowerCase().includes('eng')) ||
+          captions.find((s) => s.default) ||
+          captions[0];
+
+        if (bestSub?.file) {
+          const proxiedSubUrl = buildProxiedUrl(bestSub.file, targetReferer);
+          fetch(proxiedSubUrl)
+            .then((r) => r.text())
+            .then((vttText) => {
+              if (!isMounted || currentSessionId !== episodeSessionIdRef.current) return;
+              const cues = parseVttTextToCues(vttText);
+              if (cues.length > 0) {
+                setParsedSubs(cues);
+              }
             })
-            .catch(()=>{});
+            .catch(() => {});
         }
       }
-
     };
 
     loadEpisodeProgressAndStream();
     return () => { isMounted = false; };
-  }, [animeId, paramId, currentEpNum, currentSlug, selectedAudioType, providerId, offlineStreamUri, offlineMetaUri, offlineSubUri, effectiveAnimeId, animeTitle, resolvedUid, currentProfileId]);
+  }, [
+    animeId,
+    paramId,
+    currentEpNum,
+    currentSlug,
+    selectedAudioType,
+    providerId,
+    offlineStreamUri,
+    offlineMetaUri,
+    offlineSubUri,
+    effectiveAnimeId,
+    animeTitle,
+    resolvedUid,
+    currentProfileId,
+  ]);
 
-  // Buffer Spinner Rotation
-  useEffect(() => {
-    const isBuffering = !isLoaded || (isLoaded && !isPlayingRef.current === false); 
-    if (!isLoaded) {
-      spinAnimation.current = Animated.loop(Animated.timing(spinValue, { toValue: 1, duration: 900, useNativeDriver: true }));
-      spinAnimation.current.start();
-    } else {
-      if (spinAnimation.current) spinAnimation.current.stop();
-      spinValue.setValue(0);
-    }
-  }, [isLoaded]);
-
+  // 4. ULTRA-LIGHTWEIGHT PLAYBACK CALLBACK
   const handlePlaybackStatusUpdate = useCallback(
     (st, sessionToken) => {
-      if (!st?.isLoaded || sessionToken !== episodeSessionIdRef.current) return;
+      if (sessionToken !== episodeSessionIdRef.current) return;
+
+      if (!st?.isLoaded) {
+        setIsBuffering(true);
+        return;
+      }
 
       const currentMs = st.positionMillis || 0;
       const durationMs = st.durationMillis || lastDurationRef.current || 0;
       const currentTimeSec = currentMs / 1000;
       const wholeSec = Math.floor(currentTimeSec);
+      const bufferingNow = Boolean(st.isBuffering && !st.isPlaying);
 
       if (hasRestoredPositionOnLoadRef.current || currentMs > 1000) {
         if (currentMs > 0) lastPositionRef.current = currentMs;
@@ -992,6 +1122,7 @@ export default function Player({
         setCurrentAutoRes((prev) => (prev === resLabel ? prev : resLabel));
       }
 
+      // 1. O(log n) Binary Search Subtitle Cue Lookup
       if (subtitlesEnabledRef.current && parsedSubsRef.current.length > 0) {
         const nextText = findActiveSubtitleCue(parsedSubsRef.current, currentTimeSec);
         if (nextText !== currentSubTextRef.current) {
@@ -1003,9 +1134,15 @@ export default function Player({
         setCurrentSubText('');
       }
 
-      if (wholeSec !== lastRenderedSecRef.current || Boolean(st.isPlaying) !== isPlayingRef.current) {
+      // 2. Update React UI once per second or on play/buffer state change
+      if (
+        wholeSec !== lastRenderedSecRef.current ||
+        Boolean(st.isPlaying) !== isPlayingRef.current ||
+        bufferingNow !== isBuffering
+      ) {
         lastRenderedSecRef.current = wholeSec;
         setIsLoaded(true);
+        setIsBuffering(bufferingNow);
         setIsPlaying(Boolean(st.isPlaying));
         if (!isSeeking && (hasRestoredPositionOnLoadRef.current || currentMs >= lastPositionRef.current)) {
           setPosMillis(currentMs);
@@ -1015,11 +1152,12 @@ export default function Player({
         }
       }
 
+      // 3. Throttled background save every 5 seconds (matches Blaze-X web player)
       if (
         hasRestoredPositionOnLoadRef.current &&
         st.isPlaying &&
         wholeSec > 0 &&
-        Math.abs(wholeSec - lastSavedSecRef.current) >= 4
+        Math.abs(wholeSec - lastSavedSecRef.current) >= 5
       ) {
         lastSavedSecRef.current = wholeSec;
         saveWatchHistory(currentMs, durationMs);
@@ -1029,9 +1167,10 @@ export default function Player({
         saveWatchHistory(durationMs, durationMs, true);
       }
     },
-    [isSeeking, saveWatchHistory]
+    [isSeeking, isBuffering, saveWatchHistory]
   );
 
+  // 5. SEAMLESS NEXT EPISODE HANDLER
   const handleNextEpisode = useCallback(async () => {
     if (!hasNextEpisode || !nextEpisodeData) return;
 
@@ -1042,7 +1181,9 @@ export default function Player({
     episodeSessionIdRef.current += 1;
     hasRestoredPositionOnLoadRef.current = false;
 
-    try { await videoRef.current?.stopAsync?.(); } catch (_) {}
+    try {
+      await videoRef.current?.stopAsync?.();
+    } catch (_) {}
 
     saveWatchHistory(departingPos, departingDur, true, departingMeta);
 
@@ -1053,6 +1194,7 @@ export default function Player({
     currentSubTextRef.current = '';
 
     setLoadingStream(true);
+    setIsBuffering(true);
     setActiveUrl(null);
     setIsLoaded(false);
     setInitialStartMillis(0);
@@ -1078,66 +1220,56 @@ export default function Player({
     setCurrentSlug(String(nextEpisodeData.slug));
   }, [hasNextEpisode, nextEpisodeData, saveWatchHistory]);
 
+  // --- UI VISIBILITY & LONG-PRESS 2X ---
   const hideUINow = useCallback(() => {
     if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
-    Animated.timing(uiOpacity, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => {
-      setShowUI(false); showUIRef.current = false;
+    Animated.timing(uiOpacity, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: true,
+    }).start(() => {
+      setShowUI(false);
+      showUIRef.current = false;
     });
   }, [uiOpacity]);
 
   const resetHideTimer = useCallback(() => {
     if (activeMenuRef.current) return;
-    setShowUI(true); showUIRef.current = true;
-    Animated.timing(uiOpacity, { toValue: 1, duration: 180, useNativeDriver: true }).start();
+    setShowUI(true);
+    showUIRef.current = true;
+    Animated.timing(uiOpacity, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
 
     if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
     hideUITimeout.current = setTimeout(() => {
-      if (isPlayingRef.current && !activeMenuRef.current) hideUINow();
+      if (isPlayingRef.current && !activeMenuRef.current) {
+        hideUINow();
+      }
     }, 3500);
   }, [uiOpacity, hideUINow]);
 
   const toggleUIOnTap = useCallback(() => {
-    if (activeMenuRef.current) { setActiveMenu(null); return; }
-    if (showUIRef.current) hideUINow();
-    else resetHideTimer();
+    if (activeMenuRef.current) {
+      setActiveMenu(null);
+      return;
+    }
+    if (showUIRef.current) {
+      hideUINow();
+    } else {
+      resetHideTimer();
+    }
   }, [hideUINow, resetHideTimer]);
-
-  const togglePlayPause = () => {
-    if (!videoRef?.current || (!isLoaded && !error)) return;
-    if (isPlaying) videoRef.current.pauseAsync();
-    else videoRef.current.playAsync();
-    resetHideTimer();
-  };
-
-  const seekBy = async (seconds) => {
-    if (!videoRef?.current || !isLoaded) return;
-    const currentMs = posMillis || 0;
-    const durationMs = durMillis || 0;
-    const targetMs = Math.max(0, Math.min(durationMs, currentMs + seconds * 1000));
-    await videoRef.current.setPositionAsync(targetMs);
-    resetHideTimer();
-  };
-
-  const triggerLeftAnimation = () => {
-    setSkipDirection('left'); leftAnim.setValue(0); rotateLeft.setValue(0);
-    Animated.parallel([
-      Animated.timing(leftAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
-      Animated.timing(rotateLeft, { toValue: 1, duration: 350, useNativeDriver: true }),
-    ]).start(() => setSkipDirection(null));
-  };
-
-  const triggerRightAnimation = () => {
-    setSkipDirection('right'); rightAnim.setValue(0); rotateRight.setValue(0);
-    Animated.parallel([
-      Animated.timing(rightAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
-      Animated.timing(rotateRight, { toValue: 1, duration: 350, useNativeDriver: true }),
-    ]).start(() => setSkipDirection(null));
-  };
 
   const handleTouchStart = (evt) => {
     didTriggerLongPressRef.current = false;
     touchStartTimeRef.current = Date.now();
-    touchStartPosRef.current = { x: evt?.nativeEvent?.pageX || 0, y: evt?.nativeEvent?.pageY || 0 };
+    const pageX = evt?.nativeEvent?.pageX || 0;
+    const pageY = evt?.nativeEvent?.pageY || 0;
+    touchStartPosRef.current = { x: pageX, y: pageY };
+
     if (isLockedRef.current) return;
 
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
@@ -1151,55 +1283,53 @@ export default function Player({
     }, 450);
   };
 
-  const handleTouchEnd = (evt) => {
-    if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; }
-    if (is2xActive || didTriggerLongPressRef.current) {
-      setIs2xActive(false); didTriggerLongPressRef.current = false;
-      if (videoRef.current) videoRef.current.setRateAsync(previousSpeedRef.current, true);
-      return;
+  const handleTouchEnd = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
     }
 
-    const elapsed = Date.now() - touchStartTimeRef.current;
-    const pageX = evt?.nativeEvent?.pageX || touchStartPosRef.current.x;
-    const leftThreshold = SCREEN_WIDTH * 0.35;
-    const rightThreshold = SCREEN_WIDTH * 0.65;
-
-    const tapDelay = Date.now() - lastTapRef.current;
-    lastTapRef.current = Date.now();
-
-    if (elapsed < 300) {
-      if (tapDelay < 300) {
-        // DOUBLE TAP
-        if (singleTapTimer.current) { clearTimeout(singleTapTimer.current); singleTapTimer.current = null; }
-        if (!isLocked) {
-          if (pageX < leftThreshold) { seekBy(-10); triggerLeftAnimation(); }
-          else if (pageX > rightThreshold) { seekBy(10); triggerRightAnimation(); }
-          else togglePlayPause();
-        }
-      } else {
-        // SINGLE TAP
-        singleTapTimer.current = setTimeout(() => {
-          toggleUIOnTap();
-        }, 280);
+    if (is2xActive || didTriggerLongPressRef.current) {
+      setIs2xActive(false);
+      didTriggerLongPressRef.current = false;
+      if (videoRef.current) {
+        videoRef.current.setRateAsync(previousSpeedRef.current, true);
       }
     }
   };
 
   useEffect(() => {
-    if (isPlaying) { if (showUIRef.current) resetHideTimer(); } 
-    else {
+    if (isPlaying) {
+      if (showUIRef.current) resetHideTimer();
+    } else {
       if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
       if (!isLocked) {
-        setShowUI(true); showUIRef.current = true;
+        setShowUI(true);
+        showUIRef.current = true;
         Animated.timing(uiOpacity, { toValue: 1, duration: 180, useNativeDriver: true }).start();
       }
-      if (isLoaded && lastPositionRef.current > 0) saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true);
+      if (isLoaded && lastPositionRef.current > 0) {
+        saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true);
+      }
     }
   }, [isPlaying, activeMenu, isLocked, isLoaded, resetHideTimer, uiOpacity, saveWatchHistory]);
 
   const displayPosMillis = isSeeking ? seekPreviewMillis : posMillis;
   const displayDurMillis = durMillis || lastDurationRef.current || 100;
 
+  // Passed to PlayPauseSkip so the center spinner rotates while fetching or buffering
+  const lightStatus = useMemo(
+    () => ({
+      isLoaded: isLoaded && !loadingStream,
+      isBuffering: loadingStream || isBuffering,
+      isPlaying,
+      positionMillis: displayPosMillis,
+      durationMillis: displayDurMillis,
+    }),
+    [isLoaded, loadingStream, isBuffering, isPlaying, displayPosMillis, displayDurMillis]
+  );
+
+  // Source builder compatible with Cloudflare Worker Proxy & local files
   const videoSource = useMemo(() => {
     if (!activeUrl) return null;
     const cleanUrl = String(activeUrl);
@@ -1207,32 +1337,32 @@ export default function Player({
     const lowerUrl = cleanUrl.split('?')[0].toLowerCase();
 
     if (isLocalFile) {
-      if (lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.mkv') || lowerUrl.endsWith('.webm')) return { uri: cleanUrl };
-      if (lowerUrl.endsWith('.ts')) return { uri: cleanUrl, overrideFileExtensionAndroid: 'ts' };
+      if (lowerUrl.endsWith('.mp4') || lowerUrl.endsWith('.mkv') || lowerUrl.endsWith('.webm')) {
+        return { uri: cleanUrl };
+      }
+      if (lowerUrl.endsWith('.ts')) {
+        return { uri: cleanUrl, overrideFileExtensionAndroid: 'ts' };
+      }
       return { uri: cleanUrl, overrideFileExtensionAndroid: 'm3u8' };
     }
 
     return {
       uri: cleanUrl,
       overrideFileExtensionAndroid: lowerUrl.endsWith('.mp4') ? 'mp4' : 'm3u8',
-      headers: streamData?.referer ? { Referer: streamData.referer } : {},
+      headers: {
+        Referer: streamData?.referer || 'https://vidwish.live/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
     };
   }, [activeUrl, streamData?.referer]);
 
-  if (loadingStream) return <View style={styles.loaderContainerFull} />;
-
   const activeSessionToken = episodeSessionIdRef.current;
-  const progressPct = displayDurMillis > 0 ? (displayPosMillis / displayDurMillis) * 100 : 0;
-  const spinBwd = rotateLeft.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '-360deg'] });
-  const spinFwd = rotateRight.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
-  const bufferRotation = spinValue.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
-  const isCurrentlyBuffering = !isLoaded || (isLoaded && !isPlayingRef.current === false); 
 
   return (
     <View style={styles.container}>
       <StatusBar hidden={true} />
 
-      {!loadingStream && videoSource ? (
+      {videoSource ? (
         <Video
           key={`${currentEpNum}_${activeUrl}`}
           ref={videoRef}
@@ -1241,21 +1371,37 @@ export default function Player({
           positionMillis={initialStartMillis > 0 ? initialStartMillis : 0}
           useNativeControls={false}
           resizeMode={resizeMode}
-          progressUpdateIntervalMillis={isOfflineMode ? 500 : 850}
+          progressUpdateIntervalMillis={isOfflineMode ? 500 : 750}
           onPlaybackStatusUpdate={(st) => handlePlaybackStatusUpdate(st, activeSessionToken)}
+          onError={() => {
+            // Automatic fallback if proxy or direct URL hiccups
+            if (streamErrorRetryCount === 0 && rawMasterUrl && activeUrl !== rawMasterUrl) {
+              setStreamErrorRetryCount(1);
+              setActiveUrl(rawMasterUrl);
+            }
+          }}
           onLoad={async (loadStatus) => {
             if (activeSessionToken !== episodeSessionIdRef.current) return;
+            setIsLoaded(true);
+            setIsBuffering(false);
             const loadedDur = loadStatus?.durationMillis || lastDurationRef.current || 0;
-            if (loadedDur > 0) { lastDurationRef.current = loadedDur; setDurMillis(loadedDur); }
+            if (loadedDur > 0) {
+              lastDurationRef.current = loadedDur;
+              setDurMillis(loadedDur);
+            }
             const targetStartMs = lastPositionRef.current > 0 ? lastPositionRef.current : initialStartMillis;
             const currentLoadedPos = loadStatus?.positionMillis || 0;
 
             if (videoRef.current) {
               if (targetStartMs > 0 && Math.abs(currentLoadedPos - targetStartMs) > 1500) {
-                await videoRef.current.setPositionAsync(targetStartMs, { toleranceMillisBefore: 0, toleranceMillisAfter: 0 }).catch(() => {});
+                await videoRef.current
+                  .setPositionAsync(targetStartMs, { toleranceMillisBefore: 0, toleranceMillisAfter: 0 })
+                  .catch(() => {});
               }
               hasRestoredPositionOnLoadRef.current = true;
-              if (playbackSpeed !== 1.0) await videoRef.current.setRateAsync(playbackSpeed, true).catch(() => {});
+              if (playbackSpeed !== 1.0) {
+                await videoRef.current.setRateAsync(playbackSpeed, true).catch(() => {});
+              }
               await videoRef.current.playAsync().catch(() => {});
             } else {
               hasRestoredPositionOnLoadRef.current = true;
@@ -1266,85 +1412,108 @@ export default function Player({
         />
       ) : null}
 
-      {/* Fullscreen Tap Catcher (Double Tap + Long Press 2x) */}
-      <TouchableOpacity
-        style={styles.tapSurface}
-        activeOpacity={1}
-        onPressIn={handleTouchStart}
-        onPressOut={handleTouchEnd}
-      />
-
       {is2xActive && (
         <View style={styles.speedIndicatorBadge} pointerEvents="none">
           <Text style={styles.speedIndicatorText}>2X SPEED ▶▶</Text>
         </View>
       )}
 
-      {/* DOUBLE TAP ANIMATIONS */}
-      {skipDirection === 'left' && !isLocked && (
-        <View style={styles.skipLeftZone} pointerEvents="none">
-          <Animated.View style={{ transform: [{ rotate: spinBwd }] }}><IconBackward size={48} /></Animated.View>
-          <Animated.Text style={[styles.floatText, { opacity: leftAnim.interpolate({ inputRange: [0, 0.2, 0.8, 1], outputRange: [0, 1, 1, 0] }), transform: [{ translateX: leftAnim.interpolate({ inputRange: [0, 1], outputRange: [0, -35] }) }] }]}>-10s</Animated.Text>
-        </View>
-      )}
-
-      {skipDirection === 'right' && !isLocked && (
-        <View style={styles.skipRightZone} pointerEvents="none">
-          <Animated.View style={{ transform: [{ rotate: spinFwd }] }}><IconForward size={48} /></Animated.View>
-          <Animated.Text style={[styles.floatText, { opacity: rightAnim.interpolate({ inputRange: [0, 0.2, 0.8, 1], outputRange: [0, 1, 1, 0] }), transform: [{ translateX: rightAnim.interpolate({ inputRange: [0, 1], outputRange: [0, 35] }) }] }]}>+10s</Animated.Text>
-        </View>
-      )}
-
       {subtitlesEnabled && currentSubText !== '' && (
         <View style={[styles.subtitleContainer, { bottom: subSettings.height + (showUI ? 65 : 0) }]} pointerEvents="none">
-          <Text style={[styles.subtitleText, { color: subSettings.color || '#FFFFFF', fontSize: subSettings.size || 16, fontFamily: subSettings.fontFamily || 'normal', backgroundColor: subSettings.backgroundColor || 'transparent' }]}>
+          <Text
+            style={[
+              styles.subtitleText,
+              {
+                color: subSettings.color || '#FFFFFF',
+                fontSize: subSettings.size || 16,
+                fontFamily: subSettings.fontFamily || 'normal',
+                backgroundColor: subSettings.backgroundColor || 'transparent'
+              }
+            ]}
+          >
             {currentSubText}
           </Text>
         </View>
       )}
 
+      {/* EXTERNAL PLAY / PAUSE / DOUBLE-TAP SKIP SCRIPT */}
+      <PlayPauseSkip
+        status={lightStatus}
+        videoRef={videoRef}
+        resetHideTimer={resetHideTimer}
+        toggleUI={toggleUIOnTap}
+        isLocked={isLocked}
+        uiOpacity={uiOpacity}
+        showUI={showUI}
+        setShowUI={(val) => {
+          const nextVal = typeof val === 'function' ? val(showUIRef.current) : val;
+          if (nextVal) {
+            resetHideTimer();
+          } else {
+            hideUINow();
+          }
+        }}
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      />
+
+      {/* EXTERNAL INTRO / OUTRO SKIP SCRIPT */}
       <SkipIntroOutro
         status={lightStatus}
         videoRef={videoRef}
         introData={streamData?.intro}
+        outroData={streamData?.outro}
         isLocked={isLocked}
         onSkipOutro={hasNextEpisode ? handleNextEpisode : null}
       />
 
+      {/* TOP & BOTTOM PLAYER UI LAYER (MOUNTED AT 0MS) */}
       <Animated.View style={[styles.uiLayer, { opacity: uiOpacity }]} pointerEvents={showUI ? 'box-none' : 'none'}>
         {!isLocked && (
           <View style={styles.topBarWrapper} pointerEvents="box-none">
             <TopGradientOverlay />
             <View style={styles.topBarContent} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
-                <TouchableOpacity onPress={() => { saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true); navigation.goBack(); }} style={styles.iconBtn} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true);
+                    navigation.goBack();
+                  }}
+                  style={styles.iconBtn}
+                  hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}
+                >
                   <IconBack />
                 </TouchableOpacity>
                 <View style={styles.titleColumn} pointerEvents="none">
                   <View style={styles.titleRowWithBadge}>
                     <Text style={styles.mainTitle} numberOfLines={1}>{animeTitle}</Text>
-                    {isOfflineMode && <View style={styles.offlineBadge}><Text style={styles.offlineBadgeText}>OFFLINE</Text></View>}
+                    {isOfflineMode && (
+                      <View style={styles.offlineBadge}>
+                        <Text style={styles.offlineBadgeText}>OFFLINE</Text>
+                      </View>
+                    )}
                   </View>
-                  <Text style={styles.subTitle} numberOfLines={1}>Episode {currentEpNum} {currentEpTitle ? `• ${currentEpTitle}` : ''}</Text>
+                  <Text style={styles.subTitle} numberOfLines={1}>
+                    Episode {currentEpNum} {currentEpTitle ? `• ${currentEpTitle}` : ''}
+                  </Text>
                 </View>
               </View>
               <View style={styles.topRightGroup}>
-                <TouchableOpacity onPress={() => setActiveMenu('subs')} style={styles.iconBtn}><IconSubs color={subtitlesEnabled ? "#FFF" : "#777"} /></TouchableOpacity>
-                {!isOfflineMode && <TouchableOpacity onPress={() => setActiveMenu('audio')} style={styles.iconBtn}><IconAudio /></TouchableOpacity>}
-                <TouchableOpacity onPress={() => setActiveMenu('quality')} style={styles.hdBtn}><Text style={styles.hdBtnText}>{isOfflineMode ? currentAutoRes : 'HD'}</Text></TouchableOpacity>
+                <TouchableOpacity onPress={() => setActiveMenu('subs')} style={[styles.iconBtn, styles.topRightSpacing]}>
+                  <IconSubs color={subtitlesEnabled ? "#FFF" : "#777"} />
+                </TouchableOpacity>
+                {!isOfflineMode && (
+                  <TouchableOpacity onPress={() => setActiveMenu('audio')} style={[styles.iconBtn, styles.topRightSpacing]}>
+                    <IconAudio />
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity onPress={() => setActiveMenu('quality')} style={styles.hdBtn}>
+                  <Text style={styles.hdBtnText}>{isOfflineMode ? currentAutoRes : 'HD'}</Text>
+                </TouchableOpacity>
               </View>
             </View>
-          </View>
-        )}
-
-        {/* CENTER PLAY/PAUSE/BUFFERING */}
-        {!isLocked && (
-          <View style={styles.centerControls} pointerEvents="box-none">
-            <TouchableOpacity style={styles.actionBtn} activeOpacity={0.75} onPress={() => { seekBy(-10); triggerLeftAnimation(); }}><IconBackward size={42} /></TouchableOpacity>
-            <TouchableOpacity style={styles.centerBtn} activeOpacity={0.8} onPress={togglePlayPause}>
-              {!isLoaded ? <Animated.View style={[styles.spinnerRing, { transform: [{ rotate: bufferRotation }] }]} /> : isPlaying ? <IconPause size={68} /> : <IconPlay size={68} />}
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionBtn} activeOpacity={0.75} onPress={() => { seekBy(10); triggerRightAnimation(); }}><IconForward size={42} /></TouchableOpacity>
           </View>
         )}
 
@@ -1353,13 +1522,29 @@ export default function Player({
           <View style={styles.bottomContent} pointerEvents="box-none">
             <View style={styles.bottomToolsRow} pointerEvents="box-none">
               <View style={styles.toolsLeft}>
-                <LockButton isLocked={isLocked} setIsLocked={setIsLocked} uiOpacity={uiOpacity} setShowUI={setShowUI} hideUITimeout={hideUITimeout} />
-                {!isLocked && <TouchableOpacity onPress={() => setActiveMenu('speed')}><Text style={styles.speedBtnText}>{playbackSpeed.toFixed(2)}x</Text></TouchableOpacity>}
+                <LockButton
+                  isLocked={isLocked}
+                  setIsLocked={setIsLocked}
+                  uiOpacity={uiOpacity}
+                  setShowUI={setShowUI}
+                  hideUITimeout={hideUITimeout}
+                />
+                {!isLocked && (
+                  <TouchableOpacity onPress={() => setActiveMenu('speed')} style={{ marginLeft: 20 }}>
+                    <Text style={styles.speedBtnText}>{playbackSpeed.toFixed(2)}x</Text>
+                  </TouchableOpacity>
+                )}
               </View>
               {!isLocked && (
                 <View style={styles.toolsRight}>
                   <Animated.View style={{ opacity: nextEpOpacity }}>
-                    <TouchableOpacity onPress={handleNextEpisode} disabled={!hasNextEpisode} style={[styles.iconBtn, { marginRight: 18 }]}><IconNextEp color={hasNextEpisode ? "#FFF" : "rgba(255,255,255,0.3)"} /></TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={handleNextEpisode}
+                      disabled={!hasNextEpisode}
+                      style={[styles.iconBtn, { marginRight: 18 }]}
+                    >
+                      <IconNextEp color={hasNextEpisode ? "#FFF" : "rgba(255,255,255,0.3)"} />
+                    </TouchableOpacity>
                   </Animated.View>
                   <AspectRatioButton resizeMode={resizeMode} setResizeMode={setResizeMode} />
                 </View>
@@ -1370,41 +1555,110 @@ export default function Player({
               <View style={styles.progressRow}>
                 <Text style={styles.timeText}>{formatTime(displayPosMillis)}</Text>
                 <Slider
-                  style={styles.slider} minimumValue={0} maximumValue={displayDurMillis} value={displayPosMillis} minimumTrackTintColor={BRAND_RED} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor="#FFF"
-                  onSlidingStart={() => { setIsSeeking(true); if (hideUITimeout.current) clearTimeout(hideUITimeout.current); }}
+                  style={styles.slider}
+                  minimumValue={0}
+                  maximumValue={displayDurMillis}
+                  value={displayPosMillis}
+                  minimumTrackTintColor={BRAND_RED}
+                  maximumTrackTintColor="rgba(255,255,255,0.2)"
+                  thumbTintColor="#FFF"
+                  onSlidingStart={() => {
+                    setIsSeeking(true);
+                    if (hideUITimeout.current) clearTimeout(hideUITimeout.current);
+                  }}
                   onValueChange={(val) => setSeekPreviewMillis(val)}
                   onSlidingComplete={async (val) => {
-                    setIsSeeking(false); setPosMillis(val); lastPositionRef.current = val;
+                    setIsSeeking(false);
+                    setPosMillis(val);
+                    lastPositionRef.current = val;
                     if (videoRef.current) {
-                      await videoRef.current.setPositionAsync(val, { toleranceMillisBefore: 0, toleranceMillisAfter: 0 }).catch(() => {});
-                      saveWatchHistory(val, displayDurMillis, true); resetHideTimer();
+                      await videoRef.current
+                        .setPositionAsync(val, { toleranceMillisBefore: 0, toleranceMillisAfter: 0 })
+                        .catch(() => {});
+                      saveWatchHistory(val, displayDurMillis, true);
+                      resetHideTimer();
                     }
                   }}
                 />
-                <Text style={styles.timeText}>-{formatTime(Math.max(0, displayDurMillis - displayPosMillis))}</Text>
+                <Text style={styles.timeText}>
+                  -{formatTime(Math.max(0, displayDurMillis - displayPosMillis))}
+                </Text>
               </View>
             )}
           </View>
         </View>
       </Animated.View>
 
+      {/* EXTERNAL VIDEO QUALITY SHEET */}
       {activeMenu === 'quality' && (
-        <VideoQualitySheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} qualityList={qualityList} selectedQuality={selectedQuality} setSelectedQuality={setSelectedQuality} currentAutoRes={currentAutoRes}
-          setActiveUrl={(newQualityUri) => { setInitialStartMillis(lastPositionRef.current); hasRestoredPositionOnLoadRef.current = false; setActiveUrl(newQualityUri); }}
+        <VideoQualitySheet
+          activeMenu={activeMenu}
+          setActiveMenu={setActiveMenu}
+          qualityList={qualityList}
+          selectedQuality={selectedQuality}
+          setSelectedQuality={setSelectedQuality}
+          setActiveUrl={(newQualityUri) => {
+            setInitialStartMillis(lastPositionRef.current);
+            hasRestoredPositionOnLoadRef.current = false;
+            setActiveUrl(buildProxiedUrl(newQualityUri, streamData?.referer || 'https://vidwish.live/'));
+          }}
+          currentAutoRes={currentAutoRes}
         />
       )}
 
-      <SubtitleSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} subtitlesEnabled={subtitlesEnabled} setSubtitlesEnabled={setSubtitlesEnabled} subSettings={subSettings} setSubSettings={setSubSettings} animeId={effectiveAnimeId} animeTitle={animeTitle} episodeNum={currentEpNum} slug={currentSlug || currentEpNum} isOffline={isOfflineMode} localSubtitleUri={offlineSubUri} localMetaUri={offlineMetaUri} localVideoUri={offlineStreamUri}
-        onSelectSubtitleTrack={(track) => { if (track && Array.isArray(track.cues)) setParsedSubs(track.cues); else { setParsedSubs([]); setCurrentSubText(''); } }}
+      {/* EXTERNAL SUBTITLE SHEET */}
+      <SubtitleSheet
+        activeMenu={activeMenu}
+        setActiveMenu={setActiveMenu}
+        subtitlesEnabled={subtitlesEnabled}
+        setSubtitlesEnabled={setSubtitlesEnabled}
+        subSettings={subSettings}
+        setSubSettings={setSubSettings}
+        animeId={effectiveAnimeId}
+        animeTitle={animeTitle}
+        episodeNum={currentEpNum}
+        slug={currentSlug || currentEpNum}
+        isOffline={isOfflineMode}
+        localSubtitleUri={offlineSubUri}
+        localMetaUri={offlineMetaUri}
+        localVideoUri={offlineStreamUri}
+        onSelectSubtitleTrack={(track) => {
+          if (track && Array.isArray(track.cues)) {
+            setParsedSubs(track.cues);
+          } else {
+            setParsedSubs([]);
+            setCurrentSubText('');
+          }
+        }}
       />
 
+      {/* EXTERNAL AUDIO SHEET */}
       {activeMenu === 'audio' && (
-        <AudioSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} animeId={effectiveAnimeId} episodeNum={currentEpNum} slug={currentSlug || currentEpNum} currentTargetType={selectedAudioType}
-          onSelectAudioType={(newAudioType) => { setInitialStartMillis(lastPositionRef.current); hasRestoredPositionOnLoadRef.current = false; setSelectedAudioType(newAudioType); }}
+        <AudioSheet
+          activeMenu={activeMenu}
+          setActiveMenu={setActiveMenu}
+          animeId={effectiveAnimeId}
+          episodeNum={currentEpNum}
+          slug={currentSlug || currentEpNum}
+          currentTargetType={selectedAudioType}
+          onSelectAudioType={(newAudioType) => {
+            setInitialStartMillis(lastPositionRef.current);
+            hasRestoredPositionOnLoadRef.current = false;
+            setSelectedAudioType(newAudioType);
+          }}
         />
       )}
 
-      {activeMenu === 'speed' && <SpeedSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} playbackSpeed={playbackSpeed} setPlaybackSpeed={setPlaybackSpeed} videoRef={videoRef} />}
+      {/* EXTERNAL SPEED SHEET */}
+      {activeMenu === 'speed' && (
+        <SpeedSheet
+          activeMenu={activeMenu}
+          setActiveMenu={setActiveMenu}
+          playbackSpeed={playbackSpeed}
+          setPlaybackSpeed={setPlaybackSpeed}
+          videoRef={videoRef}
+        />
+      )}
     </View>
   );
 }
@@ -1412,8 +1666,6 @@ export default function Player({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000', width: '100%', height: '100%' },
   videoPlayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' },
-  tapSurface: { ...StyleSheet.absoluteFillObject, zIndex: 1 },
-  loaderContainerFull: { flex: 1, backgroundColor: '#000000' },
   speedIndicatorBadge: { position: 'absolute', top: 25, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', zIndex: 35 },
   speedIndicatorText: { color: '#FFF', fontSize: 13, fontWeight: '900', letterSpacing: 1 },
   subtitleContainer: { position: 'absolute', width: '100%', alignItems: 'center', zIndex: 25, elevation: 10, paddingHorizontal: 25 },
@@ -1423,26 +1675,20 @@ const styles = StyleSheet.create({
   topBarContent: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 28, paddingTop: 16 },
   topLeftGroup: { flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 16 },
   titleColumn: { paddingHorizontal: 10, flex: 1 },
-  titleRowWithBadge: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  mainTitle: { color: '#FFF', fontSize: 17, fontWeight: '700', textShadowColor: '#000', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2, flexShrink: 1 },
+  titleRowWithBadge: { flexDirection: 'row', alignItems: 'center' },
+  mainTitle: { color: '#FFF', fontSize: 17, fontWeight: '700', textShadowColor: '#000', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 2, flexShrink: 1, marginRight: 8 },
   offlineBadge: { backgroundColor: BRAND_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   offlineBadgeText: { color: '#FFF', fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
   subTitle: { color: 'rgba(255,255,255,0.65)', fontSize: 13, fontStyle: 'italic', marginTop: 2 },
-  topRightGroup: { flexDirection: 'row', alignItems: 'center', gap: 20 },
+  topRightGroup: { flexDirection: 'row', alignItems: 'center' },
+  topRightSpacing: { marginRight: 20 },
   iconBtn: { padding: 4, opacity: 0.9 },
   hdBtn: { borderWidth: 1.5, borderColor: '#FFF', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, height: 20, justifyContent: 'center', alignItems: 'center' },
   hdBtnText: { color: '#FFF', fontSize: 10, fontWeight: 'bold' },
-  centerControls: { ...StyleSheet.absoluteFillObject, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 64, zIndex: 15 },
-  centerBtn: { width: 72, height: 72, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.6, shadowRadius: 10, elevation: 8 },
-  actionBtn: { width: 52, height: 52, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.5, shadowRadius: 8, elevation: 6 },
-  spinnerRing: { width: 48, height: 48, borderRadius: 24, borderWidth: 3.5, borderColor: 'rgba(255, 255, 255, 0.15)', borderTopColor: '#FFFFFF', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.5, shadowRadius: 6, elevation: 6 },
-  skipLeftZone: { position: 'absolute', left: '18%', top: '42%', alignItems: 'center', justifyContent: 'center', zIndex: 25 },
-  skipRightZone: { position: 'absolute', right: '18%', top: '42%', alignItems: 'center', justifyContent: 'center', zIndex: 25 },
-  floatText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800', marginTop: 6, textShadowColor: 'rgba(0,0,0,0.85)', textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 6 },
   bottomBarWrapper: { width: '100%', position: 'absolute', bottom: 0, height: 120, justifyContent: 'flex-end' },
   bottomContent: { paddingHorizontal: 28, paddingBottom: 16 },
   bottomToolsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingBottom: 4 },
-  toolsLeft: { flexDirection: 'row', alignItems: 'center', gap: 20 },
+  toolsLeft: { flexDirection: 'row', alignItems: 'center' },
   toolsRight: { flexDirection: 'row', alignItems: 'center' },
   speedBtnText: { color: '#FFF', fontSize: 14, fontWeight: '600', opacity: 0.9 },
   progressRow: { flexDirection: 'row', alignItems: 'center', width: '100%' },
