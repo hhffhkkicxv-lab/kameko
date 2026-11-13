@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { 
   View, Text, StyleSheet, Dimensions, 
   TouchableOpacity, Share, StatusBar, 
-  ActivityIndicator, FlatList, ScrollView, BackHandler, Platform, AppState
+  ActivityIndicator, FlatList, ScrollView, BackHandler, Platform
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -137,6 +137,7 @@ const IconCheck = ({ size = 24, color = WHITE }) => (
   </Svg>
 );
 
+// Consistent Bookmark Icon (Filled Red or White Outline)
 const BookmarkIcon = ({ filled, size = 18 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? PURE_RED : "none"} stroke={filled ? PURE_RED : WHITE} strokeWidth="2.5">
     <Path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
@@ -167,7 +168,7 @@ export default function Play({
   };
 
   const [currentAnime, setCurrentAnime] = useState(initialAnime);
-  const [nestedAnime, setNestedAnime] = useState(null); 
+  const [nestedAnime, setNestedAnime] = useState(null); // Used to recursively render new <Play/> overlays
 
   useEffect(() => {
     if (propAnime && (propAnime.id || propAnime.animeId)) {
@@ -193,6 +194,39 @@ export default function Play({
   }, [incomingProfile, propActiveProfileId]);
 
   const resolvedUid = resolvedUser?.uid || currentAnime?.userUid || routeParams.userUid || auth().currentUser?.uid || null;
+
+  useEffect(() => {
+    if (resolvedProfileId || !resolvedUid) return;
+    let isMounted = true;
+
+    const fetchActiveProfileFallback = async () => {
+      try {
+        const userDoc = await firestore().collection('users').doc(String(resolvedUid)).get();
+        if (userDoc.exists) {
+          const uData = userDoc.data();
+          if (uData?.activeProfile?.id && isMounted) {
+            setResolvedProfile(uData.activeProfile);
+            setResolvedProfileId(String(uData.activeProfile.id));
+            return;
+          }
+          if (uData?.activeProfileId && isMounted) {
+            setResolvedProfileId(String(uData.activeProfileId));
+            return;
+          }
+        }
+        const snap = await firestore().collection('users').doc(String(resolvedUid)).collection('profiles').limit(1).get();
+        if (!snap.empty && isMounted) {
+          const firstDoc = snap.docs[0];
+          const prof = { id: firstDoc.id, ...firstDoc.data() };
+          setResolvedProfile(prof);
+          setResolvedProfileId(String(firstDoc.id));
+        }
+      } catch (_) {}
+    };
+
+    fetchActiveProfileFallback();
+    return () => { isMounted = false; };
+  }, [resolvedUid, resolvedProfileId]);
 
   const animeDocId = String(currentAnime?.animeId || currentAnime?.id || 'solo-leveling');
   const resolvedTitle = String(currentAnime?.animeTitle || currentAnime?.title || 'Anime');
@@ -227,16 +261,20 @@ export default function Play({
   const [loadingEpisode, setLoadingEpisode] = useState(null);
   const [activePlayback, setActivePlayback] = useState(null);
 
+  // Settings Overlays
   const [topMenuVisible, setTopMenuVisible] = useState(false);
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [roomModalVisible, setRoomModalVisible] = useState(false);
 
+  // Downloaded Episodes & Bulk Delete States
   const [downloadedEpMap, setDownloadedEpMap] = useState({});
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
 
+  // Confirmation Popup State
   const [confirmDialog, setConfirmDialog] = useState(null);
 
+  // Download Sheet States
   const [downloadModalVisible, setDownloadModalVisible] = useState(false);
   const [isSingleEpisodeDownload, setIsSingleEpisodeDownload] = useState(false);
   const [downloadTargetEp, setDownloadTargetEp] = useState(null);
@@ -252,6 +290,7 @@ export default function Play({
 
   const inLibrary = librarySet.has(animeDocId);
 
+  // --- TOP-LEFT BACK BUTTON HANDLER ---
   const handleGoBack = () => {
     if (onBack) {
       onBack();
@@ -260,6 +299,7 @@ export default function Play({
     }
   };
 
+  // Re-Enforce Immersive Mode rigorously whenever overlays (or nested instances) toggle
   useEffect(() => {
     const enforceImmersive = async () => {
       try {
@@ -273,6 +313,7 @@ export default function Play({
     enforceImmersive();
   }, [topMenuVisible, confirmDialog, downloadModalVisible, shareModalVisible, roomModalVisible, activePlayback, nestedAnime]);
 
+  // HARDWARE BACK HANDLER - Completely fixed to prevent app closing
   useEffect(() => {
     const onHardwareBack = () => {
       if (activePlayback) { setActivePlayback(null); return true; }
@@ -283,10 +324,13 @@ export default function Play({
       if (roomModalVisible) { setRoomModalVisible(false); return true; }
       if (isBulkDeleteMode) { setIsBulkDeleteMode(false); setBulkDeleteSelectedMap({}); return true; }
       
+      // If we have a nested child, we DO NOT handle the back button here.
+      // Let the nested child's BackHandler (which executes first) intercept it.
       if (nestedAnime) {
         return false;
       }
 
+      // If we've hit the base Play.js, trigger onBack explicitly and block default behavior
       if (onBack) {
         onBack();
         return true; 
@@ -304,43 +348,570 @@ export default function Play({
     return () => sub.remove();
   }, [activePlayback, downloadModalVisible, topMenuVisible, confirmDialog, shareModalVisible, roomModalVisible, isBulkDeleteMode, nestedAnime, onBack, navigation]);
 
+  const syncLocalDownloads = useCallback(async () => {
+    const queue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
+    const list = Array.isArray(queue) ? queue : [];
+    const map = {};
+    list.forEach((item) => {
+      if (String(item?.animeId) === animeDocId && item?.episodeNum != null) {
+        map[Number(item.episodeNum)] = item;
+      }
+    });
+    setDownloadedEpMap((prev) => ({ ...prev, ...map }));
+  }, [animeDocId]);
 
-  // =======================================================================
-  // LIGHTNING FAST BACKGROUND FETCHING LOGIC
-  // =======================================================================
-  
+  useEffect(() => { syncLocalDownloads(); }, [syncLocalDownloads]);
+
+  useEffect(() => {
+    if (!resolvedUid || !resolvedProfileId || !animeDocId) return;
+    const dlRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').where('animeId', '==', animeDocId);
+    const unsub = dlRef.onSnapshot(
+      (snap) => {
+        const fsMap = {};
+        snap?.forEach((doc) => {
+          const d = doc.data();
+          if (d?.episodeNum != null) {
+            fsMap[Number(d.episodeNum)] = d;
+          }
+        });
+        setDownloadedEpMap((prev) => ({ ...prev, ...fsMap }));
+      },
+      () => {}
+    );
+    return () => unsub();
+  }, [resolvedUid, resolvedProfileId, animeDocId]);
+
+  const executeDeleteDownloadedEpisodes = useCallback(
+    async (epNumbersArray) => {
+      const numsToDelete = (epNumbersArray || []).map((n) => Number(n)).filter(Boolean);
+      if (numsToDelete.length === 0) return;
+
+      const deleteSet = new Set(numsToDelete);
+      setDownloadedEpMap((prev) => {
+        const next = { ...prev };
+        numsToDelete.forEach((num) => { delete next[num]; });
+        return next;
+      });
+
+      const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
+      if (Array.isArray(existingQueue)) {
+        const toRemoveItems = existingQueue.filter(
+          (item) => String(item?.animeId) === animeDocId && deleteSet.has(Number(item?.episodeNum))
+        );
+        for (const rem of toRemoveItems) {
+          const localUri = rem?.localUri || rem?.fileUri;
+          if (localUri && String(localUri).startsWith('file://')) {
+            FileSystem.deleteAsync(localUri, { idempotent: true }).catch(() => {});
+          }
+        }
+        const updatedQueue = existingQueue.filter(
+          (item) => !(String(item?.animeId) === animeDocId && deleteSet.has(Number(item?.episodeNum)))
+        );
+        await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
+      }
+
+      if (resolvedUid && resolvedProfileId) {
+        for (const epNum of numsToDelete) {
+          firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').doc(`${animeDocId}_ep_${epNum}`).delete().catch(() => {});
+        }
+      }
+      setIsBulkDeleteMode(false);
+      setBulkDeleteSelectedMap({});
+    },
+    [animeDocId, resolvedUid, resolvedProfileId]
+  );
+
+  const handleDeleteDownloadedEpisodes = useCallback(
+    (epNumbersArray) => {
+      const nums = (epNumbersArray || []).map((n) => Number(n)).filter(Boolean);
+      if (nums.length === 0) return;
+
+      const isMultiple = nums.length > 1;
+      setConfirmDialog({
+        title: isMultiple ? 'Delete Downloaded Episodes' : `Delete Episode ${nums[0]}`,
+        message: isMultiple
+          ? `Are you sure you want to permanently delete these ${nums.length} downloaded episodes from your device?`
+          : `Permanently delete downloaded Episode ${nums[0]} from your device?`,
+        confirmText: 'Delete',
+        onConfirm: async () => {
+          setConfirmDialog(null);
+          await executeDeleteDownloadedEpisodes(nums);
+        },
+      });
+    },
+    [executeDeleteDownloadedEpisodes]
+  );
+
+  const handleLongPressDownloadedEpisode = useCallback((epNum) => {
+    setIsBulkDeleteMode(true);
+    setBulkDeleteSelectedMap((prev) => ({ ...prev, [epNum]: true }));
+  }, []);
+
+  const toggleBulkDeleteEpisodeSelection = useCallback((epNum) => {
+    setBulkDeleteSelectedMap((prev) => {
+      const next = { ...prev, [epNum]: !prev[epNum] };
+      const anyLeft = Object.keys(next).some((k) => next[k]);
+      if (!anyLeft) setIsBulkDeleteMode(false);
+      return next;
+    });
+  }, []);
+
+  const handleTriggerShare = async () => {
+    if (ResolvedShareComp) { setShareModalVisible(true); return; }
+    try { await Share.share({ message: `Watch ${resolvedTitle} on Kameko!`, }); } catch (_) {}
+  };
+
+  const updateLocalPreferences = useCallback(async (patch) => {
+    const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const merged = {
+      ...existing,
+      ...patch,
+      selectedChunksByAnime: { ...(existing?.selectedChunksByAnime || {}), ...(patch?.selectedChunksByAnime || {}) },
+      updatedAt: Date.now(),
+    };
+    await writeLocalJson(PLAY_PREFS_FILE_URI, merged);
+    return merged;
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
-    
-    const loadFastEpisodes = async () => {
+    hasRestoredLocalChunkRef.current = false;
+
+    const restoreSavedSelection = async () => {
+      const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+      if (!isMounted) return;
+
+      const savedChunk = savedPrefs?.selectedChunksByAnime?.[animeDocId];
+      if (typeof savedChunk === 'number' && savedChunk >= 0) {
+        hasRestoredLocalChunkRef.current = true;
+        setCurrentChunkIndex(savedChunk);
+      } else {
+        setCurrentChunkIndex(0);
+      }
+      if (savedPrefs?.preferredDownloadType) { setSelectedDownloadType(savedPrefs.preferredDownloadType); }
+    };
+    restoreSavedSelection();
+    return () => { isMounted = false; };
+  }, [animeDocId]);
+
+  const handleSelectChunk = useCallback((index, rangeLabel) => {
+    setCurrentChunkIndex(index);
+    hasRestoredLocalChunkRef.current = true;
+    updateLocalPreferences({
+      selectedChunksByAnime: { [animeDocId]: index },
+      lastSelectedChunk: { animeId: animeDocId, animeTitle: resolvedTitle, chunkIndex: index, rangeLabel, timestamp: Date.now() },
+    });
+  }, [animeDocId, resolvedTitle, updateLocalPreferences]);
+
+  useEffect(() => {
+    if (!resolvedUid) return;
+
+    const libColRef = firestore().collection('users').doc(String(resolvedUid)).collection('library');
+    const libUnsub = libColRef.onSnapshot((snap) => {
+      const nextSet = new Set();
+      snap?.forEach((doc) => nextSet.add(String(doc.id)));
+      setLibrarySet(nextSet);
+    }, () => {});
+
+    if (!resolvedProfileId || !animeDocId) return () => libUnsub();
+
+    const historyRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection(WATCH_HISTORY_COLLECTION).where('animeId', '==', animeDocId);
+    const historyUnsub = historyRef.onSnapshot((snapshot) => {
+      if (snapshot && !snapshot.empty) {
+        const pMap = {};
+        let latest = null;
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (!data) return;
+          const epKey = String(data.slug || data.episodeNum || data.lastWatchedEp || '');
+          if (epKey) pMap[epKey] = data;
+          if (data.episodeNum) pMap[`ep_${data.episodeNum}`] = data;
+          if (data.lastWatchedEp) pMap[`ep_${data.lastWatchedEp}`] = data;
+          if (data.episodes && typeof data.episodes === 'object') {
+            Object.keys(data.episodes).forEach((k) => {
+              pMap[`ep_${k}`] = data.episodes[k];
+              if (data.episodes[k]?.slug) pMap[String(data.episodes[k].slug)] = data.episodes[k];
+            });
+          }
+          if (!latest || (data.timestamp || 0) > (latest.timestamp || 0)) { latest = data; }
+        });
+        setUserProgressMap(pMap);
+        setLatestWatched(latest);
+      } else {
+        setUserProgressMap({});
+        setLatestWatched(null);
+      }
+    }, () => {});
+
+    return () => { historyUnsub(); libUnsub(); };
+  }, [resolvedUid, resolvedProfileId, animeDocId]);
+
+  const toggleLibrary = async () => {
+    if (!resolvedUid || !animeDocId) return;
+    const ref = firestore().collection('users').doc(String(resolvedUid)).collection('library').doc(animeDocId);
+    if (inLibrary) {
+      await ref.delete().catch(() => {});
+    } else {
+      await ref.set({
+        id: animeDocId, animeId: animeDocId, title: resolvedTitle, img: currentAnime?.coverImage || resolvedBackdrop,
+        backdrop: resolvedBackdrop, profileId: resolvedProfileId, addedAt: Date.now(),
+      }).catch(() => {});
+    }
+  };
+
+  const toggleCardLibraryItem = async (cardItem) => {
+    if (!resolvedUid || !cardItem?.id) return;
+    const targetId = String(cardItem.id);
+    const ref = firestore().collection('users').doc(String(resolvedUid)).collection('library').doc(targetId);
+    if (librarySet.has(targetId)) {
+      await ref.delete().catch(() => {});
+    } else {
+      await ref.set({
+        id: targetId, animeId: targetId, title: String(cardItem.title || 'Anime'),
+        img: String(cardItem.coverImage || cardItem.image || cardItem.backdrop || ''),
+        backdrop: String(cardItem.backdrop || cardItem.coverImage || cardItem.image || ''),
+        profileId: resolvedProfileId, addedAt: Date.now(),
+      }).catch(() => {});
+    }
+  };
+
+  const fetchUnifiedDownloadOptions = useCallback(async (epItem, audioType) => {
+    if (!epItem) return;
+    setIsFetchingDownloadData(true);
+
+    try {
+      const safeId = encodeURIComponent(vercelAnimeId || animeDocId);
+      const safeEp = encodeURIComponent(String(epItem.slug || epItem.num || 1));
+      const servers = ['hd-1', 'hd-2', 'vidstream-2'];
+
+      let targetMasterUrl = null;
+      let targetReferer = 'https://vidwish.live/';
+      let collectedSubtitles = [];
+
+      for (const srv of servers) {
+        try {
+          const res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=${audioType}`);
+          const json = await res.json();
+          const payload = json?.data || json?.results || {};
+          if (payload?.m3u8 || payload?.streamingLink) {
+            targetMasterUrl = payload.m3u8 || payload.streamingLink;
+            if (payload.referer) targetReferer = payload.referer;
+            if (Array.isArray(payload.subtitles) && payload.subtitles.length > 0) { collectedSubtitles = [...payload.subtitles]; }
+            break;
+          }
+        } catch (_) {}
+      }
+
+      if (audioType === 'dub' || collectedSubtitles.length === 0) {
+        for (const srv of servers) {
+          try {
+            const subRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=sub`);
+            const subJson = await subRes.json();
+            const subPayload = subJson?.data || subJson?.results || {};
+            if (!targetMasterUrl && (subPayload?.m3u8 || subPayload?.streamingLink)) {
+              targetMasterUrl = subPayload.m3u8 || subPayload.streamingLink;
+              if (subPayload.referer) targetReferer = subPayload.referer;
+            }
+            if (Array.isArray(subPayload?.subtitles) && subPayload.subtitles.length > 0) {
+              const seen = new Set(collectedSubtitles.map((s) => s.label || s.lang));
+              for (const s of subPayload.subtitles) {
+                const lbl = s.label || s.lang;
+                if (lbl && !seen.has(lbl)) { seen.add(lbl); collectedSubtitles.push(s); }
+              }
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+
+      setDownloadSubTracks(collectedSubtitles);
+      setSelectedSubTrack((prev) => {
+        if (prev && prev.lang === 'none') return prev;
+        if (prev) {
+          const match = collectedSubtitles.find((s) => (s.label || s.lang) === (prev.label || prev.lang));
+          if (match) return match;
+        }
+        if (collectedSubtitles.length > 0) {
+          return collectedSubtitles.find((s) => String(s.label || s.lang || '').toLowerCase().includes('eng')) || collectedSubtitles.find((s) => s.default) || collectedSubtitles[0];
+        }
+        return { label: 'No Subtitles / Off', file: null, lang: 'none' };
+      });
+
+      let explicitQualities = [];
+      if (targetMasterUrl) {
+        try {
+          const m3Res = await fetchWithTimeout(targetMasterUrl, { headers: { Referer: targetReferer } });
+          const m3Text = await m3Res.text();
+          const lines = m3Text.split('\n');
+
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('RESOLUTION=')) {
+              const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
+              if (resMatch && lines[i + 1]) {
+                const label = `${resMatch[1]}p`;
+                let streamUri = lines[i + 1].trim();
+                if (!streamUri.startsWith('http')) { streamUri = targetMasterUrl.substring(0, targetMasterUrl.lastIndexOf('/') + 1) + streamUri; }
+                if (label.toLowerCase() !== 'auto') { explicitQualities.push({ label, resolution: Number(resMatch[1]), uri: streamUri, referer: targetReferer }); }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      const uniqueQualities = [];
+      const seenLabels = new Set();
+      for (const q of explicitQualities) {
+        if (q.label && q.label.toLowerCase() !== 'auto' && !seenLabels.has(q.label)) {
+          seenLabels.add(q.label);
+          uniqueQualities.push(q);
+        }
+      }
+      uniqueQualities.sort((a, b) => (b.resolution || 0) - (a.resolution || 0));
+
+      const finalQualities = uniqueQualities.length > 0 ? uniqueQualities : [
+        { label: '1080p', resolution: 1080, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '720p', resolution: 720, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '480p', resolution: 480, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '360p', resolution: 360, uri: targetMasterUrl || '', referer: targetReferer },
+      ];
+
+      setDownloadQualities(finalQualities);
+      setSelectedDownloadQuality((prev) => {
+        if (prev) { const matchedQ = finalQualities.find((q) => q.label === prev.label); if (matchedQ) return matchedQ; }
+        return finalQualities[0];
+      });
+    } catch (_) {
+      const fallback = [
+        { label: '1080p', resolution: 1080, uri: '' }, { label: '720p', resolution: 720, uri: '' }, { label: '480p', resolution: 480, uri: '' }
+      ];
+      setDownloadQualities(fallback);
+      setSelectedDownloadQuality(fallback[0]);
+    } finally { setIsFetchingDownloadData(false); }
+  }, [vercelAnimeId, animeDocId]);
+
+  const handleOpenSingleEpisodeDownload = async (episodeItem) => {
+    if (!episodeItem) return;
+    const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+
+    setIsSingleEpisodeDownload(true);
+    setDownloadTargetEp(episodeItem);
+    setSelectedEpNumsMap({ [episodeItem.num]: true });
+    setSelectedDownloadType(initialAudio);
+    setDownloadStep(2);
+    setDownloadModalVisible(true);
+    fetchUnifiedDownloadOptions(episodeItem, initialAudio);
+  };
+
+  const handleOpenMultiEpisodeDownload = async (defaultEp) => {
+    const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+    const initialEp = defaultEp || episodes[0] || { num: 1, slug: '1', title: 'Episode 1' };
+
+    setIsSingleEpisodeDownload(false);
+    setDownloadTargetEp(initialEp);
+    setSelectedEpNumsMap({ [initialEp.num]: true });
+    setDownloadChunkIndex(currentChunkIndex);
+    setSelectedDownloadType(initialAudio);
+    setDownloadStep(1);
+    setDownloadModalVisible(true);
+  };
+
+  const handleSwitchDownloadAudioType = (type) => {
+    setSelectedDownloadType(type);
+    updateLocalPreferences({ preferredDownloadType: type });
+    const refEp = downloadTargetEp || episodes.find((e) => selectedEpNumsMap[e.num]) || episodes[0];
+    if (refEp) fetchUnifiedDownloadOptions(refEp, type);
+  };
+
+  const handleConfirmDownloadFinal = async () => {
+    const finalQuality = selectedDownloadQuality || downloadQualities[0];
+    const selectedNums = isSingleEpisodeDownload && downloadTargetEp
+      ? [String(downloadTargetEp.num)]
+      : Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
+
+    if (!finalQuality || selectedNums.length === 0) return;
+    setDownloadModalVisible(false);
+
+    const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
+    const queueArray = Array.isArray(existingQueue) ? existingQueue : [];
+    const newRecords = [];
+    const newlyDownloadedMapPatch = {};
+
+    for (const numStr of selectedNums) {
+      const epNum = Number(numStr);
+      const epObj = episodes.find((e) => Number(e.num) === epNum) || downloadTargetEp || { num: epNum, slug: String(epNum), title: `Episode ${epNum}` };
+      const isSameAsFetchedTarget = downloadTargetEp && Number(downloadTargetEp.num) === epNum;
+
+      const downloadRecord = {
+        id: `${animeDocId}_ep_${epNum}_${selectedDownloadType}_${finalQuality.label}`,
+        animeId: animeDocId, animeTitle: resolvedTitle, backdrop: resolvedBackdrop, coverImage: String(currentAnime?.coverImage || resolvedBackdrop || ''),
+        synopsis: String(tmdbSynopsis || currentAnime?.description || ''), genres: Array.isArray(currentAnime?.genres) ? currentAnime.genres : ['Action', 'Adventure'],
+        totalEpisodes: episodes.length || 12, episodeNum: epNum, episodeTitle: String(epObj.title || `Episode ${epNum}`), slug: String(epObj.slug || epNum),
+        audioType: selectedDownloadType,
+        subtitle: { label: String(selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off'), file: isSameAsFetchedTarget ? selectedSubTrack?.file || null : null, lang: String(selectedSubTrack?.lang || 'none') },
+        quality: finalQuality.label, streamUri: isSameAsFetchedTarget ? finalQuality.uri || null : null, referer: finalQuality.referer || 'https://vidwish.live/',
+        profileId: resolvedProfileId || 'default', userUid: resolvedUid || null, status: 'queued', savedAt: Date.now(),
+      };
+
+      newRecords.push(downloadRecord);
+      newlyDownloadedMapPatch[epNum] = downloadRecord;
+
+      if (resolvedUid && resolvedProfileId) {
+        firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').doc(`${animeDocId}_ep_${epNum}`).set(downloadRecord, { merge: true }).catch(() => {});
+      }
+    }
+
+    setDownloadedEpMap((prev) => ({ ...prev, ...newlyDownloadedMapPatch }));
+
+    const filteredQueue = queueArray.filter((item) => !newRecords.some((n) => n.id === item.id));
+    const updatedQueue = [...newRecords, ...filteredQueue];
+    await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
+
+    await updateLocalPreferences({ preferredDownloadType: selectedDownloadType, preferredSubtitleLang: selectedSubTrack?.label || selectedSubTrack?.lang || 'Off', preferredDownloadQuality: finalQuality.label, lastDownload: newRecords[0] });
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadTMDB = async () => {
+      try {
+        const cleanTitle = String(resolvedTitle || '').replace(/\(Dub\)|\(Sub\)/gi, '').trim();
+        if (!cleanTitle) return;
+        const searchType = currentAnime?.format === 'MOVIE' ? 'movie' : 'tv';
+        const tmdbRes = await fetchWithTimeout(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`);
+        const tmdbJson = await tmdbRes.json();
+        const show = tmdbJson?.results?.[0];
+
+        if (show && isMounted) {
+          const detailRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${searchType}/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
+          const detailJson = await detailRes.json();
+          if (detailJson?.overview && isMounted) setTmdbSynopsis(detailJson.overview);
+
+          const logos = detailJson?.images?.logos || [];
+          const bestLogo = logos.find((l) => l.iso_639_1 === 'en') || logos.find((l) => l.iso_639_1 === 'ja') || logos[0];
+          if (bestLogo && isMounted) setTitleLogo(`https://image.tmdb.org/t/p/w500${bestLogo.file_path}`);
+        }
+      } catch (_) {}
+    };
+
+    const loadRelationsAndMoreLikeThis = async () => {
+      try {
+        if (!resolvedTitle) return;
+        const aniQuery = `
+          query ($search: String) {
+            Media (search: $search, type: ANIME) {
+              status
+              recommendations (sort: RATING_DESC, perPage: 25) {
+                nodes {
+                  mediaRecommendation {
+                    id type title { romaji english } bannerImage coverImage { extraLarge large }
+                    format episodes seasonYear averageScore status description
+                  }
+                }
+              }
+              relations {
+                edges {
+                  relationType
+                  node {
+                    id type title { romaji english } bannerImage coverImage { extraLarge large }
+                    format episodes seasonYear averageScore status description
+                  }
+                }
+              }
+            }
+          }
+        `;
+        const aRes = await fetchWithTimeout('https://graphql.anilist.co', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: aniQuery, variables: { search: resolvedTitle } })
+        });
+        const aJson = await aRes.json();
+        const media = aJson?.data?.Media;
+
+        const isValidMedia = (node) => {
+          if (!node) return false;
+          if (node.type && node.type !== 'ANIME') return false; 
+          if (node.format === 'MUSIC' || node.format === 'NOVEL' || node.format === 'ONE_SHOT' || node.format === 'MANGA') return false;
+          return true;
+        };
+
+        const relationEdges = (media?.relations?.edges || []).filter(
+          (e) => e?.node && isValidMedia(e.node)
+        );
+
+        const relationPriority = { SEQUEL: 1, PREQUEL: 2, PARENT: 3, SIDE_STORY: 4, SPIN_OFF: 5, ALTERNATIVE: 6, SUMMARY: 7, OTHER: 8 };
+
+        const formattedRelations = relationEdges
+          .map((edge) => {
+            const node = edge.node;
+            const relType = edge.relationType || 'RELATED';
+            return {
+              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
+              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
+              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
+              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
+              status: node.status || 'FINISHED', relationType: String(relType).replace(/_/g, ' '), priority: relationPriority[relType] || 99,
+              description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
+            };
+          })
+          .sort((a, b) => a.priority - b.priority);
+
+        const recNodes = (media?.recommendations?.nodes || [])
+          .map((n) => n?.mediaRecommendation)
+          .filter((node) => isValidMedia(node));
+
+        const combinedMore = [
+          ...recNodes.map((node) => ({
+            id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
+            image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
+            backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
+            episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
+            status: node.status || 'FINISHED', relationType: node.format || 'TV', description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
+          })),
+          ...formattedRelations,
+        ];
+
+        const uniqueMore = [];
+        const seenMoreIds = new Set();
+        for (const item of combinedMore) {
+          if (!seenMoreIds.has(item.id)) { seenMoreIds.add(item.id); uniqueMore.push(item); }
+        }
+
+        const sequelSliderItems = formattedRelations.length > 0 ? formattedRelations : uniqueMore.slice(0, 10);
+
+        if (isMounted) {
+          setSequelsAndRelated(sequelSliderItems);
+          setMoreLikeThis(uniqueMore);
+        }
+      } catch (_) {}
+    };
+
+    loadTMDB();
+    loadRelationsAndMoreLikeThis();
+    return () => { isMounted = false; };
+  }, [resolvedTitle, currentAnime?.format]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const fetchEpisodes = async () => {
       setEpisodesLoading(true);
       if (isUpcoming) {
         if (isMounted) setEpisodesLoading(false);
         return;
       }
-      
       try {
-        // Attempt to fetch episodes immediately using the fastest known ID
         let targetId = animeDocId;
-        setVercelAnimeId(targetId);
-
-        let res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`, {}, 3000);
-        
-        // If the ID was wrong or missing, search and hot-swap the ID seamlessly
-        if (!res.ok) {
-          const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`, {}, 4000);
-          const searchJson = await searchRes.json();
-          const matches = searchJson?.data || [];
-          if (matches.length > 0) {
-            const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
-            if (exact?.id) {
-              targetId = exact.id;
-              if (isMounted) setVercelAnimeId(targetId);
-              res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
-            }
-          }
+        const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`);
+        const searchJson = await searchRes.json();
+        const matches = searchJson?.data || [];
+        if (matches.length > 0) {
+          const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
+          if (exact?.id) targetId = exact.id;
         }
+        if (isMounted) setVercelAnimeId(targetId);
 
+        const res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
         const json = await res.json();
         const list = json?.data || [];
 
@@ -358,91 +929,9 @@ export default function Play({
       }
     };
 
-    const loadTMDBandAniList = async () => {
-      try {
-        const cleanTitle = String(resolvedTitle || '').replace(/\(Dub\)|\(Sub\)/gi, '').trim();
-        if (!cleanTitle) return;
-        const searchType = currentAnime?.format === 'MOVIE' ? 'movie' : 'tv';
-        
-        // Fetch TMDB
-        fetchWithTimeout(`https://api.themoviedb.org/3/search/${searchType}?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(cleanTitle)}`)
-          .then(res => res.json())
-          .then(async (tmdbJson) => {
-            const show = tmdbJson?.results?.[0];
-            if (show && isMounted) {
-              const detailRes = await fetchWithTimeout(`https://api.themoviedb.org/3/${searchType}/${show.id}?api_key=${TMDB_API_KEY}&append_to_response=images`);
-              const detailJson = await detailRes.json();
-              if (detailJson?.overview && isMounted) setTmdbSynopsis(detailJson.overview);
-
-              const logos = detailJson?.images?.logos || [];
-              const bestLogo = logos.find((l) => l.iso_639_1 === 'en') || logos.find((l) => l.iso_639_1 === 'ja') || logos[0];
-              if (bestLogo && isMounted) setTitleLogo(`https://image.tmdb.org/t/p/w500${bestLogo.file_path}`);
-            }
-          }).catch(() => {});
-
-        // Fetch AniList Relations
-        const aniQuery = `
-          query ($search: String) {
-            Media (search: $search, type: ANIME) {
-              recommendations (sort: RATING_DESC, perPage: 25) { nodes { mediaRecommendation { id type title { romaji english } bannerImage coverImage { extraLarge large } format episodes seasonYear averageScore status description } } }
-              relations { edges { relationType node { id type title { romaji english } bannerImage coverImage { extraLarge large } format episodes seasonYear averageScore status description } } }
-            }
-          }
-        `;
-        fetchWithTimeout('https://graphql.anilist.co', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: aniQuery, variables: { search: resolvedTitle } })
-        }).then(res => res.json()).then(aJson => {
-          const media = aJson?.data?.Media;
-          if (!media) return;
-
-          const isValidMedia = (node) => node && (!node.type || node.type === 'ANIME') && !['MUSIC', 'NOVEL', 'ONE_SHOT', 'MANGA'].includes(node.format);
-          
-          const relationEdges = (media.relations?.edges || []).filter(e => e?.node && isValidMedia(e.node));
-          const relationPriority = { SEQUEL: 1, PREQUEL: 2, PARENT: 3, SIDE_STORY: 4, SPIN_OFF: 5, ALTERNATIVE: 6, SUMMARY: 7, OTHER: 8 };
-
-          const formattedRelations = relationEdges.map((edge) => {
-            const node = edge.node;
-            return {
-              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
-              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
-              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
-              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
-              status: node.status || 'FINISHED', relationType: String(edge.relationType || 'RELATED').replace(/_/g, ' '), priority: relationPriority[edge.relationType] || 99,
-              description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
-            };
-          }).sort((a, b) => a.priority - b.priority);
-
-          const recNodes = (media.recommendations?.nodes || []).map(n => n?.mediaRecommendation).filter(node => isValidMedia(node));
-          const combinedMore = [
-            ...recNodes.map((node) => ({
-              id: String(node.id), animeId: String(node.id), title: node.title?.english || node.title?.romaji || 'Untitled',
-              image: node.coverImage?.extraLarge || node.coverImage?.large || '', coverImage: node.coverImage?.extraLarge || node.coverImage?.large || '',
-              backdrop: node.bannerImage || node.coverImage?.extraLarge || node.coverImage?.large || '', format: node.format || 'TV',
-              episodesCount: node.episodes || 12, sub: node.episodes || 12, score: node.averageScore || 85, year: node.seasonYear || '',
-              status: node.status || 'FINISHED', relationType: node.format || 'TV', description: node.description ? String(node.description).replace(/<[^>]*>/g, '') : '',
-            })),
-            ...formattedRelations,
-          ];
-
-          const uniqueMore = [];
-          const seenMoreIds = new Set();
-          for (const item of combinedMore) {
-            if (!seenMoreIds.has(item.id)) { seenMoreIds.add(item.id); uniqueMore.push(item); }
-          }
-
-          if (isMounted) {
-            setSequelsAndRelated(formattedRelations.length > 0 ? formattedRelations : uniqueMore.slice(0, 10));
-            setMoreLikeThis(uniqueMore);
-          }
-        }).catch(() => {});
-      } catch (_) {}
-    };
-
-    loadFastEpisodes();
-    loadTMDBandAniList();
-
+    fetchEpisodes();
     return () => { isMounted = false; };
-  }, [animeDocId, resolvedTitle, isUpcoming, currentAnime?.format]);
+  }, [animeDocId, resolvedTitle, isUpcoming]);
 
   const episodeChunks = useMemo(() => {
     const chunks = [];
@@ -461,16 +950,25 @@ export default function Play({
       const safeEp = encodeURIComponent(String(episodeItem.slug));
       const downloadedRecord = downloadedEpMap[episodeItem.num] || null;
       const offlineFileUri = downloadedRecord?.localUri || downloadedRecord?.fileUri || downloadedRecord?.streamUri || null;
+      let streamManifest = null;
       
+      if (!offlineFileUri || !String(offlineFileUri).startsWith('file://')) {
+        try {
+          const streamUrl = `${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=hd-1&type=sub`;
+          const res = await fetchWithTimeout(streamUrl, {}, 8000);
+          const json = await res.json();
+          streamManifest = json?.data || json?.results || null;
+        } catch (_) {}
+      }
+
       const savedEpProgress = userProgressMap[String(episodeItem.slug)] || userProgressMap[`ep_${episodeItem.num}`] || null;
       const playbackPayload = {
-        streamUrl: offlineFileUri, // Player.js will aggressively resolve this if it's null
+        streamUrl: offlineFileUri || streamManifest?.m3u8 || streamManifest?.streamingLink || null,
         localUri: offlineFileUri && String(offlineFileUri).startsWith('file://') ? offlineFileUri : null,
         localMetaUri: downloadedRecord?.localMetaUri || null, localSubtitleUri: downloadedRecord?.localSubtitleUri || downloadedRecord?.subtitle?.file || null,
         isOffline: Boolean(offlineFileUri && String(offlineFileUri).startsWith('file://')),
-        referer: downloadedRecord?.referer || 'https://vidwish.live/',
-        subtitles: [], 
-        animeTitle: resolvedTitle, title: resolvedTitle, animeBackdrop: resolvedBackdrop, backdropUrl: resolvedBackdrop, backdrop: resolvedBackdrop,
+        referer: downloadedRecord?.referer || streamManifest?.referer || 'https://vidwish.live/',
+        subtitles: streamManifest?.subtitles || [], animeTitle: resolvedTitle, title: resolvedTitle, animeBackdrop: resolvedBackdrop, backdropUrl: resolvedBackdrop, backdrop: resolvedBackdrop,
         coverImage: currentAnime?.coverImage || resolvedBackdrop, episodeNum: Number(episodeItem.num), episodeTitle: episodeItem.title || `Episode ${episodeItem.num}`,
         epTitle: episodeItem.title || `Episode ${episodeItem.num}`, animeId: animeDocId, providerId: vercelAnimeId || animeDocId,
         slug: String(episodeItem.slug), progress: savedEpProgress ? Number(savedEpProgress.progress || 0) : 0, duration: savedEpProgress ? Number(savedEpProgress.duration || 0) : 0,
@@ -490,6 +988,7 @@ export default function Play({
     } finally { setLoadingEpisode(null); }
   };
 
+  // --- NESTED PLAY OVERLAY LOGIC ---
   const handleSelectRelatedAnime = useCallback((item) => {
     if (!item) return;
     const enrichedTarget = {
@@ -500,6 +999,7 @@ export default function Play({
       currentProfile: resolvedProfile,
     };
     
+    // Instead of replacing the current page content, push a completely new play.js layer on top
     setNestedAnime(enrichedTarget);
   }, [resolvedUid, resolvedProfileId, resolvedProfile]);
 
@@ -865,6 +1365,7 @@ export default function Play({
       )}
 
       {/* --- NESTED PLAY OVERLAY --- */}
+      {/* Recursively renders a new Play component completely over the current one */}
       {nestedAnime && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 10000, elevation: 10000, backgroundColor: BLACK }]}>
           <Play
