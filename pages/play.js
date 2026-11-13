@@ -33,7 +33,7 @@ const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const EPISODE_CHUNK_SIZE = 50;
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
-// Local Storage File Paths via expo-file-system
+// Local Storage File Paths
 const PLAY_PREFS_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_play_prefs.json`
   : null;
@@ -45,7 +45,6 @@ const GRID_COLUMNS = 3;
 const GRID_SPACING = 12;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
 
-// Safely extract a valid React component from a module import
 const resolveValidComponent = (mod) => {
   if (!mod) return null;
   if (typeof mod === 'function') return mod;
@@ -58,7 +57,8 @@ const resolveValidComponent = (mod) => {
 const ResolvedShareComp = resolveValidComponent(ShareSheetModule);
 const ResolvedRoomComp = resolveValidComponent(RoomModule);
 
-const fetchWithTimeout = async (url, options = {}, timeoutMs = 8000) => {
+// Generous 15-second timeout to easily survive Vercel cold starts
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -170,7 +170,7 @@ export default function Play({
   };
 
   const [currentAnime, setCurrentAnime] = useState(initialAnime);
-  const [nestedAnime, setNestedAnime] = useState(null);
+  const [nestedAnime, setNestedAnime] = useState(null); 
 
   useEffect(() => {
     if (propAnime && (propAnime.id || propAnime.animeId)) {
@@ -196,6 +196,7 @@ export default function Play({
   }, [incomingProfile, propActiveProfileId]);
 
   const resolvedUid = resolvedUser?.uid || currentAnime?.userUid || routeParams.userUid || auth().currentUser?.uid || null;
+
   const animeDocId = String(currentAnime?.animeId || currentAnime?.id || 'unknown');
   const resolvedTitle = String(currentAnime?.animeTitle || currentAnime?.title || 'Anime');
   const resolvedBackdrop = String(
@@ -332,7 +333,7 @@ export default function Play({
   useEffect(() => {
     if (!isOfflineMode) return;
     
-    // When offline, immediately construct episodes array using downloaded records!
+    // When offline, immediately construct episodes array using downloaded records
     const dlValues = Object.values(downloadedEpMap).sort((a, b) => Number(a.episodeNum) - Number(b.episodeNum));
     const offlineEps = dlValues.map(ep => ({
       id: String(ep.episodeNum), 
@@ -348,7 +349,7 @@ export default function Play({
     setEpisodesLoading(false);
   }, [isOfflineMode, downloadedEpMap]);
 
-  // Online Mode Engine
+  // Online Mode Engine (Fully Crash Proof + High Timeout Guarantee)
   useEffect(() => {
     if (isOfflineMode) return; 
 
@@ -363,35 +364,44 @@ export default function Play({
       
       try {
         let exactTargetId = animeDocId;
+        let finalEpisodesList = [];
 
-        // STEP 1: Always do a fast Search to map to the exact Vercel ID FIRST
-        const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`, {}, 4000);
-        if (searchRes.ok) {
-          const searchJson = await searchRes.json();
-          const matches = searchJson?.data || searchJson?.results || [];
-          if (matches.length > 0) {
-            const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
-            if (exact?.id) exactTargetId = exact.id;
+        // STEP 1: Attempt to fetch directly first (Fastest path)
+        const directRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(exactTargetId)}`, {}, 15000).catch(() => null);
+        if (directRes && directRes.ok) {
+          const directJson = await directRes.json();
+          finalEpisodesList = directJson?.data || directJson?.results || [];
+        }
+
+        // STEP 2: If direct fetch failed (wrong ID), silently search and resolve the exact ID
+        if (finalEpisodesList.length === 0) {
+          const searchRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(resolvedTitle)}`, {}, 15000).catch(() => null);
+          if (searchRes && searchRes.ok) {
+            const searchJson = await searchRes.json();
+            const matches = searchJson?.data || searchJson?.results || [];
+            if (matches.length > 0) {
+              const exact = matches.find((m) => String(m.title || '').toLowerCase() === resolvedTitle.toLowerCase()) || matches[0];
+              if (exact?.id) {
+                exactTargetId = exact.id;
+                if (isMounted) setVercelAnimeId(exactTargetId);
+                
+                // Fetch episodes with the newly resolved accurate ID
+                const fallbackRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(exactTargetId)}`, {}, 15000).catch(() => null);
+                if (fallbackRes && fallbackRes.ok) {
+                  const fallbackJson = await fallbackRes.json();
+                  finalEpisodesList = fallbackJson?.data || fallbackJson?.results || [];
+                }
+              }
+            }
           }
         }
         
-        if (isMounted) setVercelAnimeId(exactTargetId);
-
-        // STEP 2: Fetch episodes reliably with exact Vercel ID
-        const epRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(exactTargetId)}`, {}, 6000);
-        if (epRes.ok) {
-          const epJson = await epRes.json();
-          const list = epJson?.data || epJson?.results || [];
-
-          if (isMounted && Array.isArray(list) && list.length > 0) {
-            const formatted = list.map((ep, idx) => ({
-              id: String(ep.id || idx + 1), slug: String(ep.slug || ep.id || ep.num || idx + 1), num: Number(ep.num || idx + 1),
-              title: ep.title || `Episode ${ep.num || idx + 1}`, isFiller: Boolean(ep.isFiller), isSub: ep.isSub ?? true, isDub: ep.isDub ?? false,
-            }));
-            setEpisodes(formatted);
-          } else {
-            if (isMounted) setEpisodes([]);
-          }
+        if (isMounted && Array.isArray(finalEpisodesList) && finalEpisodesList.length > 0) {
+          const formatted = finalEpisodesList.map((ep, idx) => ({
+            id: String(ep.id || idx + 1), slug: String(ep.slug || ep.id || ep.num || idx + 1), num: Number(ep.num || idx + 1),
+            title: ep.title || `Episode ${ep.num || idx + 1}`, isFiller: Boolean(ep.isFiller), isSub: ep.isSub ?? true, isDub: ep.isDub ?? false,
+          }));
+          setEpisodes(formatted);
         } else {
           if (isMounted) setEpisodes([]);
         }
@@ -607,6 +617,335 @@ export default function Play({
     [executeDeleteDownloadedEpisodes]
   );
 
+  const handleLongPressDownloadedEpisode = useCallback((epNum) => {
+    setIsBulkDeleteMode(true);
+    setBulkDeleteSelectedMap((prev) => ({ ...prev, [epNum]: true }));
+  }, []);
+
+  const toggleBulkDeleteEpisodeSelection = useCallback((epNum) => {
+    setBulkDeleteSelectedMap((prev) => {
+      const next = { ...prev, [epNum]: !prev[epNum] };
+      const anyLeft = Object.keys(next).some((k) => next[k]);
+      if (!anyLeft) setIsBulkDeleteMode(false);
+      return next;
+    });
+  }, []);
+
+  const handleTriggerShare = async () => {
+    if (ResolvedShareComp) { setShareModalVisible(true); return; }
+    try { await Share.share({ message: `Watch ${resolvedTitle} on Kameko!`, }); } catch (_) {}
+  };
+
+  const updateLocalPreferences = useCallback(async (patch) => {
+    const existing = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const merged = {
+      ...existing,
+      ...patch,
+      selectedChunksByAnime: { ...(existing?.selectedChunksByAnime || {}), ...(patch?.selectedChunksByAnime || {}) },
+      updatedAt: Date.now(),
+    };
+    await writeLocalJson(PLAY_PREFS_FILE_URI, merged);
+    return merged;
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    hasRestoredLocalChunkRef.current = false;
+
+    const restoreSavedSelection = async () => {
+      const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+      if (!isMounted) return;
+
+      const savedChunk = savedPrefs?.selectedChunksByAnime?.[animeDocId];
+      if (typeof savedChunk === 'number' && savedChunk >= 0) {
+        hasRestoredLocalChunkRef.current = true;
+        setCurrentChunkIndex(savedChunk);
+      } else {
+        setCurrentChunkIndex(0);
+      }
+      if (savedPrefs?.preferredDownloadType) { setSelectedDownloadType(savedPrefs.preferredDownloadType); }
+    };
+    restoreSavedSelection();
+    return () => { isMounted = false; };
+  }, [animeDocId]);
+
+  const handleSelectChunk = useCallback((index, rangeLabel) => {
+    setCurrentChunkIndex(index);
+    hasRestoredLocalChunkRef.current = true;
+    updateLocalPreferences({
+      selectedChunksByAnime: { [animeDocId]: index },
+      lastSelectedChunk: { animeId: animeDocId, animeTitle: resolvedTitle, chunkIndex: index, rangeLabel, timestamp: Date.now() },
+    });
+  }, [animeDocId, resolvedTitle, updateLocalPreferences]);
+
+  useEffect(() => {
+    if (!resolvedUid) return;
+
+    const libColRef = firestore().collection('users').doc(String(resolvedUid)).collection('library');
+    const libUnsub = libColRef.onSnapshot((snap) => {
+      const nextSet = new Set();
+      snap?.forEach((doc) => nextSet.add(String(doc.id)));
+      setLibrarySet(nextSet);
+    }, () => {});
+
+    if (!resolvedProfileId || !animeDocId) return () => libUnsub();
+
+    const historyRef = firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection(WATCH_HISTORY_COLLECTION).where('animeId', '==', animeDocId);
+    const historyUnsub = historyRef.onSnapshot((snapshot) => {
+      if (snapshot && !snapshot.empty) {
+        const pMap = {};
+        let latest = null;
+        snapshot.forEach((doc) => {
+          const data = doc.data();
+          if (!data) return;
+          const epKey = String(data.slug || data.episodeNum || data.lastWatchedEp || '');
+          if (epKey) pMap[epKey] = data;
+          if (data.episodeNum) pMap[`ep_${data.episodeNum}`] = data;
+          if (data.lastWatchedEp) pMap[`ep_${data.lastWatchedEp}`] = data;
+          if (data.episodes && typeof data.episodes === 'object') {
+            Object.keys(data.episodes).forEach((k) => {
+              pMap[`ep_${k}`] = data.episodes[k];
+              if (data.episodes[k]?.slug) pMap[String(data.episodes[k].slug)] = data.episodes[k];
+            });
+          }
+          if (!latest || (data.timestamp || 0) > (latest.timestamp || 0)) { latest = data; }
+        });
+        setUserProgressMap(pMap);
+        setLatestWatched(latest);
+      } else {
+        setUserProgressMap({});
+        setLatestWatched(null);
+      }
+    }, () => {});
+
+    return () => { historyUnsub(); libUnsub(); };
+  }, [resolvedUid, resolvedProfileId, animeDocId]);
+
+  const toggleLibrary = async () => {
+    if (!resolvedUid || !animeDocId) return;
+    const ref = firestore().collection('users').doc(String(resolvedUid)).collection('library').doc(animeDocId);
+    if (inLibrary) {
+      await ref.delete().catch(() => {});
+    } else {
+      await ref.set({
+        id: animeDocId, animeId: animeDocId, title: resolvedTitle, img: currentAnime?.coverImage || resolvedBackdrop,
+        backdrop: resolvedBackdrop, profileId: resolvedProfileId, addedAt: Date.now(),
+      }).catch(() => {});
+    }
+  };
+
+  const toggleCardLibraryItem = async (cardItem) => {
+    if (!resolvedUid || !cardItem?.id) return;
+    const targetId = String(cardItem.id);
+    const ref = firestore().collection('users').doc(String(resolvedUid)).collection('library').doc(targetId);
+    if (librarySet.has(targetId)) {
+      await ref.delete().catch(() => {});
+    } else {
+      await ref.set({
+        id: targetId, animeId: targetId, title: String(cardItem.title || 'Anime'),
+        img: String(cardItem.coverImage || cardItem.image || cardItem.backdrop || ''),
+        backdrop: String(cardItem.backdrop || cardItem.coverImage || cardItem.image || ''),
+        profileId: resolvedProfileId, addedAt: Date.now(),
+      }).catch(() => {});
+    }
+  };
+
+  const fetchUnifiedDownloadOptions = useCallback(async (epItem, audioType) => {
+    if (!epItem) return;
+    setIsFetchingDownloadData(true);
+
+    try {
+      const safeId = encodeURIComponent(vercelAnimeId || animeDocId);
+      const safeEp = encodeURIComponent(String(epItem.slug || epItem.num || 1));
+      const servers = ['hd-1', 'hd-2', 'vidstream-2'];
+
+      let targetMasterUrl = null;
+      let targetReferer = 'https://vidwish.live/';
+      let collectedSubtitles = [];
+
+      for (const srv of servers) {
+        try {
+          const res = await fetchWithTimeout(`${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=${audioType}`);
+          const json = await res.json();
+          const payload = json?.data || json?.results || {};
+          if (payload?.m3u8 || payload?.streamingLink) {
+            targetMasterUrl = payload.m3u8 || payload.streamingLink;
+            if (payload.referer) targetReferer = payload.referer;
+            if (Array.isArray(payload.subtitles) && payload.subtitles.length > 0) { collectedSubtitles = [...payload.subtitles]; }
+            break;
+          }
+        } catch (_) {}
+      }
+
+      if (audioType === 'dub' || collectedSubtitles.length === 0) {
+        for (const srv of servers) {
+          try {
+            const subRes = await fetchWithTimeout(`${VERCEL_API_BASE}/api/stream?id=${safeId}&ep=${safeEp}&server=${srv}&type=sub`);
+            const subJson = await subRes.json();
+            const subPayload = subJson?.data || subJson?.results || {};
+            if (!targetMasterUrl && (subPayload?.m3u8 || subPayload?.streamingLink)) {
+              targetMasterUrl = subPayload.m3u8 || subPayload.streamingLink;
+              if (subPayload.referer) targetReferer = subPayload.referer;
+            }
+            if (Array.isArray(subPayload?.subtitles) && subPayload.subtitles.length > 0) {
+              const seen = new Set(collectedSubtitles.map((s) => s.label || s.lang));
+              for (const s of subPayload.subtitles) {
+                const lbl = s.label || s.lang;
+                if (lbl && !seen.has(lbl)) { seen.add(lbl); collectedSubtitles.push(s); }
+              }
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+
+      setDownloadSubTracks(collectedSubtitles);
+      setSelectedSubTrack((prev) => {
+        if (prev && prev.lang === 'none') return prev;
+        if (prev) {
+          const match = collectedSubtitles.find((s) => (s.label || s.lang) === (prev.label || prev.lang));
+          if (match) return match;
+        }
+        if (collectedSubtitles.length > 0) {
+          return collectedSubtitles.find((s) => String(s.label || s.lang || '').toLowerCase().includes('eng')) || collectedSubtitles.find((s) => s.default) || collectedSubtitles[0];
+        }
+        return { label: 'No Subtitles / Off', file: null, lang: 'none' };
+      });
+
+      let explicitQualities = [];
+      if (targetMasterUrl) {
+        try {
+          const m3Res = await fetchWithTimeout(targetMasterUrl, { headers: { Referer: targetReferer } });
+          const m3Text = await m3Res.text();
+          const lines = m3Text.split('\n');
+
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('RESOLUTION=')) {
+              const resMatch = lines[i].match(/RESOLUTION=\d+x(\d+)/);
+              if (resMatch && lines[i + 1]) {
+                const label = `${resMatch[1]}p`;
+                let streamUri = lines[i + 1].trim();
+                if (!streamUri.startsWith('http')) { streamUri = targetMasterUrl.substring(0, targetMasterUrl.lastIndexOf('/') + 1) + streamUri; }
+                if (label.toLowerCase() !== 'auto') { explicitQualities.push({ label, resolution: Number(resMatch[1]), uri: streamUri, referer: targetReferer }); }
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      const uniqueQualities = [];
+      const seenLabels = new Set();
+      for (const q of explicitQualities) {
+        if (q.label && q.label.toLowerCase() !== 'auto' && !seenLabels.has(q.label)) {
+          seenLabels.add(q.label);
+          uniqueQualities.push(q);
+        }
+      }
+      uniqueQualities.sort((a, b) => (b.resolution || 0) - (a.resolution || 0));
+
+      const finalQualities = uniqueQualities.length > 0 ? uniqueQualities : [
+        { label: '1080p', resolution: 1080, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '720p', resolution: 720, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '480p', resolution: 480, uri: targetMasterUrl || '', referer: targetReferer },
+        { label: '360p', resolution: 360, uri: targetMasterUrl || '', referer: targetReferer },
+      ];
+
+      setDownloadQualities(finalQualities);
+      setSelectedDownloadQuality((prev) => {
+        if (prev) { const matchedQ = finalQualities.find((q) => q.label === prev.label); if (matchedQ) return matchedQ; }
+        return finalQualities[0];
+      });
+    } catch (_) {
+      const fallback = [
+        { label: '1080p', resolution: 1080, uri: '' }, { label: '720p', resolution: 720, uri: '' }, { label: '480p', resolution: 480, uri: '' }
+      ];
+      setDownloadQualities(fallback);
+      setSelectedDownloadQuality(fallback[0]);
+    } finally { setIsFetchingDownloadData(false); }
+  }, [vercelAnimeId, animeDocId]);
+
+  const handleOpenSingleEpisodeDownload = async (episodeItem) => {
+    if (!episodeItem) return;
+    const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+
+    setIsSingleEpisodeDownload(true);
+    setDownloadTargetEp(episodeItem);
+    setSelectedEpNumsMap({ [episodeItem.num]: true });
+    setSelectedDownloadType(initialAudio);
+    setDownloadStep(2);
+    setDownloadModalVisible(true);
+    fetchUnifiedDownloadOptions(episodeItem, initialAudio);
+  };
+
+  const handleOpenMultiEpisodeDownload = async (defaultEp) => {
+    const savedPrefs = await readLocalJson(PLAY_PREFS_FILE_URI, {});
+    const initialAudio = savedPrefs?.preferredDownloadType || 'sub';
+    const initialEp = defaultEp || episodes[0] || { num: 1, slug: '1', title: 'Episode 1' };
+
+    setIsSingleEpisodeDownload(false);
+    setDownloadTargetEp(initialEp);
+    setSelectedEpNumsMap({ [initialEp.num]: true });
+    setDownloadChunkIndex(currentChunkIndex);
+    setSelectedDownloadType(initialAudio);
+    setDownloadStep(1);
+    setDownloadModalVisible(true);
+  };
+
+  const handleSwitchDownloadAudioType = (type) => {
+    setSelectedDownloadType(type);
+    updateLocalPreferences({ preferredDownloadType: type });
+    const refEp = downloadTargetEp || episodes.find((e) => selectedEpNumsMap[e.num]) || episodes[0];
+    if (refEp) fetchUnifiedDownloadOptions(refEp, type);
+  };
+
+  const handleConfirmDownloadFinal = async () => {
+    const finalQuality = selectedDownloadQuality || downloadQualities[0];
+    const selectedNums = isSingleEpisodeDownload && downloadTargetEp
+      ? [String(downloadTargetEp.num)]
+      : Object.keys(selectedEpNumsMap).filter((k) => selectedEpNumsMap[k]);
+
+    if (!finalQuality || selectedNums.length === 0) return;
+    setDownloadModalVisible(false);
+
+    const existingQueue = await readLocalJson(DOWNLOAD_QUEUE_FILE_URI, []);
+    const queueArray = Array.isArray(existingQueue) ? existingQueue : [];
+    const newRecords = [];
+    const newlyDownloadedMapPatch = {};
+
+    for (const numStr of selectedNums) {
+      const epNum = Number(numStr);
+      const epObj = episodes.find((e) => Number(e.num) === epNum) || downloadTargetEp || { num: epNum, slug: String(epNum), title: `Episode ${epNum}` };
+      const isSameAsFetchedTarget = downloadTargetEp && Number(downloadTargetEp.num) === epNum;
+
+      const downloadRecord = {
+        id: `${animeDocId}_ep_${epNum}_${selectedDownloadType}_${finalQuality.label}`,
+        animeId: animeDocId, animeTitle: resolvedTitle, backdrop: resolvedBackdrop, coverImage: String(currentAnime?.coverImage || resolvedBackdrop || ''),
+        synopsis: String(tmdbSynopsis || currentAnime?.description || ''), genres: Array.isArray(currentAnime?.genres) ? currentAnime.genres : ['Action', 'Adventure'],
+        totalEpisodes: episodes.length || 12, episodeNum: epNum, episodeTitle: String(epObj.title || `Episode ${epNum}`), slug: String(epObj.slug || epNum),
+        audioType: selectedDownloadType,
+        subtitle: { label: String(selectedSubTrack?.label || selectedSubTrack?.lang || 'No Subtitles / Off'), file: isSameAsFetchedTarget ? selectedSubTrack?.file || null : null, lang: String(selectedSubTrack?.lang || 'none') },
+        quality: finalQuality.label, streamUri: isSameAsFetchedTarget ? finalQuality.uri || null : null, referer: finalQuality.referer || 'https://vidwish.live/',
+        profileId: resolvedProfileId || 'default', userUid: resolvedUid || null, status: 'queued', savedAt: Date.now(),
+      };
+
+      newRecords.push(downloadRecord);
+      newlyDownloadedMapPatch[epNum] = downloadRecord;
+
+      if (resolvedUid && resolvedProfileId) {
+        firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(resolvedProfileId)).collection('downloads').doc(`${animeDocId}_ep_${epNum}`).set(downloadRecord, { merge: true }).catch(() => {});
+      }
+    }
+
+    setDownloadedEpMap((prev) => ({ ...prev, ...newlyDownloadedMapPatch }));
+
+    const filteredQueue = queueArray.filter((item) => !newRecords.some((n) => n.id === item.id));
+    const updatedQueue = [...newRecords, ...filteredQueue];
+    await writeLocalJson(DOWNLOAD_QUEUE_FILE_URI, updatedQueue);
+
+    await updateLocalPreferences({ preferredDownloadType: selectedDownloadType, preferredSubtitleLang: selectedSubTrack?.label || selectedSubTrack?.lang || 'Off', preferredDownloadQuality: finalQuality.label, lastDownload: newRecords[0] });
+  };
+
   const handleSelectRelatedAnime = useCallback((item) => {
     if (!item) return;
     const enrichedTarget = {
@@ -691,8 +1030,14 @@ export default function Play({
             <BookmarkIcon filled={inLibrary} size={22} />
             <Text style={styles.actionTabText}>Watchlist</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.actionTab} onPress={() => { if (!isOfflineMode) handleOpenMultiEpisodeDownload(targetEp); }} activeOpacity={isOfflineMode ? 0.3 : 0.7} disabled={isOfflineMode}><IconDownload /><Text style={styles.actionTabText}>Download</Text></TouchableOpacity>
-          <TouchableOpacity style={styles.actionTab} onPress={handleTriggerShare} activeOpacity={0.7}><IconShare /><Text style={styles.actionTabText}>Share</Text></TouchableOpacity>
+          <TouchableOpacity style={styles.actionTab} onPress={() => { if (!isOfflineMode) handleOpenMultiEpisodeDownload(targetEp); }} activeOpacity={isOfflineMode ? 0.3 : 0.7} disabled={isOfflineMode}>
+            <IconDownload size={22} color={WHITE} />
+            <Text style={styles.actionTabText}>Download</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.actionTab} onPress={handleTriggerShare} activeOpacity={0.7}>
+            <IconShare size={22} color={WHITE} />
+            <Text style={styles.actionTabText}>Share</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.synopsisContainer}>
@@ -774,9 +1119,9 @@ export default function Play({
         ListEmptyComponent={() => (
           <View style={styles.emptyContainer}>
             {episodesLoading ? (
-              <View style={{ alignItems: 'center', gap: 12 }}>
+              <View style={{ alignItems: 'center', marginTop: 12 }}>
                  <ActivityIndicator size="large" color={PURE_RED} />
-                 <Text style={{ color: TEXT_GREY, fontSize: 13, fontWeight: '700' }}>Fetching episodes securely...</Text>
+                 <Text style={{ color: TEXT_GREY, fontSize: 13, fontWeight: '700', marginTop: 12 }}>Fetching episodes securely...</Text>
               </View>
             ) : (
               <Text style={styles.emptyText}>
@@ -990,7 +1335,6 @@ export default function Play({
       )}
 
       {/* --- NESTED PLAY OVERLAY --- */}
-      {/* Recursively renders a new Play component completely over the current one */}
       {nestedAnime && (
         <View style={[StyleSheet.absoluteFillObject, { zIndex: 10000, elevation: 10000, backgroundColor: BLACK }]}>
           <Play
@@ -1033,32 +1377,32 @@ const styles = StyleSheet.create({
   logoRow: { width: '100%', alignItems: 'center', marginBottom: 12 },
   titleLogo: { width: width * 0.8, height: 100 },
   fallbackTitleText: { color: WHITE, fontSize: 32, fontWeight: '900', textAlign: 'center', textShadowColor: BLACK, textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 8 },
-  badgesRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 18 },
-  newBadge: { backgroundColor: PURE_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3 },
+  badgesRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginBottom: 18 }, // Removed gap
+  newBadge: { backgroundColor: PURE_RED, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3, marginRight: 10 },
   newBadgeText: { color: WHITE, fontSize: 11, fontWeight: '700' },
-  ratingBadge: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3 },
+  ratingBadge: { backgroundColor: 'rgba(255,255,255,0.25)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 3, marginRight: 10 },
   ratingBadgeText: { color: WHITE, fontSize: 11, fontWeight: '700' },
   scoreText: { color: TEXT_GREY, fontSize: 12, fontWeight: '700' },
   resumeBtn: { width: '100%', backgroundColor: PURE_RED, borderRadius: 6, paddingVertical: 14, justifyContent: 'center', marginBottom: 20, overflow: 'hidden' },
-  resumeContentRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
-  resumeBtnText: { color: WHITE, fontSize: 16, fontWeight: '800' },
+  resumeContentRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  resumeBtnText: { color: WHITE, fontSize: 16, fontWeight: '800', marginRight: 8 }, // Replaced gap
   resumeProgressUnderline: { position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, backgroundColor: 'rgba(0,0,0,0.2)' },
   resumeProgressFill: { height: '100%', backgroundColor: WHITE },
-  actionsBar: { flexDirection: 'row', justifyContent: 'center', gap: 48, marginBottom: 20 },
-  actionTab: { alignItems: 'center', gap: 6 },
-  actionTabText: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600' },
+  actionsBar: { flexDirection: 'row', justifyContent: 'center', marginBottom: 20 }, 
+  actionTab: { alignItems: 'center', marginHorizontal: 24 }, // Replaced gap
+  actionTabText: { color: 'rgba(255,255,255,0.8)', fontSize: 11, fontWeight: '600', marginTop: 6 }, // Replaced gap
   synopsisContainer: { marginBottom: 18 },
   synopsisBody: { color: TEXT_GREY, fontSize: 13, lineHeight: 19 },
   moreBtn: { marginTop: 4 },
   moreBtnText: { color: PURE_RED, fontSize: 12, fontWeight: '700' },
-  tabsHeader: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: BORDER_GREY, gap: 24 },
-  tabTitleBtn: { paddingVertical: 12 },
+  tabsHeader: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: BORDER_GREY },
+  tabTitleBtn: { paddingVertical: 12, marginRight: 24 }, // Replaced gap
   tabTitleBtnActive: { borderBottomWidth: 3, borderBottomColor: PURE_RED },
   tabTitleText: { color: TEXT_GREY, fontSize: 15, fontWeight: '700' },
   tabTitleTextActive: { color: WHITE },
 
-  chunkSelectorContainer: { paddingVertical: 14, gap: 10 },
-  chunkRectPill: { backgroundColor: DARK_GREY, paddingHorizontal: 18, paddingVertical: 9, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY },
+  chunkSelectorContainer: { paddingVertical: 14 },
+  chunkRectPill: { backgroundColor: DARK_GREY, paddingHorizontal: 18, paddingVertical: 9, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY, marginRight: 10 }, // Replaced gap
   chunkRectPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
   chunkRectPillText: { color: 'rgba(255,255,255,0.7)', fontSize: 13, fontWeight: '700' },
   chunkRectPillTextActive: { color: WHITE, fontWeight: '900' },
@@ -1069,8 +1413,8 @@ const styles = StyleSheet.create({
   episodeCard: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: BLACK, borderWidth: 1, borderColor: BORDER_GREY, borderRadius: 4, paddingVertical: 14, paddingHorizontal: 14, overflow: 'hidden' },
   episodeCardSelectedDelete: { borderColor: PURE_RED, backgroundColor: DARK_GREY },
   episodeCardTitle: { color: WHITE, fontSize: 14, fontWeight: '600', flex: 1 },
-  cardRightGroup: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  fillerTag: { backgroundColor: DARK_GREY, borderWidth: 1, borderColor: WHITE, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 },
+  cardRightGroup: { flexDirection: 'row', alignItems: 'center' },
+  fillerTag: { backgroundColor: DARK_GREY, borderWidth: 1, borderColor: WHITE, paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, marginRight: 8 }, // Replaced gap
   fillerTagText: { color: WHITE, fontSize: 9, fontWeight: '900' },
   downloadIconBtn: { width: 44, height: 44, borderWidth: 1, borderColor: BORDER_GREY, borderRadius: 4, marginLeft: 8, justifyContent: 'center', alignItems: 'center' },
   
@@ -1087,29 +1431,29 @@ const styles = StyleSheet.create({
   bulkDeleteFloatingBar: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: BLACK, borderTopWidth: 1.5, borderTopColor: BORDER_GREY, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 18, zIndex: 900, elevation: 25 },
   bulkDeleteBarTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   bulkDeleteCountText: { color: WHITE, fontSize: 13, fontWeight: '800' },
-  bulkDeleteTopActions: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  bulkSelectAllBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, borderWidth: 1, borderColor: PURE_RED },
+  bulkDeleteTopActions: { flexDirection: 'row', alignItems: 'center' },
+  bulkSelectAllBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, borderWidth: 1, borderColor: PURE_RED, marginRight: 10 }, // Replaced gap
   bulkSelectAllText: { color: PURE_RED, fontSize: 11, fontWeight: '800' },
   bulkCancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 4, backgroundColor: DARK_GREY },
   bulkCancelText: { color: WHITE, fontSize: 11, fontWeight: '700' },
-  bulkConfirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 13, borderRadius: 6 },
-  bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900' },
+  bulkConfirmDeleteBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: PURE_RED, paddingVertical: 13, borderRadius: 6 },
+  bulkConfirmDeleteText: { color: WHITE, fontSize: 14, fontWeight: '900', marginLeft: 8 }, // Replaced gap
 
   settingsModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'flex-end' },
   settingsActionSheetBox: { backgroundColor: BLACK, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingHorizontal: 20, paddingTop: 18, paddingBottom: 28, borderTopWidth: 1, borderTopColor: BORDER_GREY },
   settingsSheetTitle: { color: WHITE, fontSize: 15, fontWeight: '800', marginBottom: 14 },
-  settingsSheetOptionRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, borderTopWidth: 1, borderTopColor: BORDER_GREY },
-  settingsSheetOptionText: { color: WHITE, fontSize: 14, fontWeight: '700' },
+  settingsSheetOptionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderTopWidth: 1, borderTopColor: BORDER_GREY },
+  settingsSheetOptionText: { color: WHITE, fontSize: 14, fontWeight: '700', marginLeft: 12 }, // Replaced gap
 
   confirmModalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.84)', justifyContent: 'flex-end' },
   confirmPopupCard: { width: '100%', backgroundColor: BLACK, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 22, paddingTop: 24, paddingBottom: 34, borderTopWidth: 1, borderColor: BORDER_GREY, alignItems: 'center' },
   confirmIconWrap: { width: 46, height: 46, borderRadius: 23, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginBottom: 14 },
   confirmPopupTitle: { color: WHITE, fontSize: 17, fontWeight: '800', textAlign: 'center', letterSpacing: 0.2 },
   confirmPopupMessage: { color: TEXT_GREY, fontSize: 13, lineHeight: 19, fontWeight: '500', textAlign: 'center', marginTop: 8, marginBottom: 20 },
-  confirmBtnsRow: { flexDirection: 'row', width: '100%', gap: 12 },
-  confirmCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center' },
+  confirmBtnsRow: { flexDirection: 'row', width: '100%' },
+  confirmCancelBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY, alignItems: 'center', justifyContent: 'center', marginRight: 6 }, // Replaced gap
   confirmCancelBtnText: { color: WHITE, fontSize: 13, fontWeight: '700' },
-  confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center' },
+  confirmDangerBtn: { flex: 1, paddingVertical: 12, borderRadius: 9, backgroundColor: PURE_RED, alignItems: 'center', justifyContent: 'center', marginLeft: 6 }, // Replaced gap
   confirmDangerBtnText: { color: WHITE, fontSize: 13, fontWeight: '800' },
 
   recentStyleSection: { marginTop: 18, marginBottom: 25 },
@@ -1119,8 +1463,8 @@ const styles = StyleSheet.create({
   recentCardContainer: { width: 140, marginRight: 15 },
   recentImageWrapper: { width: 140, height: 210, borderRadius: 8, overflow: 'hidden', backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
   recentCoverImage: { width: '100%', height: '100%' },
-  recentBadgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start', gap: 4 },
-  recentEpBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3 },
+  recentBadgeContainer: { position: 'absolute', top: 8, left: 8, alignItems: 'flex-start' },
+  recentEpBadge: { backgroundColor: WHITE, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4, shadowColor: BLACK, shadowOpacity: 0.5, shadowRadius: 3, marginBottom: 4 }, // Replaced gap
   recentEpBadgeText: { color: BLACK, fontSize: 10, fontWeight: '900' },
   recentCcBadge: { backgroundColor: DARK_GREY, paddingHorizontal: 5, paddingVertical: 2, borderRadius: 4 },
   recentCcBadgeText: { color: WHITE, fontSize: 9, fontWeight: 'bold' },
@@ -1128,8 +1472,8 @@ const styles = StyleSheet.create({
   recentSaveBtnActive: { backgroundColor: 'rgba(0,0,0,0.85)', borderColor: PURE_RED },
   recentAnimeTitle: { color: '#E0E0E0', fontSize: 13, fontWeight: '700', marginTop: 8 },
 
-  gridRowWrapper: { paddingHorizontal: 20, justifyContent: 'flex-start', gap: GRID_SPACING, marginBottom: 18 },
-  gridAnimeCard: { width: GRID_CARD_WIDTH },
+  gridRowWrapper: { paddingHorizontal: 20, justifyContent: 'flex-start', marginBottom: 18 },
+  gridAnimeCard: { width: GRID_CARD_WIDTH, marginRight: GRID_SPACING }, // Replaced gap
   gridPosterBox: { width: GRID_CARD_WIDTH, height: Math.floor(GRID_CARD_WIDTH * 1.5), borderRadius: 8, overflow: 'hidden', backgroundColor: DARK_GREY, borderWidth: 1, borderColor: BORDER_GREY },
 
   emptyContainer: { paddingVertical: 40, alignItems: 'center' },
@@ -1145,23 +1489,23 @@ const styles = StyleSheet.create({
   multiEpSelectTopBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   selectAllToggleBtn: { backgroundColor: DARK_GREY, paddingHorizontal: 12, paddingVertical: 6, borderRadius: 4, borderWidth: 1, borderColor: PURE_RED },
   selectAllToggleText: { color: PURE_RED, fontSize: 11, fontWeight: '900' },
-  multiEpGridContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingBottom: 14 },
-  multiEpPill: { width: '23%', paddingVertical: 10, backgroundColor: DARK_GREY, borderRadius: 4, alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY },
+  multiEpGridContainer: { flexDirection: 'row', flexWrap: 'wrap', paddingBottom: 14 },
+  multiEpPill: { width: '23%', paddingVertical: 10, backgroundColor: DARK_GREY, borderRadius: 4, alignItems: 'center', borderWidth: 1, borderColor: BORDER_GREY, marginRight: 8, marginBottom: 8 }, // Replaced gap
   multiEpPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
   multiEpPillText: { color: 'rgba(255,255,255,0.75)', fontSize: 12, fontWeight: '700' },
   multiEpPillTextActive: { color: WHITE, fontWeight: '900' },
   sheetScrollArea: { flex: 1 },
   sheetScrollContent: { paddingBottom: 14 },
   sheetSectionLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.6, marginTop: 10, marginBottom: 8 },
-  sheetPillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  sheetHorizontalPills: { gap: 8, paddingRight: 12 },
-  sheetRectPill: { backgroundColor: DARK_GREY, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY },
+  sheetPillRow: { flexDirection: 'row', flexWrap: 'wrap' },
+  sheetHorizontalPills: { paddingRight: 12 },
+  sheetRectPill: { backgroundColor: DARK_GREY, paddingHorizontal: 16, paddingVertical: 10, borderRadius: 4, borderWidth: 1, borderColor: BORDER_GREY, marginRight: 8, marginBottom: 8 }, // Replaced gap
   sheetRectPillActive: { backgroundColor: PURE_RED, borderColor: PURE_RED },
   sheetRectPillText: { color: 'rgba(255,255,255,0.75)', fontSize: 13, fontWeight: '700' },
   sheetRectPillTextActive: { color: WHITE, fontWeight: '900' },
-  step2FooterRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 10 },
-  step2BackBtn: { paddingVertical: 12, paddingHorizontal: 10 },
+  step2FooterRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  step2BackBtn: { paddingVertical: 12, paddingHorizontal: 10, marginRight: 12 }, // Replaced gap
   step2BackText: { color: TEXT_GREY, fontSize: 13, fontWeight: '800' },
-  sheetDownloadSubmitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: PURE_RED, paddingVertical: 14, borderRadius: 6, marginTop: 10 },
-  sheetDownloadSubmitText: { color: WHITE, fontSize: 15, fontWeight: '900', letterSpacing: 0.4 },
+  sheetDownloadSubmitBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: PURE_RED, paddingVertical: 14, borderRadius: 6, marginTop: 10 },
+  sheetDownloadSubmitText: { color: WHITE, fontSize: 15, fontWeight: '900', letterSpacing: 0.4, marginLeft: 8 }, // Replaced gap
 });
