@@ -4,6 +4,9 @@ import {
   Animated, Dimensions, TouchableWithoutFeedback 
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
+// Note: If you want to detect phone calls, you may need a library like react-native-callkeep or react-native-call-detection.
+// For now, handling basic app state (background/foreground) is standard practice for pausing on calls.
+import { AppState } from 'react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -47,6 +50,7 @@ export default function PlayPauseSkip({
   panHandlers = {}
 }) {
   const [skipDirection, setSkipDirection] = useState(null);
+  const appState = useRef(AppState.currentState);
 
   // Animations for Skip Effects
   const leftAnim = useRef(new Animated.Value(0)).current;
@@ -62,6 +66,26 @@ export default function PlayPauseSkip({
   const singleTapTimer = useRef(null);
 
   const isBuffering = status.isBuffering || (!status.isLoaded && !status.error);
+
+  // Pause on Phone Call / Backgrounding
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', nextAppState => {
+      if (
+        appState.current.match(/active/) && 
+        nextAppState.match(/inactive|background/)
+      ) {
+        // App went to background (e.g., phone call, switched apps)
+        if (videoRef?.current && status.isPlaying) {
+          videoRef.current.pauseAsync();
+        }
+      }
+      appState.current = nextAppState;
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [videoRef, status.isPlaying]);
 
   // Continuous rotation while video buffers
   useEffect(() => {
@@ -154,6 +178,7 @@ export default function PlayPauseSkip({
     const leftThreshold = width * 0.35;
     const rightThreshold = width * 0.65;
 
+    // Double Tap Logic
     if (tapDelay < 300) {
       if (singleTapTimer.current) {
         clearTimeout(singleTapTimer.current);
@@ -172,6 +197,7 @@ export default function PlayPauseSkip({
         togglePlayPause();
       }
     } else {
+      // Single Tap Logic
       singleTapTimer.current = setTimeout(() => {
         if (showUI) {
           Animated.timing(uiOpacity, {
