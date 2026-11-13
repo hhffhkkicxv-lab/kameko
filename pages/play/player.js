@@ -29,12 +29,10 @@ const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_downloads_queue.json`
   : null;
 
-// Instant Local Watch-Progress Cache
 const LOCAL_WATCH_CACHE_URI = FileSystem.documentDirectory
   ? `${FileSystem.documentDirectory}kameko_watch_progress_cache.json`
   : null;
 
-// --- OFFLINE SUBTITLE (.VTT / .SRT) PARSER ---
 const parseTimeToSeconds = (timeStr) => {
   const cleanTimeStr = (timeStr || '').trim().split(/\s+/)[0].replace(',', '.');
   const parts = cleanTimeStr.split(':');
@@ -109,7 +107,6 @@ const readLocalDownloadsQueue = async () => {
 };
 
 let inMemoryWatchCache = null;
-
 const readLocalWatchCache = async () => {
   if (inMemoryWatchCache) return inMemoryWatchCache;
   try {
@@ -175,7 +172,6 @@ const formatTime = (millis) => {
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-// --- MEMOIZED ICONS & CINEMATIC GRADIENTS ---
 const IconBack = React.memo(({ size = 28 }) => (
   <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
     <Path d="M19 12H5M12 19l-7-7 7-7" />
@@ -260,8 +256,7 @@ export default function Player({
   } = params;
 
   const initialOfflineUri =
-    paramLocalUri ||
-    paramFileUri ||
+    paramLocalUri || paramFileUri ||
     (paramActiveUrl && String(paramActiveUrl).startsWith('file://') ? paramActiveUrl : null) ||
     (paramStreamUrl && String(paramStreamUrl).startsWith('file://') ? paramStreamUrl : null) ||
     null;
@@ -276,15 +271,8 @@ export default function Player({
   );
 
   const [currentProfileId, setCurrentProfileId] = useState(() =>
-    activeProfileId ||
-    paramProfileId ||
-    paramCurrentProfileId ||
-    propActiveProfileId ||
-    paramActiveProfile?.id ||
-    paramCurrentProfile?.id ||
-    propActiveProfile?.id ||
-    propCurrentProfile?.id ||
-    null
+    activeProfileId || paramProfileId || paramCurrentProfileId || propActiveProfileId ||
+    paramActiveProfile?.id || paramCurrentProfile?.id || propActiveProfile?.id || propCurrentProfile?.id || null
   );
 
   const [resolvedBackdrop, setResolvedBackdrop] = useState(
@@ -305,12 +293,7 @@ export default function Player({
             return;
           }
         }
-        const profSnap = await firestore()
-          .collection('users')
-          .doc(String(uid))
-          .collection('profiles')
-          .limit(1)
-          .get();
+        const profSnap = await firestore().collection('users').doc(String(uid)).collection('profiles').limit(1).get();
         if (!profSnap.empty && isMounted) {
           setCurrentProfileId(String(profSnap.docs[0].id));
         }
@@ -328,7 +311,7 @@ export default function Player({
   const uiOpacity = useRef(new Animated.Value(1)).current;
   const nextEpOpacity = useRef(new Animated.Value(0.25)).current;
 
-  const initialParamResume = useMemo(() => extractResumeMillis(params), []);
+  const initialParamResume = useMemo(() => extractResumeMillis(params), [params]);
 
   const [isLoaded, setIsLoaded] = useState(false);
   const [isPlaying, setIsPlaying] = useState(true);
@@ -411,17 +394,7 @@ export default function Player({
       backdrop: String(resolvedBackdrop || ''),
       audioType: String(selectedAudioType || 'sub'),
     };
-  }, [
-    resolvedUid,
-    currentProfileId,
-    effectiveAnimeId,
-    animeTitle,
-    currentEpNum,
-    currentEpTitle,
-    currentSlug,
-    resolvedBackdrop,
-    selectedAudioType,
-  ]);
+  }, [resolvedUid, currentProfileId, effectiveAnimeId, animeTitle, currentEpNum, currentEpTitle, currentSlug, resolvedBackdrop, selectedAudioType]);
 
   const saveWatchHistory = useCallback((positionMillis, durationMillis, force = false, customMeta = null) => {
     const meta = customMeta || latestMetaRef.current;
@@ -495,17 +468,8 @@ export default function Player({
       .collection('profiles')
       .doc(String(meta.profileId));
 
-    currentProfileRef
-      .collection(WATCH_HISTORY_COLLECTION)
-      .doc(epDocId)
-      .set(episodePayload, { merge: true })
-      .catch(() => {});
-
-    currentProfileRef
-      .collection(WATCH_HISTORY_COLLECTION)
-      .doc(String(meta.animeId))
-      .set(seriesPayload, { merge: true })
-      .catch(() => {});
+    currentProfileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).set(episodePayload, { merge: true }).catch(() => {});
+    currentProfileRef.collection(WATCH_HISTORY_COLLECTION).doc(String(meta.animeId)).set(seriesPayload, { merge: true }).catch(() => {});
   }, []);
 
   const navigationRef = useRef(navigation);
@@ -520,7 +484,6 @@ export default function Player({
         StatusBar.setHidden(true, 'none');
         if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
           await NavigationBar.setVisibilityAsync('hidden');
-          await NavigationBar.setBehaviorAsync('overlay-swipe');
         }
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
       } catch (_) {}
@@ -566,7 +529,7 @@ export default function Player({
         let targetId = providerId || animeId || paramId;
         const searchRes = await fetch(`${VERCEL_API_BASE}/api/search?keyword=${encodeURIComponent(animeTitle)}`);
         const searchJson = await searchRes.json();
-        const matches = searchJson?.data || [];
+        const matches = searchJson?.data || searchJson?.results || [];
         if (matches.length > 0) {
           const exact = matches.find((m) => String(m.title || '').toLowerCase() === animeTitle.toLowerCase()) || matches[0];
           if (exact?.id) targetId = exact.id;
@@ -580,7 +543,7 @@ export default function Player({
 
         const epRes = await fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(targetId)}`);
         const epJson = await epRes.json();
-        const list = epJson?.data || [];
+        const list = epJson?.data || epJson?.results || [];
         if (isMounted && Array.isArray(list)) {
           setCachedEpisodesList(list);
         }
@@ -895,6 +858,7 @@ export default function Player({
         }
       }
 
+      // STREAM RESOLVER: Exhaustive search across response properties
       const effectiveId = providerId || animeId || paramId;
       const effectiveSlug = currentSlug || currentEpNum;
 
@@ -905,7 +869,6 @@ export default function Player({
         return;
       }
 
-      // --- GUARANTEED INSTANT LOAD: AGGRESSIVE FALLBACK ENGINE ---
       const servers = ['hd-1', 'hd-2', 'vidstream-2'];
       let finalStreamData = null;
 
@@ -914,17 +877,23 @@ export default function Player({
           const url = `${VERCEL_API_BASE}/api/stream?id=${encodeURIComponent(effectiveId)}&ep=${encodeURIComponent(effectiveSlug)}&server=${srv}&type=${selectedAudioType}`;
           const res = await fetch(url);
           const json = await res.json();
-          const manifest =
-            json?.success && json?.data?.m3u8
-              ? json.data
-              : json?.success && json?.results?.streamingLink
-              ? json.results
-              : json?.data?.streamingLink
-              ? json.data
-              : null;
-          if (manifest) {
-            finalStreamData = manifest;
-            break; // Stop immediately upon finding a working stream
+          
+          // Exhaustive check for the stream URI
+          let extractedUrl = null;
+          if (json?.data?.m3u8) extractedUrl = json.data.m3u8;
+          else if (json?.data?.streamingLink) extractedUrl = json.data.streamingLink;
+          else if (json?.results?.m3u8) extractedUrl = json.results.m3u8;
+          else if (json?.results?.streamingLink) extractedUrl = json.results.streamingLink;
+          else if (Array.isArray(json?.data) && json.data.length > 0) extractedUrl = json.data[0].file || json.data[0].url;
+
+          if (extractedUrl) {
+            finalStreamData = {
+              m3u8: extractedUrl,
+              referer: json?.data?.referer || json?.results?.referer || 'https://vidwish.live/',
+              intro: json?.data?.intro || null,
+              outro: json?.data?.outro || null,
+            };
+            break;
           }
         } catch (_) {}
       }
@@ -935,18 +904,8 @@ export default function Player({
         return;
       }
 
-      const masterUrl = finalStreamData.m3u8 || finalStreamData.streamingLink;
+      const masterUrl = finalStreamData.m3u8;
 
-      // Unblock UI immediately with Auto quality
-      if (isMounted && currentSessionId === episodeSessionIdRef.current) {
-        setIsOfflineMode(false);
-        setStreamData(finalStreamData);
-        setQualityList([{ label: 'Auto', uri: masterUrl }]);
-        setActiveUrl(masterUrl);
-        setLoadingStream(false);
-      }
-
-      // Lazily resolve specific qualities in background
       try {
         const m3Res = await fetch(masterUrl, {
           headers: { Referer: finalStreamData.referer || 'https://vidwish.live/' },
@@ -975,28 +934,25 @@ export default function Player({
             uniqueQualities.push(q);
           }
         }
-        if (isMounted && currentSessionId === episodeSessionIdRef.current) {
-          setQualityList(uniqueQualities);
-        }
-      } catch (_) {}
+        setQualityList(uniqueQualities);
+      } catch (_) {
+        setQualityList([{ label: 'Auto', uri: masterUrl }]);
+      }
+
+      if (isMounted && currentSessionId === episodeSessionIdRef.current) {
+        setIsOfflineMode(false);
+        setStreamData(finalStreamData);
+        setActiveUrl(masterUrl);
+        setLoadingStream(false);
+      }
     };
 
     loadEpisodeProgressAndStream();
     return () => { isMounted = false; };
   }, [
-    animeId,
-    paramId,
-    currentEpNum,
-    currentSlug,
-    selectedAudioType,
-    providerId,
-    offlineStreamUri,
-    offlineMetaUri,
-    offlineSubUri,
-    effectiveAnimeId,
-    animeTitle,
-    resolvedUid,
-    currentProfileId,
+    animeId, paramId, currentEpNum, currentSlug, selectedAudioType, providerId,
+    offlineStreamUri, offlineMetaUri, offlineSubUri, effectiveAnimeId, animeTitle,
+    resolvedUid, currentProfileId,
   ]);
 
   const handlePlaybackStatusUpdate = useCallback(
