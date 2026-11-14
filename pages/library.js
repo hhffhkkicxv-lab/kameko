@@ -32,9 +32,6 @@ const DARK_GREY = '#18181C';
 const BORDER_GREY = '#26262C';
 const TEXT_GREY = '#8E8E93';
 
-// Height clearance so floating bars & popups sit cleanly above BottomNav.js
-const BOTTOM_NAV_CLEARANCE = 76;
-
 const GRID_COLUMNS = 2;
 const GRID_SPACING = 15;
 const GRID_CARD_WIDTH = Math.floor((width - 40 - GRID_SPACING) / GRID_COLUMNS);
@@ -189,6 +186,8 @@ export default function Library({
   activeProfileId,
   onBack,
   onToggleBottomNav,
+  setShowBottomNav,
+  setHideBottomNav,
   navigation,
 }) {
   const resolvedUser = propUser || auth().currentUser || null;
@@ -214,6 +213,32 @@ export default function Library({
 
   const isSearchModuleOpen = isSearchActive || searchQuery.trim().length > 0;
 
+  // --- HIDE BOTTOMNAV.JS WHEN DELETE POPUP, BULK DELETE BAR, OR PLAY.JS IS OPEN ---
+  const shouldHideBottomNav = Boolean(
+    activePlayAnime || confirmPopupConfig || isBulkDeleteMode
+  );
+
+  useEffect(() => {
+    const showNav = !shouldHideBottomNav;
+
+    if (typeof onToggleBottomNav === 'function') {
+      onToggleBottomNav(showNav);
+    }
+    if (typeof setShowBottomNav === 'function') {
+      setShowBottomNav(showNav);
+    }
+    if (typeof setHideBottomNav === 'function') {
+      setHideBottomNav(shouldHideBottomNav);
+    }
+
+    return () => {
+      // Restore BottomNav cleanly if Library unmounts
+      if (typeof onToggleBottomNav === 'function') onToggleBottomNav(true);
+      if (typeof setShowBottomNav === 'function') setShowBottomNav(true);
+      if (typeof setHideBottomNav === 'function') setHideBottomNav(false);
+    };
+  }, [shouldHideBottomNav, onToggleBottomNav, setShowBottomNav, setHideBottomNav]);
+
   // Close search module helper
   const closeSearchModule = useCallback(() => {
     setSearchQuery('');
@@ -237,14 +262,6 @@ export default function Library({
       onBack();
     }
   }, [isSearchModuleOpen, closeSearchModule, isBulkDeleteMode, onBack]);
-
-  // Notify parent if Play overlay or delete confirmation is open so BottomNav never overlaps them
-  useEffect(() => {
-    if (typeof onToggleBottomNav === 'function') {
-      const shouldShowBottomNav = !activePlayAnime && !confirmPopupConfig && !isBulkDeleteMode;
-      onToggleBottomNav(shouldShowBottomNav);
-    }
-  }, [activePlayAnime, confirmPopupConfig, isBulkDeleteMode, onToggleBottomNav]);
 
   // Enforce Immersive Fullscreen Bars
   useEffect(() => {
@@ -380,6 +397,7 @@ export default function Library({
 
   // --- SELECTION & BULK DELETE LOGIC ---
   const handleLongPressCard = useCallback((animeId) => {
+    Keyboard.dismiss();
     setIsBulkDeleteMode(true);
     setBulkDeleteSelectedMap((prev) => ({ ...prev, [animeId]: true }));
   }, []);
@@ -488,6 +506,7 @@ export default function Library({
 
   const handleRequestClearAll = () => {
     if (libraryItems.length === 0) return;
+    Keyboard.dismiss();
     setConfirmPopupConfig({
       title: 'Clear Entire Library',
       message: 'Are you sure you want to remove all saved anime from your library?',
@@ -496,7 +515,7 @@ export default function Library({
     });
   };
 
-  // --- OPEN PLAY.JS DIRECTLY INSIDE LIBRARY OVERLAY (Keeps user in Library on close) ---
+  // --- OPEN PLAY.JS DIRECTLY INSIDE LIBRARY OVERLAY & HIDE BOTTOMNAV ---
   const handlePressCard = useCallback(
     (item) => {
       const animeId = String(item.id || item.animeId || '');
@@ -525,10 +544,23 @@ export default function Library({
         currentProfile: resolvedProfile,
       };
 
-      // Always open inside Library's local fullscreen overlay so closing Play keeps user in Library
+      // Immediately hide BottomNav before mounting Play overlay
+      if (typeof onToggleBottomNav === 'function') onToggleBottomNav(false);
+      if (typeof setShowBottomNav === 'function') setShowBottomNav(false);
+      if (typeof setHideBottomNav === 'function') setHideBottomNav(true);
+
       setActivePlayAnime(playPayload);
     },
-    [isBulkDeleteMode, toggleBulkDeleteSelection, resolvedUser?.uid, resolvedProfileId, resolvedProfile]
+    [
+      isBulkDeleteMode,
+      toggleBulkDeleteSelection,
+      resolvedUser?.uid,
+      resolvedProfileId,
+      resolvedProfile,
+      onToggleBottomNav,
+      setShowBottomNav,
+      setHideBottomNav,
+    ]
   );
 
   // Hardware Back Button Support
@@ -761,7 +793,7 @@ export default function Library({
           columnWrapperStyle={styles.gridColumnWrapper}
           contentContainerStyle={[
             styles.gridContentPadding,
-            isBulkDeleteMode && { paddingBottom: 210 },
+            isBulkDeleteMode && { paddingBottom: 150 },
           ]}
           ListHeaderComponent={() => (
             <View style={[styles.headerRow, { paddingHorizontal: 0, marginBottom: 14 }]}>
@@ -797,7 +829,7 @@ export default function Library({
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.scrollContentPadding,
-            isBulkDeleteMode && { paddingBottom: 210 },
+            isBulkDeleteMode && { paddingBottom: 150 },
           ]}
         >
           {renderSliderSection('Recently Added', recentlyAddedList)}
@@ -808,7 +840,7 @@ export default function Library({
         </ScrollView>
       )}
 
-      {/* FLOATING BULK DELETE BAR (Positioned cleanly above BottomNav.js) */}
+      {/* FLOATING BULK DELETE BAR (BottomNav is hidden while this is active) */}
       {isBulkDeleteMode && (
         <View style={styles.bulkDeleteFloatingBar}>
           <View style={styles.bulkDeleteBarTopRow}>
@@ -844,7 +876,7 @@ export default function Library({
         </View>
       )}
 
-      {/* CSS-BASED DELETE CONFIRMATION POPUP (Positioned above BottomNav.js, Zero <Modal>) */}
+      {/* CSS-BASED DELETE CONFIRMATION POPUP (BottomNav is hidden while this is active) */}
       {Boolean(confirmPopupConfig) && (
         <View style={styles.cssPopupOverlay}>
           <TouchableOpacity
@@ -884,7 +916,7 @@ export default function Library({
         </View>
       )}
 
-      {/* FULLSCREEN <VIEW> OVERLAY FOR PLAY.JS (Keeps user in Library when closed) */}
+      {/* FULLSCREEN <VIEW> OVERLAY FOR PLAY.JS (BottomNav is hidden & user stays in Library when closed) */}
       {Boolean(activePlayAnime) && (
         <View style={styles.playFullscreenViewOverlay}>
           <Play
@@ -907,7 +939,6 @@ const styles = StyleSheet.create({
   screenContainer: {
     flex: 1,
     backgroundColor: BLACK,
-    overflow: ' visible',
   },
   topHeaderBar: {
     flexDirection: 'row',
@@ -1012,7 +1043,7 @@ const styles = StyleSheet.create({
 
   // Exact BingeSlider Section & Card Styles
   scrollContentPadding: {
-    paddingBottom: 120,
+    paddingBottom: 110,
   },
   sectionContainer: {
     marginTop: 15,
@@ -1121,7 +1152,7 @@ const styles = StyleSheet.create({
   gridContentPadding: {
     paddingHorizontal: 20,
     paddingTop: 10,
-    paddingBottom: 120,
+    paddingBottom: 110,
   },
   gridColumnWrapper: {
     justifyContent: 'space-between',
@@ -1185,19 +1216,18 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Floating Bulk Delete Bar (Elevated above BottomNav.js)
+  // Floating Bulk Delete Bar (Flush at bottom since BottomNav is hidden)
   bulkDeleteFloatingBar: {
     position: 'absolute',
-    bottom: BOTTOM_NAV_CLEARANCE,
-    left: 14,
-    right: 14,
+    bottom: 0,
+    left: 0,
+    right: 0,
     backgroundColor: BLACK,
-    borderWidth: 1.5,
-    borderColor: BORDER_GREY,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 16,
+    borderTopWidth: 1.5,
+    borderTopColor: BORDER_GREY,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: Platform.OS === 'ios' ? 30 : 22,
     zIndex: 99998,
     elevation: 99998,
   },
@@ -1240,7 +1270,7 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
 
-  // Pure <View> CSS Confirmation Popup (Elevated above BottomNav.js)
+  // Pure <View> CSS Confirmation Popup (Flush at bottom since BottomNav is hidden)
   cssPopupOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'flex-end',
@@ -1259,7 +1289,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 20,
     paddingHorizontal: 22,
     paddingTop: 24,
-    paddingBottom: BOTTOM_NAV_CLEARANCE + 24,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 28,
     borderTopWidth: 1,
     borderColor: BORDER_GREY,
     alignItems: 'center',
