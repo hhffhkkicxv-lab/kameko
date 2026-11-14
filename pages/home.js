@@ -35,6 +35,7 @@ import PlayerComponent from '../pages/play/player';
 import ProfileSettings from './profile'; 
 import Search from '../components/search'; 
 import Downloads from '../pages/downloads'; 
+import Library from '../pages/library'; // <--- NEW LIBRARY IMPORT
 import BottomNav from './home/bottomnav'; 
 
 // --- STRICT PALETTE ---
@@ -177,17 +178,23 @@ export default function Home({
         setCwDeleteDialog(null);
         return true;
       }
+      // If we are on a tab other than Home, route back to Home
+      if (activeTab !== 'Home' && !selectedAnime && !activeGenre) {
+        setActiveTab('Home');
+        return true;
+      }
       return false;
     };
     const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
     return () => sub.remove();
-  }, [directPlaybackParams, cwDeleteDialog]);
+  }, [directPlaybackParams, cwDeleteDialog, activeTab, selectedAnime, activeGenre]);
 
   const isOverlayActive = 
     selectedAnime !== null || 
     activeGenre !== null || 
     directPlaybackParams !== null ||
     activeTab === 'Search' || 
+    activeTab === 'Library' || // <--- INCLUDED LIBRARY
     activeTab === 'Settings' || 
     activeTab === 'Downloads';
 
@@ -289,6 +296,20 @@ export default function Home({
       {activeTab === 'Search' && (
         <View style={styles.overlayScreen}>
           <Search user={resolvedUser} activeProfile={currentProfile} currentProfile={currentProfile} activeProfileId={activeProfileId} onBack={() => setActiveTab('Home')} onSelectAnime={(anime) => { setActiveTab('Home'); handleSelectAnime(anime); }} />
+        </View>
+      )}
+
+      {/* LIBRARY OVERLAY */}
+      {activeTab === 'Library' && (
+        <View style={styles.overlayScreen}>
+          <Library 
+            user={resolvedUser} 
+            activeProfile={currentProfile} 
+            currentProfile={currentProfile} 
+            activeProfileId={activeProfileId} 
+            onBack={() => setActiveTab('Home')} 
+            onSelectAnime={(anime) => { setActiveTab('Home'); handleSelectAnime(anime); }} 
+          />
         </View>
       )}
 
