@@ -12,6 +12,7 @@ import {
   StatusBar,
   Platform,
   BackHandler,
+  Keyboard,
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -30,6 +31,9 @@ const WHITE = '#FFFFFF';
 const DARK_GREY = '#18181C';
 const BORDER_GREY = '#26262C';
 const TEXT_GREY = '#8E8E93';
+
+// Height clearance so floating bars & popups sit cleanly above BottomNav.js
+const BOTTOM_NAV_CLEARANCE = 76;
 
 const GRID_COLUMNS = 2;
 const GRID_SPACING = 15;
@@ -114,7 +118,7 @@ const LibrarySkeleton = () => {
   );
 };
 
-// --- REUSABLE SLIDER / GRID CARD (Exact BingeSlider Look) ---
+// --- REUSABLE SLIDER / GRID CARD (No Save SVG on Cover) ---
 const LibraryAnimeCard = ({
   item,
   isGrid = false,
@@ -122,7 +126,6 @@ const LibraryAnimeCard = ({
   isSelectedForDelete,
   onPressCard,
   onLongPressCard,
-  onRequestSingleRemove,
 }) => {
   const animeId = String(item.id || item.animeId || '');
   const posterUri =
@@ -161,24 +164,14 @@ const LibraryAnimeCard = ({
           </View>
         </View>
 
-        {isBulkDeleteMode ? (
+        {/* Only show selection check circle during Bulk Delete mode — no Save SVG on covers */}
+        {isBulkDeleteMode && (
           <TouchableOpacity
             style={[styles.bulkCheckCircle, isSelectedForDelete && styles.bulkCheckCircleActive]}
             activeOpacity={0.8}
             onPress={() => onPressCard(item)}
           >
             {isSelectedForDelete && <IconCheck size={14} color={WHITE} />}
-          </TouchableOpacity>
-        ) : (
-          <TouchableOpacity
-            style={[styles.saveBtn, styles.saveBtnActive]}
-            activeOpacity={0.8}
-            delayLongPress={280}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            onPress={() => onRequestSingleRemove(item)}
-            onLongPress={() => onLongPressCard(animeId)}
-          >
-            <BookmarkIcon filled={true} />
           </TouchableOpacity>
         )}
       </View>
@@ -195,7 +188,6 @@ export default function Library({
   currentProfile,
   activeProfileId,
   onBack,
-  onSelectAnime,
   onToggleBottomNav,
   navigation,
 }) {
@@ -206,24 +198,53 @@ export default function Library({
   const [libraryItems, setLibraryItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchActive, setIsSearchActive] = useState(false);
 
   // Bulk Selection & CSS Popup State (No <Modal>)
   const [isBulkDeleteMode, setIsBulkDeleteMode] = useState(false);
   const [bulkDeleteSelectedMap, setBulkDeleteSelectedMap] = useState({});
   const [confirmPopupConfig, setConfirmPopupConfig] = useState(null);
 
-  // Fullscreen <View> Play.js Overlay State (Hides BottomNav when active)
+  // Fullscreen <View> Play.js Overlay State (Keeps user inside Library when closed)
   const [activePlayAnime, setActivePlayAnime] = useState(null);
 
+  const searchInputRef = useRef(null);
   const deletedIdsRef = useRef(new Set());
   const aniListCacheRef = useRef({});
 
-  // Notify parent if internal Play <View> opens/closes so BottomNav hides cleanly
+  const isSearchModuleOpen = isSearchActive || searchQuery.trim().length > 0;
+
+  // Close search module helper
+  const closeSearchModule = useCallback(() => {
+    setSearchQuery('');
+    setIsSearchActive(false);
+    searchInputRef.current?.blur();
+    Keyboard.dismiss();
+  }, []);
+
+  // Top Back Button handler: closes search module first if active, or exits bulk mode, before calling onBack
+  const handleTopBackPress = useCallback(() => {
+    if (isSearchModuleOpen) {
+      closeSearchModule();
+      return;
+    }
+    if (isBulkDeleteMode) {
+      setIsBulkDeleteMode(false);
+      setBulkDeleteSelectedMap({});
+      return;
+    }
+    if (typeof onBack === 'function') {
+      onBack();
+    }
+  }, [isSearchModuleOpen, closeSearchModule, isBulkDeleteMode, onBack]);
+
+  // Notify parent if Play overlay or delete confirmation is open so BottomNav never overlaps them
   useEffect(() => {
     if (typeof onToggleBottomNav === 'function') {
-      onToggleBottomNav(!activePlayAnime);
+      const shouldShowBottomNav = !activePlayAnime && !confirmPopupConfig && !isBulkDeleteMode;
+      onToggleBottomNav(shouldShowBottomNav);
     }
-  }, [activePlayAnime, onToggleBottomNav]);
+  }, [activePlayAnime, confirmPopupConfig, isBulkDeleteMode, onToggleBottomNav]);
 
   // Enforce Immersive Fullscreen Bars
   useEffect(() => {
@@ -443,21 +464,7 @@ export default function Library({
     }
   };
 
-  // --- CSS POPUP TRIGGERS (Single, Multiples, Clear All) ---
-  const handleRequestSingleRemove = useCallback(
-    (item) => {
-      const targetId = String(item.id || item.animeId || '');
-      const displayTitle = item.title || 'this anime';
-      setConfirmPopupConfig({
-        title: 'Remove from Library',
-        message: `Are you sure you want to remove "${displayTitle}" from your library?`,
-        confirmText: 'Remove',
-        onConfirm: () => executeDeleteLibraryIds([targetId]),
-      });
-    },
-    [libraryItems, resolvedUser?.uid]
-  );
-
+  // --- CSS POPUP TRIGGERS (Multiples & Clear All) ---
   const handleRequestSelectedRemove = () => {
     const selectedIds = Object.keys(bulkDeleteSelectedMap).filter((k) => bulkDeleteSelectedMap[k]);
     if (selectedIds.length === 0) return;
@@ -489,7 +496,7 @@ export default function Library({
     });
   };
 
-  // --- OPEN PLAY.JS VIA <VIEW> OVERLAY & HIDE BOTTOMNAV ---
+  // --- OPEN PLAY.JS DIRECTLY INSIDE LIBRARY OVERLAY (Keeps user in Library on close) ---
   const handlePressCard = useCallback(
     (item) => {
       const animeId = String(item.id || item.animeId || '');
@@ -497,6 +504,8 @@ export default function Library({
         toggleBulkDeleteSelection(animeId);
         return;
       }
+
+      Keyboard.dismiss();
 
       const playPayload = {
         id: animeId,
@@ -516,14 +525,10 @@ export default function Library({
         currentProfile: resolvedProfile,
       };
 
-      // If parent (home.js) passed onSelectAnime, trigger it so home.js opens its root <Play /> <View> and hides BottomNav
-      if (typeof onSelectAnime === 'function') {
-        onSelectAnime(playPayload);
-      } else {
-        setActivePlayAnime(playPayload);
-      }
+      // Always open inside Library's local fullscreen overlay so closing Play keeps user in Library
+      setActivePlayAnime(playPayload);
     },
-    [isBulkDeleteMode, toggleBulkDeleteSelection, onSelectAnime, resolvedUser?.uid, resolvedProfileId, resolvedProfile]
+    [isBulkDeleteMode, toggleBulkDeleteSelection, resolvedUser?.uid, resolvedProfileId, resolvedProfile]
   );
 
   // Hardware Back Button Support
@@ -542,8 +547,8 @@ export default function Library({
         setBulkDeleteSelectedMap({});
         return true;
       }
-      if (searchQuery.trim().length > 0) {
-        setSearchQuery('');
+      if (isSearchModuleOpen) {
+        closeSearchModule();
         return true;
       }
       if (onBack) {
@@ -555,7 +560,14 @@ export default function Library({
 
     const sub = BackHandler.addEventListener('hardwareBackPress', onHardwareBack);
     return () => sub.remove();
-  }, [activePlayAnime, confirmPopupConfig, isBulkDeleteMode, searchQuery, onBack]);
+  }, [
+    activePlayAnime,
+    confirmPopupConfig,
+    isBulkDeleteMode,
+    isSearchModuleOpen,
+    closeSearchModule,
+    onBack,
+  ]);
 
   // --- SEARCH & CATEGORIZED SLIDER GROUPS ---
   const cleanQuery = searchQuery.trim().toLowerCase();
@@ -620,7 +632,6 @@ export default function Library({
               isSelectedForDelete={Boolean(bulkDeleteSelectedMap[item.id])}
               onPressCard={handlePressCard}
               onLongPressCard={handleLongPressCard}
-              onRequestSingleRemove={handleRequestSingleRemove}
             />
           )}
         />
@@ -635,13 +646,19 @@ export default function Library({
       {/* TOP BAR */}
       <View style={styles.topHeaderBar}>
         <View style={styles.topHeaderLeft}>
-          {onBack && (
-            <TouchableOpacity style={styles.backCircleBtn} activeOpacity={0.75} onPress={onBack}>
+          {(Boolean(onBack) || isSearchModuleOpen || isBulkDeleteMode) && (
+            <TouchableOpacity
+              style={styles.backCircleBtn}
+              activeOpacity={0.75}
+              onPress={handleTopBackPress}
+            >
               <IconBack size={20} color={WHITE} />
             </TouchableOpacity>
           )}
-          <Text style={styles.pageTitle}>My Library</Text>
-          {libraryItems.length > 0 && (
+          <Text style={styles.pageTitle}>
+            {isSearchModuleOpen ? 'Search Library' : 'My Library'}
+          </Text>
+          {libraryItems.length > 0 && !isSearchModuleOpen && (
             <View style={styles.countPill}>
               <Text style={styles.countPillText}>{libraryItems.length}</Text>
             </View>
@@ -685,23 +702,33 @@ export default function Library({
 
       {/* NATIVE SEARCH BAR */}
       <View style={styles.searchBarContainer}>
-        <View style={styles.searchInputBox}>
-          <IconSearch size={18} color={TEXT_GREY} />
+        <View
+          style={[
+            styles.searchInputBox,
+            isSearchModuleOpen && { borderColor: BRAND_RED },
+          ]}
+        >
+          <IconSearch size={18} color={isSearchModuleOpen ? WHITE : TEXT_GREY} />
           <TextInput
+            ref={searchInputRef}
             style={styles.searchInput}
             value={searchQuery}
-            onChangeText={setSearchQuery}
+            onFocus={() => setIsSearchActive(true)}
+            onChangeText={(txt) => {
+              setSearchQuery(txt);
+              if (!isSearchActive) setIsSearchActive(true);
+            }}
             placeholder="Search saved anime or genres..."
             placeholderTextColor={TEXT_GREY}
             returnKeyType="search"
             autoCorrect={false}
             autoCapitalize="none"
           />
-          {searchQuery.length > 0 && (
+          {isSearchModuleOpen && (
             <TouchableOpacity
               style={styles.clearSearchBtn}
               activeOpacity={0.75}
-              onPress={() => setSearchQuery('')}
+              onPress={closeSearchModule}
             >
               <IconClose size={14} color={WHITE} />
             </TouchableOpacity>
@@ -719,26 +746,29 @@ export default function Library({
           </View>
           <Text style={styles.emptyTitle}>Your Library is Empty</Text>
           <Text style={styles.emptySubtitle}>
-            Tap the bookmark icon on any anime to save it here for instant access.
+            Save your favorite anime from Home or Play to access them anytime here.
           </Text>
         </View>
-      ) : cleanQuery.length > 0 ? (
-        /* SEARCH RESULTS GRID */
+      ) : isSearchModuleOpen ? (
+        /* SEARCH MODULE GRID */
         <FlatList
           key="library-search-grid"
           data={filteredItems}
           numColumns={GRID_COLUMNS}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
           keyExtractor={(item) => `search-${item.id}`}
           columnWrapperStyle={styles.gridColumnWrapper}
           contentContainerStyle={[
             styles.gridContentPadding,
-            isBulkDeleteMode && { paddingBottom: 140 },
+            isBulkDeleteMode && { paddingBottom: 210 },
           ]}
           ListHeaderComponent={() => (
             <View style={[styles.headerRow, { paddingHorizontal: 0, marginBottom: 14 }]}>
               <Text style={styles.sectionTitle}>
-                Search Results ({filteredItems.length})
+                {cleanQuery.length > 0
+                  ? `Search Results (${filteredItems.length})`
+                  : `All Saved Anime (${filteredItems.length})`}
               </Text>
             </View>
           )}
@@ -758,7 +788,6 @@ export default function Library({
               isSelectedForDelete={Boolean(bulkDeleteSelectedMap[item.id])}
               onPressCard={handlePressCard}
               onLongPressCard={handleLongPressCard}
-              onRequestSingleRemove={handleRequestSingleRemove}
             />
           )}
         />
@@ -768,7 +797,7 @@ export default function Library({
           showsVerticalScrollIndicator={false}
           contentContainerStyle={[
             styles.scrollContentPadding,
-            isBulkDeleteMode && { paddingBottom: 140 },
+            isBulkDeleteMode && { paddingBottom: 210 },
           ]}
         >
           {renderSliderSection('Recently Added', recentlyAddedList)}
@@ -779,12 +808,12 @@ export default function Library({
         </ScrollView>
       )}
 
-      {/* FLOATING BULK DELETE BAR (Pure <View>) */}
+      {/* FLOATING BULK DELETE BAR (Positioned cleanly above BottomNav.js) */}
       {isBulkDeleteMode && (
         <View style={styles.bulkDeleteFloatingBar}>
           <View style={styles.bulkDeleteBarTopRow}>
             <Text style={styles.bulkDeleteCountText}>
-              {selectedCount} {selectedCount === 1 ? 'Anime' : 'Anime'} Selected
+              {selectedCount} Anime Selected
             </Text>
             <TouchableOpacity
               style={styles.bulkCancelBtn}
@@ -815,7 +844,7 @@ export default function Library({
         </View>
       )}
 
-      {/* CSS-BASED DELETE CONFIRMATION POPUP (Pure <View>, Zero <Modal>) */}
+      {/* CSS-BASED DELETE CONFIRMATION POPUP (Positioned above BottomNav.js, Zero <Modal>) */}
       {Boolean(confirmPopupConfig) && (
         <View style={styles.cssPopupOverlay}>
           <TouchableOpacity
@@ -855,7 +884,7 @@ export default function Library({
         </View>
       )}
 
-      {/* FULLSCREEN <VIEW> OVERLAY FOR PLAY.JS (Zero <Modal>, Covers BottomNav) */}
+      {/* FULLSCREEN <VIEW> OVERLAY FOR PLAY.JS (Keeps user in Library when closed) */}
       {Boolean(activePlayAnime) && (
         <View style={styles.playFullscreenViewOverlay}>
           <Play
@@ -865,6 +894,7 @@ export default function Library({
             currentProfile={resolvedProfile}
             activeProfileId={resolvedProfileId}
             onBack={() => setActivePlayAnime(null)}
+            onClose={() => setActivePlayAnime(null)}
             navigation={navigation}
           />
         </View>
@@ -877,6 +907,7 @@ const styles = StyleSheet.create({
   screenContainer: {
     flex: 1,
     backgroundColor: BLACK,
+    overflow: ' visible',
   },
   topHeaderBar: {
     flexDirection: 'row',
@@ -981,7 +1012,7 @@ const styles = StyleSheet.create({
 
   // Exact BingeSlider Section & Card Styles
   scrollContentPadding: {
-    paddingBottom: 110,
+    paddingBottom: 120,
   },
   sectionContainer: {
     marginTop: 15,
@@ -1062,23 +1093,6 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: 'bold',
   },
-  saveBtn: {
-    position: 'absolute',
-    top: 8,
-    right: 8,
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: BORDER_GREY,
-  },
-  saveBtnActive: {
-    backgroundColor: 'rgba(0,0,0,0.85)',
-    borderColor: BRAND_RED,
-  },
   bulkCheckCircle: {
     position: 'absolute',
     top: 8,
@@ -1107,7 +1121,7 @@ const styles = StyleSheet.create({
   gridContentPadding: {
     paddingHorizontal: 20,
     paddingTop: 10,
-    paddingBottom: 110,
+    paddingBottom: 120,
   },
   gridColumnWrapper: {
     justifyContent: 'space-between',
@@ -1171,20 +1185,21 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Floating Bulk Delete Bar
+  // Floating Bulk Delete Bar (Elevated above BottomNav.js)
   bulkDeleteFloatingBar: {
     position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
+    bottom: BOTTOM_NAV_CLEARANCE,
+    left: 14,
+    right: 14,
     backgroundColor: BLACK,
-    borderTopWidth: 1.5,
-    borderTopColor: BORDER_GREY,
+    borderWidth: 1.5,
+    borderColor: BORDER_GREY,
+    borderRadius: 14,
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 22,
-    zIndex: 900,
-    elevation: 25,
+    paddingBottom: 16,
+    zIndex: 99998,
+    elevation: 99998,
   },
   bulkDeleteBarTopRow: {
     flexDirection: 'row',
@@ -1216,7 +1231,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: PURE_RED,
     paddingVertical: 13,
-    borderRadius: 6,
+    borderRadius: 8,
   },
   bulkConfirmDeleteText: {
     color: WHITE,
@@ -1225,13 +1240,13 @@ const styles = StyleSheet.create({
     marginLeft: 8,
   },
 
-  // Pure <View> CSS Confirmation Popup
+  // Pure <View> CSS Confirmation Popup (Elevated above BottomNav.js)
   cssPopupOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'flex-end',
     alignItems: 'center',
-    zIndex: 9999,
-    elevation: 9999,
+    zIndex: 99999,
+    elevation: 99999,
   },
   cssPopupBackdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -1244,7 +1259,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 20,
     paddingHorizontal: 22,
     paddingTop: 24,
-    paddingBottom: 34,
+    paddingBottom: BOTTOM_NAV_CLEARANCE + 24,
     borderTopWidth: 1,
     borderColor: BORDER_GREY,
     alignItems: 'center',
@@ -1315,7 +1330,7 @@ const styles = StyleSheet.create({
   playFullscreenViewOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: BLACK,
-    zIndex: 10000,
-    elevation: 10000,
+    zIndex: 100000,
+    elevation: 100000,
   },
 });
