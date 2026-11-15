@@ -80,7 +80,12 @@ const TABS = [
   { key: 'Settings', label: 'Profile', Icon: IconSettings },
 ];
 
-export default function BottomNav({ activeTab = 'Home', setActiveTab }) {
+export default function BottomNav({ activeTab = 'Home', setActiveTab, hidden = false }) {
+  // If a parent component sets hidden={true}, return null to hide the entire nav bar
+  if (hidden) {
+    return null;
+  }
+
   return (
     <View style={styles.navContainer}>
       {TABS.map(({ key, label, Icon }) => {
