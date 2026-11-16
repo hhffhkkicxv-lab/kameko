@@ -16,7 +16,7 @@ import Svg, { Path, Rect, Defs, LinearGradient, Stop } from 'react-native-svg';
 import AspectRatioButton from './aspect-ratio';
 import LockButton from './lock';
 import VideoQualitySheet from './video_quality';
-import SubtitleSheet from './subtitle';
+import SubtitleSheet from './subtitle'; // Subtitle tracking delegated here!
 import AudioSheet from './audio';
 import SpeedSheet from './speed';
 import SkipIntroOutro from './intro-outro';
@@ -27,79 +27,14 @@ const VERCEL_API_BASE = 'https://anikoto-api-lyart.vercel.app';
 const CUSTOM_PROXY_URL = 'https://icy-wave-30d8.prashant-yash69.workers.dev/proxy?url=';
 const WATCH_HISTORY_COLLECTION = 'watch_history';
 
-const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory
-  ? `${FileSystem.documentDirectory}kameko_downloads_queue.json`
-  : null;
-
-const LOCAL_WATCH_CACHE_URI = FileSystem.documentDirectory
-  ? `${FileSystem.documentDirectory}kameko_watch_progress_cache.json`
-  : null;
+const DOWNLOAD_QUEUE_FILE_URI = FileSystem.documentDirectory ? `${FileSystem.documentDirectory}kameko_downloads_queue.json` : null;
+const LOCAL_WATCH_CACHE_URI = FileSystem.documentDirectory ? `${FileSystem.documentDirectory}kameko_watch_progress_cache.json` : null;
 
 const buildProxiedUrl = (rawUrl, referer = 'https://vidwish.live/') => {
   if (!rawUrl) return null;
   const str = String(rawUrl);
-  if (str.startsWith('file://') || str.includes('prashant-yash69.workers.dev')) {
-    return str;
-  }
+  if (str.startsWith('file://') || str.includes('prashant-yash69.workers.dev')) return str;
   return `${CUSTOM_PROXY_URL}${encodeURIComponent(str)}&referer=${encodeURIComponent(referer)}`;
-};
-
-// --- SUBTITLE (.VTT / .SRT) PARSER ---
-const parseTimeToSeconds = (timeStr) => {
-  const cleanTimeStr = (timeStr || '').trim().split(/\s+/)[0].replace(',', '.');
-  const parts = cleanTimeStr.split(':');
-  let seconds = NaN;
-  if (parts.length === 3) {
-    seconds = parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
-  } else if (parts.length === 2) {
-    seconds = parseFloat(parts[0]) * 60 + parseFloat(parts[1]);
-  }
-  return Number.isFinite(seconds) ? seconds : NaN;
-};
-
-const parseVttTextToCues = (rawText) => {
-  if (!rawText || typeof rawText !== 'string') return [];
-  const cues = [];
-  const lines = rawText.replace(/\r\n/g, '\n').split('\n');
-  let currentCue = null;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.includes('-->')) {
-      const [startStr, endStr] = line.split('-->');
-      const start = parseTimeToSeconds(startStr);
-      const end = parseTimeToSeconds(endStr);
-      if (Number.isFinite(start) && Number.isFinite(end)) {
-        currentCue = { start, end, text: '' };
-        cues.push(currentCue);
-      }
-    } else if (currentCue && line.trim() === '') {
-      currentCue.text = currentCue.text.trim();
-      currentCue = null;
-    } else if (currentCue) {
-      const cleanText = line.replace(/<[^>]*>/g, '');
-      currentCue.text += (currentCue.text ? '\n' : '') + cleanText;
-    }
-  }
-  if (currentCue) currentCue.text = currentCue.text.trim();
-  return cues.filter((c) => c.text.length > 0);
-};
-
-const findActiveSubtitleCue = (cues, timeSec) => {
-  let low = 0;
-  let high = cues.length - 1;
-  while (low <= high) {
-    const mid = (low + high) >>> 1;
-    const cue = cues[mid];
-    if (timeSec < cue.start) {
-      high = mid - 1;
-    } else if (timeSec > cue.end) {
-      low = mid + 1;
-    } else {
-      return cue.text;
-    }
-  }
-  return '';
 };
 
 const readLocalDownloadsQueue = async () => {
@@ -108,10 +43,7 @@ const readLocalDownloadsQueue = async () => {
       const info = await FileSystem.getInfoAsync(DOWNLOAD_QUEUE_FILE_URI);
       if (info?.exists) {
         const raw = await FileSystem.readAsStringAsync(DOWNLOAD_QUEUE_FILE_URI);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) return parsed;
-        }
+        if (raw) { const parsed = JSON.parse(raw); if (Array.isArray(parsed)) return parsed; }
       }
     }
   } catch (_) {}
@@ -119,7 +51,6 @@ const readLocalDownloadsQueue = async () => {
 };
 
 let inMemoryWatchCache = null;
-
 const readLocalWatchCache = async () => {
   if (inMemoryWatchCache) return inMemoryWatchCache;
   try {
@@ -127,13 +58,7 @@ const readLocalWatchCache = async () => {
       const info = await FileSystem.getInfoAsync(LOCAL_WATCH_CACHE_URI);
       if (info?.exists) {
         const raw = await FileSystem.readAsStringAsync(LOCAL_WATCH_CACHE_URI);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === 'object') {
-            inMemoryWatchCache = parsed;
-            return inMemoryWatchCache;
-          }
-        }
+        if (raw) { const parsed = JSON.parse(raw); if (parsed && typeof parsed === 'object') { inMemoryWatchCache = parsed; return inMemoryWatchCache; } }
       }
     }
   } catch (_) {}
@@ -146,129 +71,55 @@ const writeLocalWatchCacheEntry = async (key, payload) => {
     const current = await readLocalWatchCache();
     current[key] = payload;
     inMemoryWatchCache = current;
-    if (LOCAL_WATCH_CACHE_URI) {
-      FileSystem.writeAsStringAsync(LOCAL_WATCH_CACHE_URI, JSON.stringify(current)).catch(() => {});
-    }
+    if (LOCAL_WATCH_CACHE_URI) FileSystem.writeAsStringAsync(LOCAL_WATCH_CACHE_URI, JSON.stringify(current)).catch(() => {});
   } catch (_) {}
 };
 
 const extractResumeMillis = (dataObj) => {
   if (!dataObj) return { resumeMs: 0, durationMs: 0, timestamp: 0 };
-  const durMs =
-    Number(dataObj.durationMillis) > 0
-      ? Number(dataObj.durationMillis)
-      : Number(dataObj.duration) > 0
-      ? Number(dataObj.duration) * 1000
-      : 0;
-
-  const rawPosMs =
-    Number(dataObj.positionMillis) > 0
-      ? Number(dataObj.positionMillis)
-      : Number(dataObj.progress) > 0
-      ? Number(dataObj.progress) * 1000
-      : 0;
-
+  const durMs = Number(dataObj.durationMillis) > 0 ? Number(dataObj.durationMillis) : Number(dataObj.duration) > 0 ? Number(dataObj.duration) * 1000 : 0;
+  const rawPosMs = Number(dataObj.positionMillis) > 0 ? Number(dataObj.positionMillis) : Number(dataObj.progress) > 0 ? Number(dataObj.progress) * 1000 : 0;
   const isAtVeryEnd = durMs > 10000 && rawPosMs >= durMs * 0.98;
-  return {
-    resumeMs: isAtVeryEnd ? 0 : Math.max(0, Math.floor(rawPosMs)),
-    durationMs: Math.max(0, Math.floor(durMs)),
-    timestamp: Number(dataObj.timestamp || dataObj.updatedAt || 0),
-  };
+  return { resumeMs: isAtVeryEnd ? 0 : Math.max(0, Math.floor(rawPosMs)), durationMs: Math.max(0, Math.floor(durMs)), timestamp: Number(dataObj.timestamp || dataObj.updatedAt || 0) };
 };
 
 const formatTime = (millis) => {
   if (!millis || isNaN(millis) || millis < 0) return '00:00';
   const totalSecs = Math.floor(millis / 1000);
-  const h = Math.floor(totalSecs / 3600);
-  const m = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0');
-  const s = Math.floor(totalSecs % 60).toString().padStart(2, '0');
+  const h = Math.floor(totalSecs / 3600), m = Math.floor((totalSecs % 3600) / 60).toString().padStart(2, '0'), s = Math.floor(totalSecs % 60).toString().padStart(2, '0');
   return h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
 };
 
-const IconBack = React.memo(({ size = 28 }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5">
-    <Path d="M19 12H5M12 19l-7-7 7-7" />
-  </Svg>
-));
-const IconSubs = React.memo(({ size = 24, color = "#FFF" }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
-    <Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/>
-    <Path d="M7 15h3m4 0h3M7 9h10"/>
-  </Svg>
-));
-const IconAudio = React.memo(({ size = 24, color = "#FFF" }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2">
-    <Path d="M3 18v-6a9 9 0 0118 0v6"/>
-    <Path d="M21 19a2 2 0 01-2 2h-1v-6h3v4zM3 19a2 2 0 002 2h1v-6H3v4z"/>
-  </Svg>
-));
-const IconNextEp = React.memo(({ size = 22, color = "#FFF" }) => (
-  <Svg width={size} height={size} viewBox="0 0 24 24" fill={color}>
-    <Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-  </Svg>
-));
+const IconBack = React.memo(({ size = 28 }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#FFF" strokeWidth="2.5"><Path d="M19 12H5M12 19l-7-7 7-7" /></Svg>));
+const IconSubs = React.memo(({ size = 24, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"><Rect x="3" y="5" width="18" height="14" rx="2" ry="2"/><Path d="M7 15h3m4 0h3M7 9h10"/></Svg>));
+const IconAudio = React.memo(({ size = 24, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2"><Path d="M3 18v-6a9 9 0 0118 0v6"/><Path d="M21 19a2 2 0 01-2 2h-1v-6h3v4zM3 19a2 2 0 002 2h1v-6H3v4z"/></Svg>));
+const IconNextEp = React.memo(({ size = 22, color = "#FFF" }) => (<Svg width={size} height={size} viewBox="0 0 24 24" fill={color}><Path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></Svg>));
 
 const TopGradientOverlay = React.memo(({ screenWidth }) => (
   <Svg width={screenWidth} height={130} viewBox="0 0 100 100" preserveAspectRatio="none" style={styles.topGradientSvg} pointerEvents="none">
-    <Defs>
-      <LinearGradient id="topCinematic" x1="0%" y1="0%" x2="0%" y2="100%">
-        <Stop offset="0%" stopColor="#000000" stopOpacity="0.88" />
-        <Stop offset="45%" stopColor="#000000" stopOpacity="0.45" />
-        <Stop offset="80%" stopColor="#000000" stopOpacity="0.12" />
-        <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
-      </LinearGradient>
-    </Defs>
+    <Defs><LinearGradient id="topCinematic" x1="0%" y1="0%" x2="0%" y2="100%"><Stop offset="0%" stopColor="#000000" stopOpacity="0.88" /><Stop offset="45%" stopColor="#000000" stopOpacity="0.45" /><Stop offset="80%" stopColor="#000000" stopOpacity="0.12" /><Stop offset="100%" stopColor="#000000" stopOpacity="0" /></LinearGradient></Defs>
     <Rect x="0" y="0" width="100" height="100" fill="url(#topCinematic)" />
   </Svg>
 ));
 
 const BottomGradientOverlay = React.memo(({ screenWidth }) => (
   <Svg width={screenWidth} height={130} viewBox="0 0 100 100" preserveAspectRatio="none" style={styles.bottomGradientSvg} pointerEvents="none">
-    <Defs>
-      <LinearGradient id="botCinematic" x1="0%" y1="100%" x2="0%" y2="0%">
-        <Stop offset="0%" stopColor="#000000" stopOpacity="0.90" />
-        <Stop offset="45%" stopColor="#000000" stopOpacity="0.45" />
-        <Stop offset="80%" stopColor="#000000" stopOpacity="0.12" />
-        <Stop offset="100%" stopColor="#000000" stopOpacity="0" />
-      </LinearGradient>
-    </Defs>
+    <Defs><LinearGradient id="botCinematic" x1="0%" y1="100%" x2="0%" y2="0%"><Stop offset="0%" stopColor="#000000" stopOpacity="0.90" /><Stop offset="45%" stopColor="#000000" stopOpacity="0.45" /><Stop offset="80%" stopColor="#000000" stopOpacity="0.12" /><Stop offset="100%" stopColor="#000000" stopOpacity="0" /></LinearGradient></Defs>
     <Rect x="0" y="0" width="100" height="100" fill="url(#botCinematic)" />
   </Svg>
 ));
 
-export default function Player({
-  route,
-  navigation,
-  user: propUser,
-  activeProfileId: propActiveProfileId,
-}) {
+export default function Player({ route, navigation, user: propUser, activeProfileId: propActiveProfileId }) {
   const { width: winWidth, height: winHeight } = useWindowDimensions();
   const landscapeWidth = Math.max(winWidth, winHeight);
   const params = route?.params || {};
 
-  const { 
-    animeTitle = 'Unknown', 
-    animeId = null,
-    id: paramId = null,
-    userUid = null,
-    targetType = 'sub',
-    activeUrl: paramActiveUrl = null,
-    streamUrl: paramStreamUrl = null,
-    localUri: paramLocalUri = null,
-    fileUri: paramFileUri = null,
-    isOffline: paramIsOffline = false,
-  } = params;
-
-  const initialOfflineUri = paramLocalUri || paramFileUri || 
-    (paramActiveUrl && String(paramActiveUrl).startsWith('file://') ? paramActiveUrl : null) || null;
-
-  const initialPassedRemoteUrl = !initialOfflineUri && (paramStreamUrl || paramActiveUrl)
-    ? buildProxiedUrl(paramStreamUrl || paramActiveUrl, params.referer || 'https://vidwish.live/')
-    : null;
+  const { animeTitle = 'Unknown', animeId = null, id: paramId = null, userUid = null, targetType = 'sub', activeUrl: paramActiveUrl = null, streamUrl: paramStreamUrl = null, localUri: paramLocalUri = null, fileUri: paramFileUri = null, isOffline: paramIsOffline = false } = params;
+  
+  const initialOfflineUri = paramLocalUri || paramFileUri || (paramActiveUrl && String(paramActiveUrl).startsWith('file://') ? paramActiveUrl : null) || null;
+  const initialPassedRemoteUrl = !initialOfflineUri && (paramStreamUrl || paramActiveUrl) ? buildProxiedUrl(paramStreamUrl || paramActiveUrl, params.referer || 'https://vidwish.live/') : null;
 
   const [isOfflineMode, setIsOfflineMode] = useState(Boolean(paramIsOffline || initialOfflineUri));
-  const [offlineStreamUri, setOfflineStreamUri] = useState(initialOfflineUri);
-
   const resolvedUid = userUid || propUser?.uid || auth().currentUser?.uid || null;
   const currentProfileId = params.activeProfileId || propActiveProfileId || 'default';
   const effectiveAnimeId = String(animeId || paramId || 'unknown');
@@ -285,7 +136,7 @@ export default function Player({
   const [isBuffering, setIsBuffering] = useState(true);
   const [isPlaying, setIsPlaying] = useState(true);
   
-  // States optimized for less frequent renders
+  // Progress States (Throttled for Performance)
   const [posMillis, setPosMillis] = useState(0);
   const [durMillis, setDurMillis] = useState(0);
   const [isSeeking, setIsSeeking] = useState(false);
@@ -299,7 +150,7 @@ export default function Player({
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [is2xActive, setIs2xActive] = useState(false);
 
-  // High performance refs (bypassing state renders)
+  // High Performance Engine Refs (Zero JS Re-Renders)
   const episodeSessionIdRef = useRef(1);
   const isVideoMountedRef = useRef(false);
   const lastPositionRef = useRef(0);
@@ -316,29 +167,20 @@ export default function Player({
   const [selectedQuality, setSelectedQuality] = useState('Auto');
   const [currentAutoRes, setCurrentAutoRes] = useState('1080p');
 
+  // Subtitle States (Delegated strictly to external SubtitleSheet)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
-  const [parsedSubs, setParsedSubs] = useState([]);
-  const [currentSubText, setCurrentSubText] = useState('');
   const [subSettings, setSubSettings] = useState({ color: '#FFFFFF', size: 16, height: 40, fontFamily: 'normal', backgroundColor: 'transparent' });
+  const [subtitleData, setSubtitleData] = useState(null);
 
   const hideUITimeout = useRef(null);
   const longPressTimerRef = useRef(null);
-
   const activeMenuRef = useRef(activeMenu);
-  const isLockedRef = useRef(isLocked);
   const showUIRef = useRef(showUI);
   const isPlayingRef = useRef(isPlaying);
-  const subtitlesEnabledRef = useRef(subtitlesEnabled);
-  const parsedSubsRef = useRef(parsedSubs);
-  const currentSubTextRef = useRef(currentSubText);
 
   useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
-  useEffect(() => { isLockedRef.current = isLocked; }, [isLocked]);
   useEffect(() => { showUIRef.current = showUI; }, [showUI]);
   useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
-  useEffect(() => { subtitlesEnabledRef.current = subtitlesEnabled; }, [subtitlesEnabled]);
-  useEffect(() => { parsedSubsRef.current = parsedSubs; }, [parsedSubs]);
-  useEffect(() => { currentSubTextRef.current = currentSubText; }, [currentSubText]);
 
   const latestMetaRef = useRef({
     uid: resolvedUid, profileId: currentProfileId, animeId: effectiveAnimeId, animeTitle: String(animeTitle || 'Unknown'),
@@ -368,10 +210,9 @@ export default function Player({
     };
 
     writeLocalWatchCacheEntry(`${meta.profileId || 'default'}_${epDocId}`, episodePayload);
-
     if (meta.uid && meta.profileId) {
-      const currentProfileRef = firestore().collection('users').doc(String(meta.uid)).collection('profiles').doc(String(meta.profileId));
-      currentProfileRef.collection(WATCH_HISTORY_COLLECTION).doc(epDocId).set(episodePayload, { merge: true }).catch(() => {});
+      firestore().collection('users').doc(String(meta.uid)).collection('profiles').doc(String(meta.profileId))
+        .collection(WATCH_HISTORY_COLLECTION).doc(epDocId).set(episodePayload, { merge: true }).catch(() => {});
     }
   }, []);
 
@@ -381,17 +222,15 @@ export default function Player({
         await Audio.setAudioModeAsync({ playsInSilentModeIOS: true, staysActiveInBackground: false, shouldDuckAndroid: true });
         StatusBar.setHidden(true, 'none');
         if (Platform.OS === 'android' && NavigationBar?.setVisibilityAsync) {
-          await NavigationBar.setVisibilityAsync('hidden');
-          await NavigationBar.setBehaviorAsync('overlay-swipe');
+          await NavigationBar.setVisibilityAsync('hidden'); await NavigationBar.setBehaviorAsync('overlay-swipe');
         }
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
       } catch (_) {}
     };
     enterImmersiveLandscape();
-
     const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
       if (activeMenuRef.current) { setActiveMenu(null); return true; }
-      if (isLockedRef.current) { setIsLocked(false); setShowUI(true); Animated.timing(uiOpacity, { toValue: 1, duration: 220, useNativeDriver: true }).start(); return true; }
+      if (isLocked) { setIsLocked(false); setShowUI(true); Animated.timing(uiOpacity, { toValue: 1, duration: 220, useNativeDriver: true }).start(); return true; }
       saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true);
       navigation.goBack();
       return true;
@@ -402,15 +241,12 @@ export default function Player({
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => ScreenOrientation.unlockAsync().catch(() => {}));
       backHandler.remove();
     };
-  }, []);
+  }, [isLocked]);
 
-  // Fetch Series Episodes List ONCE in Background
   useEffect(() => {
     if (isOfflineMode || !animeTitle) return;
     fetch(`${VERCEL_API_BASE}/api/episodes/${encodeURIComponent(effectiveAnimeId)}`)
-      .then(res => res.json())
-      .then(json => { if (Array.isArray(json?.data || json?.results)) setCachedEpisodesList(json?.data || json?.results); })
-      .catch(() => {});
+      .then(res => res.json()).then(json => { if (Array.isArray(json?.data || json?.results)) setCachedEpisodesList(json?.data || json?.results); }).catch(() => {});
   }, [animeTitle, isOfflineMode, effectiveAnimeId]);
 
   useEffect(() => {
@@ -425,19 +261,17 @@ export default function Player({
   }, [currentEpNum, currentSlug, cachedEpisodesList, isOfflineMode]);
 
   // =========================================================================
-  // BLAZE-X PARALLELIZED ULTRA-FAST BOOT SEQUENCE
+  // PARALLELIZED ULTRA-FAST BOOT SEQUENCE 
   // =========================================================================
   useEffect(() => {
     let isMounted = true;
     const sessionId = ++episodeSessionIdRef.current;
     const epDocId = `${effectiveAnimeId}_ep_${currentEpNum}`;
-    
     setIsBuffering(true);
     isVideoMountedRef.current = false;
 
-    // 1. INSTANT STREAM FETCH (Bypasses Firebase/Local Cache Waterfall)
     const resolveOnlineStream = async () => {
-      if (activeUrl) return; // Already passed via params
+      if (activeUrl) return;
       try {
         const effectiveSlug = currentSlug || currentEpNum;
         let finalStreamData = null;
@@ -446,72 +280,56 @@ export default function Player({
           const json = res ? await res.json() : null;
           if (json?.data?.m3u8) { finalStreamData = json.data; break; }
         }
-        
         if (isMounted && sessionId === episodeSessionIdRef.current && finalStreamData) {
           const targetReferer = finalStreamData.referer || 'https://vidwish.live/';
           const proxiedUrl = buildProxiedUrl(finalStreamData.m3u8, targetReferer);
           setStreamData({ ...finalStreamData, m3u8: proxiedUrl });
-          setActiveUrl(proxiedUrl); // BOOM - Video Mounts Instantly
-
-          // Parse subs in background
+          setActiveUrl(proxiedUrl);
+          
+          // Delegate subtitle URL to external subtitle.js component
           if (finalStreamData.subtitles?.length > 0) {
             const bestSub = finalStreamData.subtitles.find(s => String(s.label || '').toLowerCase().includes('eng')) || finalStreamData.subtitles[0];
-            if (bestSub?.file) {
-              fetch(buildProxiedUrl(bestSub.file, targetReferer)).then(r => r.text()).then(vtt => {
-                if (isMounted) setParsedSubs(parseVttTextToCues(vtt));
-              }).catch(()=>{});
-            }
+            if (bestSub?.file) setSubtitleData({ url: buildProxiedUrl(bestSub.file, targetReferer) });
           }
         }
       } catch(e) {}
     };
 
-    // 2. CONCURRENT RESUME FETCH (Runs while video buffers)
     const resolveResumePosition = async () => {
       let targetStartMs = 0;
-      // Fast check local cache
       try {
         const cache = await readLocalWatchCache();
         const entry = cache[`${currentProfileId || 'default'}_${epDocId}`] || cache[`any_${epDocId}`];
         if (entry) targetStartMs = extractResumeMillis(entry).resumeMs;
       } catch(e) {}
 
-      // Apply initial fast local cache if > 0
       if (targetStartMs > 0 && isMounted && sessionId === episodeSessionIdRef.current) {
         lastPositionRef.current = targetStartMs;
-        if (isVideoMountedRef.current && videoRef.current) {
-            videoRef.current.setPositionAsync(targetStartMs).catch(()=>{});
-        }
+        if (isVideoMountedRef.current && videoRef.current) videoRef.current.setPositionAsync(targetStartMs).catch(()=>{});
       }
 
-      // Background Network Firestore Check
       if (resolvedUid && currentProfileId && effectiveAnimeId !== 'unknown') {
         firestore().collection('users').doc(String(resolvedUid)).collection('profiles').doc(String(currentProfileId))
-          .collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get()
-          .then(doc => {
+          .collection(WATCH_HISTORY_COLLECTION).doc(epDocId).get().then(doc => {
             if (isMounted && sessionId === episodeSessionIdRef.current && doc.exists) {
               const fsRes = extractResumeMillis(doc.data());
               if (fsRes.resumeMs > lastPositionRef.current && lastPositionRef.current < 3000) {
                 lastPositionRef.current = fsRes.resumeMs;
-                if (isVideoMountedRef.current && videoRef.current) {
-                  videoRef.current.setPositionAsync(fsRes.resumeMs).catch(()=>{});
-                }
+                if (isVideoMountedRef.current && videoRef.current) videoRef.current.setPositionAsync(fsRes.resumeMs).catch(()=>{});
               }
             }
           }).catch(()=>{});
       }
     };
 
-    if (!isOfflineMode) {
-      resolveOnlineStream();
-    }
+    if (!isOfflineMode) resolveOnlineStream();
     resolveResumePosition();
 
     return () => { isMounted = false; };
   }, [currentEpNum, currentSlug, selectedAudioType, effectiveAnimeId, resolvedUid, currentProfileId]);
 
   // =========================================================================
-  // HIGH PERFORMANCE PLAYBACK UPDATER (Throttled Bridge Updates)
+  // HIGH PERFORMANCE PLAYBACK UPDATER (Strict 1000ms Throttling)
   // =========================================================================
   const handlePlaybackStatusUpdate = useCallback((st, sessionToken) => {
     if (sessionToken !== episodeSessionIdRef.current) return;
@@ -526,35 +344,14 @@ export default function Player({
     if (currentMs > 1000) lastPositionRef.current = currentMs;
     if (durationMs > 0) lastDurationRef.current = durationMs;
 
-    // Subtitle Lookup (Pure JS, no bridge until text changes)
-    if (subtitlesEnabledRef.current && parsedSubsRef.current.length > 0) {
-      const nextText = findActiveSubtitleCue(parsedSubsRef.current, currentTimeSec);
-      if (nextText !== currentSubTextRef.current) {
-        currentSubTextRef.current = nextText;
-        setCurrentSubText(nextText);
-      }
-    } else if (currentSubTextRef.current !== '') {
-      currentSubTextRef.current = '';
-      setCurrentSubText('');
-    }
-
-    // THROTTLE REACT STATE UPDATES TO 1 SECOND BOUNDARIES
+    // Throttle UI Bridge Updates purely for the Progress Slider
     if (wholeSec !== lastRenderedSecRef.current || Boolean(st.isPlaying) !== isPlayingRef.current || bufferingNow !== isBuffering) {
       lastRenderedSecRef.current = wholeSec;
-      setIsLoaded(true);
-      setIsBuffering(bufferingNow);
-      setIsPlaying(Boolean(st.isPlaying));
+      setIsLoaded(true); setIsBuffering(bufferingNow); setIsPlaying(Boolean(st.isPlaying));
       
-      if (!isSeeking && currentMs >= 0) {
-        setPosMillis(currentMs);
-        setDurMillis(durationMs);
-      }
-      // Save to Firebase every 5 seconds
-      if (st.isPlaying && wholeSec % 5 === 0 && wholeSec > 0) {
-        saveWatchHistory(currentMs, durationMs);
-      }
+      if (!isSeeking && currentMs >= 0) { setPosMillis(currentMs); setDurMillis(durationMs); }
+      if (st.isPlaying && wholeSec % 5 === 0 && wholeSec > 0) saveWatchHistory(currentMs, durationMs);
     }
-
     if (st.didJustFinish && durationMs > 0) saveWatchHistory(durationMs, durationMs, true);
   }, [isSeeking, isBuffering, saveWatchHistory]);
 
@@ -564,24 +361,12 @@ export default function Player({
     
     episodeSessionIdRef.current += 1;
     isVideoMountedRef.current = false;
-    lastPositionRef.current = 0;
-    lastDurationRef.current = 0;
-    lastRenderedSecRef.current = -1;
-    currentSubTextRef.current = '';
+    lastPositionRef.current = 0; lastDurationRef.current = 0; lastRenderedSecRef.current = -1;
 
     try { await videoRef.current?.stopAsync?.(); } catch (_) {}
 
-    setIsBuffering(true);
-    setActiveUrl(null);
-    setIsLoaded(false);
-    setPosMillis(0);
-    setDurMillis(0);
-    setCurrentSubText('');
-    setParsedSubs([]);
-
-    setCurrentEpNum(Number(nextEpisodeData.num));
-    setCurrentEpTitle(nextEpisodeData.title || `Episode ${nextEpisodeData.num}`);
-    setCurrentSlug(String(nextEpisodeData.slug));
+    setIsBuffering(true); setActiveUrl(null); setIsLoaded(false); setPosMillis(0); setDurMillis(0); setSubtitleData(null);
+    setCurrentEpNum(Number(nextEpisodeData.num)); setCurrentEpTitle(nextEpisodeData.title || `Episode ${nextEpisodeData.num}`); setCurrentSlug(String(nextEpisodeData.slug));
   }, [hasNextEpisode, nextEpisodeData, saveWatchHistory]);
 
   const hideUINow = useCallback(() => {
@@ -603,22 +388,16 @@ export default function Player({
   }, [hideUINow, resetHideTimer]);
 
   const handleTouchStart = () => {
-    if (isLockedRef.current) return;
+    if (isLocked) return;
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = setTimeout(() => {
-      if (isPlayingRef.current && videoRef.current) {
-        videoRef.current.setRateAsync(2.0, true);
-        setIs2xActive(true);
-      }
+      if (isPlayingRef.current && videoRef.current) { videoRef.current.setRateAsync(2.0, true); setIs2xActive(true); }
     }, 450);
   };
 
   const handleTouchEnd = () => {
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-    if (is2xActive) {
-      setIs2xActive(false);
-      if (videoRef.current) videoRef.current.setRateAsync(playbackSpeed, true);
-    }
+    if (is2xActive) { setIs2xActive(false); if (videoRef.current) videoRef.current.setRateAsync(playbackSpeed, true); }
   };
 
   useEffect(() => {
@@ -645,17 +424,15 @@ export default function Player({
           source={{ uri: activeUrl, overrideFileExtensionAndroid: 'm3u8', headers: { Referer: streamData?.referer || 'https://vidwish.live/' } }}
           useNativeControls={false}
           resizeMode={resizeMode}
-          progressUpdateIntervalMillis={1000} // Crucial for performance: 1000ms instead of 750ms
+          progressUpdateIntervalMillis={1000}
           onPlaybackStatusUpdate={(st) => handlePlaybackStatusUpdate(st, activeSessionToken)}
           onLoad={async (loadStatus) => {
             if (activeSessionToken !== episodeSessionIdRef.current) return;
             isVideoMountedRef.current = true;
-            setIsLoaded(true);
-            setIsBuffering(false);
+            setIsLoaded(true); setIsBuffering(false);
             if (loadStatus?.durationMillis > 0) setDurMillis(loadStatus.durationMillis);
             
             if (videoRef.current) {
-              // Apply progress resolved in the background
               if (lastPositionRef.current > 0) await videoRef.current.setPositionAsync(lastPositionRef.current).catch(()=>{});
               if (playbackSpeed !== 1.0) await videoRef.current.setRateAsync(playbackSpeed, true).catch(()=>{});
               await videoRef.current.playAsync().catch(()=>{});
@@ -671,14 +448,7 @@ export default function Player({
         </View>
       )}
 
-      {subtitlesEnabled && currentSubText !== '' && (
-        <View style={[styles.subtitleContainer, { bottom: subSettings.height + (showUI ? 65 : 0) }]} pointerEvents="none">
-          <Text style={[styles.subtitleText, { color: subSettings.color, fontSize: subSettings.size, fontFamily: subSettings.fontFamily, backgroundColor: subSettings.backgroundColor }]}>
-            {currentSubText}
-          </Text>
-        </View>
-      )}
-
+      {/* EXTERNAL PLAY/PAUSE/DOUBLE-TAP SCRIPT */}
       <PlayPauseSkip
         status={{ isLoaded: isLoaded && activeUrl, isBuffering, isPlaying, positionMillis: displayPosMillis, durationMillis: displayDurMillis }}
         videoRef={videoRef} resetHideTimer={resetHideTimer} toggleUI={toggleUIOnTap} isLocked={isLocked} uiOpacity={uiOpacity} showUI={showUI}
@@ -691,35 +461,32 @@ export default function Player({
         videoRef={videoRef} introData={streamData?.intro} outroData={streamData?.outro} isLocked={isLocked} onSkipOutro={hasNextEpisode ? handleNextEpisode : null}
       />
 
+      {/* DELEGATED SUBTITLE RENDERER */}
+      <SubtitleSheet 
+        activeMenu={activeMenu} setActiveMenu={setActiveMenu} subtitlesEnabled={subtitlesEnabled} setSubtitlesEnabled={setSubtitlesEnabled} 
+        subSettings={subSettings} setSubSettings={setSubSettings} animeId={effectiveAnimeId} animeTitle={animeTitle} episodeNum={currentEpNum} 
+        slug={currentSlug || currentEpNum} isOffline={isOfflineMode} 
+        currentPositionMillis={displayPosMillis} // Passes current time down directly
+        subtitleData={subtitleData}              // Passes URL down directly
+        showUI={showUI}
+      />
+
       <Animated.View style={[styles.uiLayer, { opacity: uiOpacity }]} pointerEvents={showUI ? 'box-none' : 'none'}>
         {!isLocked && (
           <View style={styles.topBarWrapper} pointerEvents="box-none">
             <TopGradientOverlay screenWidth={landscapeWidth} />
             <View style={styles.topBarContent} pointerEvents="box-none">
               <View style={styles.topLeftGroup}>
-                <TouchableOpacity onPress={() => { saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true); navigation.goBack(); }} style={styles.iconBtn} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}>
-                  <IconBack />
-                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { saveWatchHistory(lastPositionRef.current, lastDurationRef.current, true); navigation.goBack(); }} style={styles.iconBtn} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}><IconBack /></TouchableOpacity>
                 <View style={styles.titleColumn} pointerEvents="none">
-                  <View style={styles.titleRowWithBadge}>
-                    <Text style={styles.mainTitle} numberOfLines={1}>{animeTitle}</Text>
-                    {isOfflineMode && <View style={styles.offlineBadge}><Text style={styles.offlineBadgeText}>OFFLINE</Text></View>}
-                  </View>
+                  <View style={styles.titleRowWithBadge}><Text style={styles.mainTitle} numberOfLines={1}>{animeTitle}</Text>{isOfflineMode && <View style={styles.offlineBadge}><Text style={styles.offlineBadgeText}>OFFLINE</Text></View>}</View>
                   <Text style={styles.subTitle} numberOfLines={1}>Episode {currentEpNum} {currentEpTitle ? `• ${currentEpTitle}` : ''}</Text>
                 </View>
               </View>
               <View style={styles.topRightGroup}>
-                <TouchableOpacity onPress={() => setActiveMenu('subs')} style={[styles.iconBtn, styles.topRightSpacing]}>
-                  <IconSubs color={subtitlesEnabled ? "#FFF" : "#777"} />
-                </TouchableOpacity>
-                {!isOfflineMode && (
-                  <TouchableOpacity onPress={() => setActiveMenu('audio')} style={[styles.iconBtn, styles.topRightSpacing]}>
-                    <IconAudio />
-                  </TouchableOpacity>
-                )}
-                <TouchableOpacity onPress={() => setActiveMenu('quality')} style={styles.hdBtn}>
-                  <Text style={styles.hdBtnText}>{isOfflineMode ? currentAutoRes : 'HD'}</Text>
-                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setActiveMenu('subs')} style={[styles.iconBtn, styles.topRightSpacing]}><IconSubs color={subtitlesEnabled ? "#FFF" : "#777"} /></TouchableOpacity>
+                {!isOfflineMode && <TouchableOpacity onPress={() => setActiveMenu('audio')} style={[styles.iconBtn, styles.topRightSpacing]}><IconAudio /></TouchableOpacity>}
+                <TouchableOpacity onPress={() => setActiveMenu('quality')} style={styles.hdBtn}><Text style={styles.hdBtnText}>{isOfflineMode ? currentAutoRes : 'HD'}</Text></TouchableOpacity>
               </View>
             </View>
           </View>
@@ -731,19 +498,11 @@ export default function Player({
             <View style={styles.bottomToolsRow} pointerEvents="box-none">
               <View style={styles.toolsLeft}>
                 <LockButton isLocked={isLocked} setIsLocked={setIsLocked} uiOpacity={uiOpacity} setShowUI={setShowUI} hideUITimeout={hideUITimeout} />
-                {!isLocked && (
-                  <TouchableOpacity onPress={() => setActiveMenu('speed')} style={{ marginLeft: 20 }}>
-                    <Text style={styles.speedBtnText}>{playbackSpeed.toFixed(2)}x</Text>
-                  </TouchableOpacity>
-                )}
+                {!isLocked && <TouchableOpacity onPress={() => setActiveMenu('speed')} style={{ marginLeft: 20 }}><Text style={styles.speedBtnText}>{playbackSpeed.toFixed(2)}x</Text></TouchableOpacity>}
               </View>
               {!isLocked && (
                 <View style={styles.toolsRight}>
-                  <Animated.View style={{ opacity: nextEpOpacity }}>
-                    <TouchableOpacity onPress={handleNextEpisode} disabled={!hasNextEpisode} style={[styles.iconBtn, { marginRight: 18 }]}>
-                      <IconNextEp color={hasNextEpisode ? "#FFF" : "rgba(255,255,255,0.3)"} />
-                    </TouchableOpacity>
-                  </Animated.View>
+                  <Animated.View style={{ opacity: nextEpOpacity }}><TouchableOpacity onPress={handleNextEpisode} disabled={!hasNextEpisode} style={[styles.iconBtn, { marginRight: 18 }]}><IconNextEp color={hasNextEpisode ? "#FFF" : "rgba(255,255,255,0.3)"} /></TouchableOpacity></Animated.View>
                   <AspectRatioButton resizeMode={resizeMode} setResizeMode={setResizeMode} />
                 </View>
               )}
@@ -753,12 +512,12 @@ export default function Player({
               <View style={styles.progressRow}>
                 <Text style={styles.timeText}>{formatTime(displayPosMillis)}</Text>
                 <Slider
-                  style={styles.slider} minimumValue={0} maximumValue={displayDurMillis} value={displayPosMillis}
-                  minimumTrackTintColor={BRAND_RED} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor="#FFF"
+                  style={styles.slider} minimumValue={0} maximumValue={displayDurMillis} value={displayPosMillis} minimumTrackTintColor={BRAND_RED} maximumTrackTintColor="rgba(255,255,255,0.2)" thumbTintColor="#FFF"
                   onSlidingStart={() => { setIsSeeking(true); if (hideUITimeout.current) clearTimeout(hideUITimeout.current); }}
                   onValueChange={(val) => setSeekPreviewMillis(val)}
                   onSlidingComplete={async (val) => {
                     setIsSeeking(false); setPosMillis(val); lastPositionRef.current = val;
+                    // KEYFRAME SNAPPING FOR SEAMLESS SEEKING
                     if (videoRef.current) { await videoRef.current.setPositionAsync(val).catch(()=>{}); saveWatchHistory(val, displayDurMillis, true); resetHideTimer(); }
                   }}
                 />
@@ -769,13 +528,7 @@ export default function Player({
         </View>
       </Animated.View>
 
-      {activeMenu === 'quality' && (
-        <VideoQualitySheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} qualityList={qualityList} selectedQuality={selectedQuality}
-          setSelectedQuality={setSelectedQuality} currentAutoRes={currentAutoRes}
-          setActiveUrl={(newQualityUri) => { setActiveUrl(buildProxiedUrl(newQualityUri, streamData?.referer || 'https://vidwish.live/')); }}
-        />
-      )}
-      <SubtitleSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} subtitlesEnabled={subtitlesEnabled} setSubtitlesEnabled={setSubtitlesEnabled} subSettings={subSettings} setSubSettings={setSubSettings} animeId={effectiveAnimeId} animeTitle={animeTitle} episodeNum={currentEpNum} slug={currentSlug || currentEpNum} isOffline={isOfflineMode} onSelectSubtitleTrack={(track) => setParsedSubs(track?.cues || [])} />
+      {activeMenu === 'quality' && <VideoQualitySheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} qualityList={qualityList} selectedQuality={selectedQuality} setSelectedQuality={setSelectedQuality} currentAutoRes={currentAutoRes} setActiveUrl={(newQualityUri) => { setActiveUrl(buildProxiedUrl(newQualityUri, streamData?.referer || 'https://vidwish.live/')); }} />}
       {activeMenu === 'audio' && <AudioSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} animeId={effectiveAnimeId} episodeNum={currentEpNum} slug={currentSlug || currentEpNum} currentTargetType={selectedAudioType} onSelectAudioType={setSelectedAudioType} />}
       {activeMenu === 'speed' && <SpeedSheet activeMenu={activeMenu} setActiveMenu={setActiveMenu} playbackSpeed={playbackSpeed} setPlaybackSpeed={setPlaybackSpeed} videoRef={videoRef} />}
     </View>
@@ -787,8 +540,6 @@ const styles = StyleSheet.create({
   videoPlayer: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' },
   speedIndicatorBadge: { position: 'absolute', top: 25, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)', zIndex: 35 },
   speedIndicatorText: { color: '#FFF', fontSize: 13, fontWeight: '900', letterSpacing: 1 },
-  subtitleContainer: { position: 'absolute', width: '100%', alignItems: 'center', zIndex: 25, elevation: 10, paddingHorizontal: 25 },
-  subtitleText: { fontWeight: '800', textAlign: 'center', textShadowColor: '#000', textShadowOffset: { width: 1, height: 1 }, textShadowRadius: 3, paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
   uiLayer: { ...StyleSheet.absoluteFillObject, zIndex: 10, justifyContent: 'space-between' },
   topBarWrapper: { width: '100%', position: 'absolute', top: 0, left: 0, right: 0, height: 130 },
   topGradientSvg: { position: 'absolute', top: 0, left: 0, right: 0 },
